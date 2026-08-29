@@ -92,6 +92,9 @@ class SqlAlchemyPddSyncRepository:
         order.forward_tracking_number = refund.forward_tracking_number
         order.carrier_code = refund.carrier_code
         order.return_tracking_number = refund.return_tracking_number
+        order.platform_after_sales_status = refund.platform_after_sales_status
+        order.platform_order_refund_status = refund.platform_order_refund_status
+        order.is_speed_refund = int(refund.is_speed_refund)
 
         item = self.session.execute(
             select(AfterSalesItem).where(

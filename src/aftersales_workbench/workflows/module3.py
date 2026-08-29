@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AfterSalesOrder,
+    AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
     ShippingStatus,
@@ -79,8 +80,13 @@ class SqlAlchemyModule3Repository:
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
+                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.order_shipping_status.in_(
                     (ShippingStatus.UNSHIPPED, ShippingStatus.PACKED_NOT_SHIPPED)
+                ),
+                or_(
+                    AfterSalesOrder.platform_after_sales_status == 10,
+                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
                 ~action_already_queued,
             )

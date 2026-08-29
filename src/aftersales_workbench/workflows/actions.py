@@ -130,12 +130,17 @@ class ActionCoordinator:
                 self._require_completed(result_code)
                 self._enqueue(
                     task.after_sales_sn,
-                    AutomationActionType.PDD_AGREE_REFUND,
+                    AutomationActionType.ERP_CREATE_REFUND_RECORD,
                     {"origin": "module3"},
                 )
             elif action_type is AutomationActionType.ERP_LOCK_PACKING:
                 self._require_completed(result_code)
                 order.workflow_status = WorkflowStatus.PACKING_LOCKED
+                self._enqueue(
+                    task.after_sales_sn,
+                    AutomationActionType.ERP_CREATE_REFUND_RECORD,
+                    {"origin": "module3"},
+                )
             elif action_type is AutomationActionType.ERP_CREATE_REFUND_RECORD:
                 self._require_completed(result_code)
                 origin = str((task.payload or {}).get("origin") or "")
@@ -172,9 +177,14 @@ class ActionCoordinator:
                 self.session.commit()
                 return True
             order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+            next_action = (
+                AutomationActionType.ERP_CREATE_REFUND_RECORD
+                if self._platform_refund_completed(order)
+                else AutomationActionType.PDD_AGREE_REFUND
+            )
             created = self._enqueue(
                 after_sales_sn,
-                AutomationActionType.PDD_AGREE_REFUND,
+                next_action,
                 {"origin": "module1", "intercept_note": note},
             )
             self.session.commit()
@@ -244,6 +254,13 @@ class ActionCoordinator:
     def _require_completed(result_code: ErpResultCode | None) -> None:
         if result_code is not ErpResultCode.COMPLETED:
             raise WorkflowTransitionError("该 ERP 动作成功时必须回填 COMPLETED")
+
+    @staticmethod
+    def _platform_refund_completed(order: AfterSalesOrder) -> bool:
+        return (
+            order.platform_after_sales_status == 10
+            or order.platform_order_refund_status == 4
+        )
 
     def _enqueue(
         self,

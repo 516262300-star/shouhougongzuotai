@@ -110,7 +110,7 @@ class PddRefundSyncService:
         self,
         shops: Iterable[ConfiguredPddShop],
         *,
-        statuses: tuple[int, ...] = (2, 3),
+        statuses: tuple[int, ...] = (2, 3, 10),
         lookback_hours: int | None = None,
         max_windows: int | None = None,
     ) -> list[ShopSyncResult]:

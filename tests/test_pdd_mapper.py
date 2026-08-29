@@ -20,6 +20,8 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
         "outer_id": "sku-fallback",
         "after_sale_reason": "reason",
         "tracking_number": "return-list-no",
+        "after_sales_status": 10,
+        "speed_refund_flag": 1,
     }
     detail = {
         "id": 123,
@@ -38,6 +40,7 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
         "tracking_number": "forward-no",
         "shipping_time": "2026-08-25 18:49:12",
         "logistics_id": 384,
+        "refund_status": 4,
     }
 
     result = normalize_refund(list_record, detail, order)
@@ -49,6 +52,9 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     assert result.forward_tracking_number == "forward-no"
     assert result.carrier_code == "384"
     assert result.return_tracking_number == "return-no"
+    assert result.platform_after_sales_status == 10
+    assert result.platform_order_refund_status == 4
+    assert result.is_speed_refund is True
     assert result.item.sku_code == "sku-1"
     assert result.item.applied_quantity == 22
 

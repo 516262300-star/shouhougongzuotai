@@ -58,6 +58,8 @@ def _order() -> Any:
         order_shipping_status=ShippingStatus.UNSHIPPED,
         workflow_status=WorkflowStatus.PENDING_CHECK,
         exception_type=None,
+        platform_after_sales_status=None,
+        platform_order_refund_status=None,
     )
 
 
@@ -88,7 +90,7 @@ def test_erp_check_not_packed_queues_cancel() -> None:
     assert coordinator.enqueued[0][0] is AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER
 
 
-def test_erp_cancel_completed_queues_pdd_refund() -> None:
+def test_erp_cancel_completed_queues_erp_refund_record() -> None:
     coordinator = TestCoordinator(
         _task(AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER), _order()
     )
@@ -100,7 +102,7 @@ def test_erp_cancel_completed_queues_pdd_refund() -> None:
     )
 
     assert coordinator.enqueued == [
-        (AutomationActionType.PDD_AGREE_REFUND, {"origin": "module3"})
+        (AutomationActionType.ERP_CREATE_REFUND_RECORD, {"origin": "module3"})
     ]
 
 
@@ -164,3 +166,19 @@ def test_module1_returned_queues_pdd_refund() -> None:
     assert changed is True
     assert order.workflow_status is WorkflowStatus.INTERCEPT_SUCCESS
     assert coordinator.enqueued[0][0] is AutomationActionType.PDD_AGREE_REFUND
+
+
+def test_module1_returned_skips_pdd_when_platform_already_refunded() -> None:
+    order = _order()
+    order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+    order.platform_after_sales_status = 10
+    coordinator = TestCoordinator(
+        _task(AutomationActionType.QYWX_INTERCEPT_NOTIFY), order
+    )
+
+    coordinator.confirm_intercept_result(
+        after_sales_sn="after-1",
+        result=InterceptResult.RETURNED,
+    )
+
+    assert coordinator.enqueued[0][0] is AutomationActionType.ERP_CREATE_REFUND_RECORD

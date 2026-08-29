@@ -136,6 +136,11 @@ class AfterSalesOrder(Base):
     forward_tracking_number: Mapped[str | None] = mapped_column(String(100))
     carrier_code: Mapped[str | None] = mapped_column(String(50))
     return_tracking_number: Mapped[str | None] = mapped_column(String(100))
+    platform_after_sales_status: Mapped[int | None] = mapped_column(SmallInteger)
+    platform_order_refund_status: Mapped[int | None] = mapped_column(SmallInteger)
+    is_speed_refund: Mapped[int] = mapped_column(
+        SmallInteger, default=0, server_default=text("0")
+    )
     order_shipping_status: Mapped[ShippingStatus] = mapped_column(
         ENUM(*[item.value for item in ShippingStatus]), nullable=False
     )

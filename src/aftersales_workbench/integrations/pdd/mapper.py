@@ -28,6 +28,9 @@ class NormalizedRefund:
     forward_tracking_number: str | None
     carrier_code: str | None
     return_tracking_number: str | None
+    platform_after_sales_status: int | None
+    platform_order_refund_status: int | None
+    is_speed_refund: bool
     order_shipping_status: ShippingStatus
     item: NormalizedRefundItem
 
@@ -47,6 +50,15 @@ def _positive_int(value: Any, *, field: str) -> int:
     if result < 1:
         raise PddDataMappingError(f"{field} 必须大于 0")
     return result
+
+
+def _optional_int(value: Any, *, field: str) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise PddDataMappingError(f"{field} 不是整数") from exc
 
 
 def _refund_amount(detail: dict[str, Any], list_record: dict[str, Any]) -> Decimal:
@@ -147,6 +159,17 @@ def normalize_refund(
         return_tracking_number=_nonempty(
             detail.get("express_no") or list_record.get("tracking_number")
         ),
+        platform_after_sales_status=_optional_int(
+            list_record.get("after_sales_status", detail.get("after_sales_status")),
+            field="after_sales_status",
+        ),
+        platform_order_refund_status=_optional_int(
+            order.get("refund_status"), field="refund_status"
+        ),
+        is_speed_refund=str(
+            list_record.get("speed_refund_flag", detail.get("speed_refund_flag", 0))
+        ).strip()
+        == "1",
         order_shipping_status=_shipping_status(order),
         item=NormalizedRefundItem(
             sku_code=sku_code,

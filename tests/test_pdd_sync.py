@@ -87,6 +87,17 @@ class FakeClient:
         }
 
 
+class CapturingStatusClient(FakeClient):
+    def __init__(self) -> None:
+        self.statuses: list[int] = []
+
+    def get_refund_list_increment(self, **parameters: Any) -> dict[str, Any]:
+        self.statuses.append(parameters["after_sales_status"])
+        return {
+            "refund_increment_get_response": {"refund_list": [], "total_count": 0}
+        }
+
+
 def _shop() -> ConfiguredPddShop:
     return ConfiguredPddShop(
         shop_number=1,
@@ -126,3 +137,20 @@ def test_sync_one_window_maps_and_advances_cursor() -> None:
     assert repository.cursor_end == 1800
     assert repository.refunds[0].platform_order_sn == "order-1"
     assert repository.refunds[0].after_sales_type.value == "RETURN_AND_REFUND"
+
+
+def test_default_sync_includes_refund_success_status() -> None:
+    repository = FakeRepository()
+    settings = Settings(_env_file=None, pdd_sync_initial_lookback_hours=1)
+    client = CapturingStatusClient()
+    service = PddRefundSyncService(
+        repository,
+        settings,
+        client_factory=lambda _shop_config: client,
+        now=lambda: 1800,
+    )
+
+    result = service.sync_all([_shop()], max_windows=1)[0]
+
+    assert result.ok is True
+    assert client.statuses == [2, 3, 10]

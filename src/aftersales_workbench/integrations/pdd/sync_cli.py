@@ -13,7 +13,7 @@ from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="同步多个拼多多店铺的售后单。")
     parser.add_argument("--shops", nargs="*", type=int, help="只同步指定店铺序号")
-    parser.add_argument("--statuses", nargs="+", type=int, default=[2, 3])
+    parser.add_argument("--statuses", nargs="+", type=int, default=[2, 3, 10])
     parser.add_argument("--lookback-hours", type=int, help="无游标时的首次回溯小时数")
     parser.add_argument("--max-windows", type=int, help="每店本次最多处理的 30 分钟窗口数")
     return parser

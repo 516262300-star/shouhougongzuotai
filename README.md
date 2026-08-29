@@ -100,7 +100,9 @@ alembic downgrade -1
 
 ## 七店售后增量同步
 
-同步器默认拉取状态 2（仅退款待商家处理）和状态 3（退货退款待商家处理），按 30 分钟窗口分页读取。每条售后单补查售后详情和订单详情，然后幂等写入 `aftersales_orders` 和 `aftersales_items`。每个已提交窗口的进度保存在 `pdd_sync_cursors`。
+同步器默认拉取状态 2（买家申请、待商家处理）、状态 3（等待商家确认收货）和状态 10（退款成功），按 30 分钟窗口分页读取。状态 10 必须同步：拼多多未发货仅退款通常会极速退款，若只读取待处理状态，模块 3 会漏掉已经退款但 ERP 仍需取消排单和平账的订单。每条售后单补查售后详情和订单详情，然后幂等写入 `aftersales_orders` 和 `aftersales_items`。每个已提交窗口的进度保存在 `pdd_sync_cursors`。
+
+同步结果同时保存 `platform_after_sales_status`、订单 `platform_order_refund_status` 和 `is_speed_refund`。只有售后状态明确为 10，或订单退款状态明确为 4（退款成功），才作为“平台已退款”的事实；`speed_refund_flag=1` 只记录极速退款标记，不单独作为完成依据。
 
 拼多多增量列表与售后详情的 `after_sales_type` 编码不同：同步器以增量列表的 2（仅退款）、3（退货退款）、4（换货）为准；仅当列表缺失该字段时，才按详情接口的 1/2/3 编码回退。遇到未支持类型时当前窗口会回滚并保留游标，修正后可直接续传。
 
@@ -123,7 +125,7 @@ alembic upgrade head
 .\.venv\Scripts\pdd-sync-refunds.exe --lookback-hours 72
 ```
 
-可用 `--statuses 2 3`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。
+可用 `--statuses 2 3 10`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。默认状态集合从 `2,3` 改为 `2,3,10` 后会使用新的同步游标范围，首次运行会按配置的回溯时长补齐退款成功记录。
 
 同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
 
@@ -133,8 +135,9 @@ alembic upgrade head
 
 1. 生成幂等的 `QYWX_INTERCEPT_NOTIFY` 动作；
 2. 企微发送成功后，订单进入 `INTERCEPT_PUSHED`；
-3. 快递确认拦截失败时进入 `INTERCEPT_FAILED`；包裹确实退回并确认入库时才回填 `RETURNED`，进入 `INTERCEPT_SUCCESS` 并生成 `PDD_AGREE_REFUND`；
-4. 拼多多同意退款成功后生成 `ERP_CREATE_REFUND_RECORD`，等待 ERP 财务流水确认。
+3. 快递确认拦截失败时进入 `INTERCEPT_FAILED`；包裹确实退回并确认入库时才回填 `RETURNED`，进入 `INTERCEPT_SUCCESS`；
+4. 若平台尚未退款，则生成 `PDD_AGREE_REFUND`；若平台状态已明确为退款成功，则跳过拼多多写接口，直接生成 ERP 财务流水待办，防止重复退款；
+5. 拼多多同意退款成功后生成 `ERP_CREATE_REFUND_RECORD`，等待 ERP 财务流水确认。
 
 先预览候选数量，再写入本地队列：
 
@@ -166,10 +169,10 @@ alembic upgrade head
 
 ## 模块 3：未发货退款与锁包
 
-模块 3 只扫描 `PENDING_CHECK` 且平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED` 的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此系统不会直接退款：
+模块 3 处理的是“拼多多已经极速退款后，ERP 如何停止履约并完成平账”，不再尝试调用 `pdd.refund.agree`。它只扫描 `PENDING_CHECK`、售后类型为 `ONLY_REFUND`、平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED`，并且平台退款状态已经明确成功的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此仍须检查 ERP：
 
-- `UNSHIPPED`：生成唯一的 `ERP_CHECK_FULFILLMENT` 待办，等待 ERP 返回未打包或已出包；
-- `PACKED_NOT_SHIPPED`：生成唯一的 `ERP_LOCK_PACKING` 待办；
+- `UNSHIPPED`：生成唯一的 `ERP_CHECK_FULFILLMENT` 待办，等待 ERP 返回未打包或已出包；确认未打包后取消排单，再生成 ERP 退款流水；
+- `PACKED_NOT_SHIPPED`：生成唯一的 `ERP_LOCK_PACKING` 待办；锁包成功后生成 ERP 退款流水；
 - 在途和已签收订单不属于模块 3，本命令不会处理；
 - ERP 尚未直连时，使用动作结果回填命令推进状态；任何一步失败都会停留在失败任务，不会越级退款。
 
@@ -207,7 +210,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-confirm-action.exe --task-id 126 --success --result-code COMPLETED
 ```
 
-未打包订单完成 ERP 取消后才会生成 `PDD_AGREE_REFUND`。平台退款成功后生成 `ERP_CREATE_REFUND_RECORD`；确认财务流水完成后，订单才进入 `UNSHIPPED_AUTO_REFUNDED`：
+平台在进入模块 3 前已经完成退款，所以 ERP 取消排单或锁包成功后直接生成 `ERP_CREATE_REFUND_RECORD`。确认财务流水完成后，订单才进入 `UNSHIPPED_AUTO_REFUNDED`：
 
 ```powershell
 .\.venv\Scripts\aftersales-confirm-action.exe --task-id 127 --success --result-code COMPLETED --reference-sn "ERP退款流水号"
