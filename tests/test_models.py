@@ -3,6 +3,7 @@ from aftersales_workbench.db.models import (
     AfterSalesItem,
     AfterSalesOrder,
     NegativeReview,
+    PddSyncCursor,
     ReturnScrapRecord,
     Shop,
 )
@@ -15,6 +16,7 @@ def test_global_schema_contains_all_master_tables() -> None:
         AfterSalesItem.__tablename__,
         ReturnScrapRecord.__tablename__,
         NegativeReview.__tablename__,
+        PddSyncCursor.__tablename__,
     }
 
     assert expected == set(Base.metadata.tables)

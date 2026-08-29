@@ -1,0 +1,150 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
+
+from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
+
+
+class PddDataMappingError(ValueError):
+    """拼多多返回数据缺失必要字段或字段值未受支持。"""
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedRefundItem:
+    sku_code: str
+    applied_quantity: int
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedRefund:
+    after_sales_sn: str
+    platform_order_sn: str
+    after_sales_type: AfterSalesType
+    refund_amount: Decimal
+    buyer_reason_raw: str | None
+    buyer_memo: str | None
+    forward_tracking_number: str | None
+    carrier_code: str | None
+    return_tracking_number: str | None
+    order_shipping_status: ShippingStatus
+    item: NormalizedRefundItem
+
+
+def _nonempty(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _positive_int(value: Any, *, field: str) -> int:
+    try:
+        result = int(value)
+    except (TypeError, ValueError) as exc:
+        raise PddDataMappingError(f"{field} 不是整数") from exc
+    if result < 1:
+        raise PddDataMappingError(f"{field} 必须大于 0")
+    return result
+
+
+def _refund_amount(detail: dict[str, Any], list_record: dict[str, Any]) -> Decimal:
+    detail_value = detail.get("refund_amount")
+    if detail_value is not None:
+        try:
+            return (Decimal(str(detail_value)) / Decimal("100")).quantize(
+                Decimal("0.01"), rounding=ROUND_HALF_UP
+            )
+        except InvalidOperation as exc:
+            raise PddDataMappingError("refund_amount 不是有效金额") from exc
+    try:
+        return Decimal(str(list_record["refund_amount"])).quantize(Decimal("0.01"))
+    except (KeyError, InvalidOperation) as exc:
+        raise PddDataMappingError("缺少有效 refund_amount") from exc
+
+
+def _after_sales_type(value: Any) -> AfterSalesType:
+    mapping = {
+        2: AfterSalesType.ONLY_REFUND,
+        3: AfterSalesType.RETURN_AND_REFUND,
+        4: AfterSalesType.EXCHANGE,
+    }
+    try:
+        return mapping[int(value)]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise PddDataMappingError(f"不支持的 after_sales_type: {value}") from exc
+
+
+def _shipping_status(order: dict[str, Any]) -> ShippingStatus:
+    order_status = order.get("order_status")
+    if order_status == 1:
+        return ShippingStatus.UNSHIPPED
+    if order_status == 2:
+        return ShippingStatus.IN_TRANSIT
+    if order_status == 3:
+        return ShippingStatus.DELIVERED
+    if _nonempty(order.get("receive_time")):
+        return ShippingStatus.DELIVERED
+    if _nonempty(order.get("tracking_number")) or _nonempty(order.get("shipping_time")):
+        return ShippingStatus.IN_TRANSIT
+    return ShippingStatus.UNSHIPPED
+
+
+def unwrap_order_information(body: dict[str, Any]) -> dict[str, Any]:
+    response = body.get("order_info_get_response")
+    if not isinstance(response, dict):
+        raise PddDataMappingError("缺少 order_info_get_response")
+    order = response.get("order_info")
+    if not isinstance(order, dict):
+        raise PddDataMappingError("缺少 order_info")
+    return order
+
+
+def normalize_refund(
+    list_record: dict[str, Any],
+    detail: dict[str, Any],
+    order: dict[str, Any],
+) -> NormalizedRefund:
+    after_sales_sn = _nonempty(detail.get("id") or list_record.get("id"))
+    order_sn = _nonempty(detail.get("order_sn") or list_record.get("order_sn"))
+    if not after_sales_sn:
+        raise PddDataMappingError("缺少售后单 id")
+    if not order_sn:
+        raise PddDataMappingError("缺少 order_sn")
+
+    sku_code = _nonempty(
+        detail.get("out_sku_sn")
+        or list_record.get("outer_id")
+        or detail.get("out_goods_sn")
+        or detail.get("sku_id")
+        or list_record.get("sku_id")
+    )
+    if not sku_code:
+        raise PddDataMappingError("缺少 SKU 标识")
+
+    return NormalizedRefund(
+        after_sales_sn=after_sales_sn,
+        platform_order_sn=order_sn,
+        after_sales_type=_after_sales_type(
+            detail.get("after_sales_type", list_record.get("after_sales_type"))
+        ),
+        refund_amount=_refund_amount(detail, list_record),
+        buyer_reason_raw=_nonempty(
+            detail.get("after_sales_reason") or list_record.get("after_sale_reason")
+        ),
+        buyer_memo=_nonempty(detail.get("remark") or order.get("buyer_memo")),
+        forward_tracking_number=_nonempty(order.get("tracking_number")),
+        carrier_code=_nonempty(order.get("logistics_id")),
+        return_tracking_number=_nonempty(
+            detail.get("express_no") or list_record.get("tracking_number")
+        ),
+        order_shipping_status=_shipping_status(order),
+        item=NormalizedRefundItem(
+            sku_code=sku_code,
+            applied_quantity=_positive_int(
+                detail.get("goods_number", list_record.get("goods_number")),
+                field="goods_number",
+            ),
+        ),
+    )

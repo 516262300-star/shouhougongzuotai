@@ -16,6 +16,7 @@ from aftersales_workbench.core.config import Settings
 PDD_REFUND_LIST_INCREMENT_GET = "pdd.refund.list.increment.get"
 PDD_REFUND_INFORMATION_GET = "pdd.refund.information.get"
 PDD_MALL_INFO_GET = "pdd.mall.info.get"
+PDD_ORDER_INFORMATION_GET = "pdd.order.information.get"
 
 _RESERVED_PARAMETERS = {"access_token", "client_id", "data_type", "sign", "timestamp", "type"}
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -252,3 +253,8 @@ class PddClient:
             order_sn=order_sn,
             after_sales_id=after_sales_id,
         )
+
+    def get_order_information(self, *, order_sn: str) -> dict[str, Any]:
+        if not order_sn.strip():
+            raise ValueError("order_sn 不能为空")
+        return self.execute_read(PDD_ORDER_INFORMATION_GET, order_sn=order_sn)

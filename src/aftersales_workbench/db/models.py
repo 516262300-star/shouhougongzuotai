@@ -75,6 +75,10 @@ class ReviewProcessStatus(StrEnum):
 
 class Shop(Base):
     __tablename__ = "shops"
+    __table_args__ = (
+        UniqueConstraint("shop_code", name="uk_shops_shop_code"),
+        UniqueConstraint("platform", "platform_shop_id", name="uk_shops_platform_shop"),
+    )
 
     shop_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     platform: Mapped[Platform] = mapped_column(
@@ -82,6 +86,7 @@ class Shop(Base):
     )
     shop_name: Mapped[str] = mapped_column(String(100), nullable=False)
     shop_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    platform_shop_id: Mapped[str | None] = mapped_column(String(100))
     app_key: Mapped[str | None] = mapped_column(String(100))
     app_secret: Mapped[str | None] = mapped_column(String(100))
     access_token: Mapped[str | None] = mapped_column(String(255))
@@ -201,6 +206,27 @@ class NegativeReview(Base):
     )
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class PddSyncCursor(Base):
+    __tablename__ = "pdd_sync_cursors"
+    __table_args__ = (UniqueConstraint("shop_id", "sync_scope", name="uk_pdd_sync_cursor_scope"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(
+        ForeignKey("shops.shop_id", ondelete="CASCADE"), nullable=False
+    )
+    sync_scope: Mapped[str] = mapped_column(String(100), nullable=False)
+    cursor_end_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
     )
 
 

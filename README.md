@@ -4,7 +4,7 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 全量建表迁移、存活/就绪健康检查、Docker Compose 本地编排、拼多多单店只读联调。
+- 已实现：配置加载、MySQL 连接池、Alembic 全量建表迁移、存活/就绪健康检查、Docker Compose 本地编排、拼多多单店只读联调、七店售后增量同步。
 - 已建立全局表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`。
 - 未实现：拼多多写操作、企微 Webhook、ERP 适配器、仓库 PDA 业务接口；它们属于后续 Step 2–5。
 
@@ -62,6 +62,9 @@ alembic downgrade -1
 | `PDD_TIMEOUT_SECONDS` | 单次请求超时秒数 | `10` |
 | `PDD_READ_MAX_ATTEMPTS` | 只读请求最大尝试次数 | `3` |
 | `PDD_WRITE_ENABLED` | 拼多多写操作开关，当前未开放 | `false` |
+| `PDD_SYNC_INITIAL_LOOKBACK_HOURS` | 新店铺无游标时的首次回溯小时数 | `72` |
+| `PDD_SYNC_OVERLAP_SECONDS` | 续传时向前重叠秒数，用于防止边界漏单 | `300` |
+| `PDD_SYNC_PAGE_SIZE` | 售后增量单页数量 | `100` |
 | `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET` | 1–4 店共用的开放平台应用凭据 | 无 |
 | `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET` | 5–7 店共用的另一组应用凭据 | 无 |
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
@@ -89,6 +92,33 @@ alembic downgrade -1
 ```
 
 只读请求在网关 HTTP 429/5xx 或网络异常时指数退避重试；返回平台业务错误时不重试，保留 `error_code` 和 `request_id` 供排查。当前命令不会调用 `pdd.refund.agree` 或任何写接口。
+
+## 七店售后增量同步
+
+同步器默认拉取状态 2（仅退款待商家处理）和状态 3（退货退款待商家处理），按 30 分钟窗口分页读取。每条售后单补查售后详情和订单详情，然后幂等写入 `aftersales_orders` 和 `aftersales_items`。每个已提交窗口的进度保存在 `pdd_sync_cursors`。
+
+执行前先升级数据库：
+
+```powershell
+alembic upgrade head
+```
+
+建议先用一店、两个窗口验证：
+
+```powershell
+.\.venv\Scripts\pdd-sync-refunds.exe --shops 1 --lookback-hours 72 --max-windows 2
+```
+
+验证无误后执行一店完整回溯，再执行所有店铺：
+
+```powershell
+.\.venv\Scripts\pdd-sync-refunds.exe --shops 1 --lookback-hours 72
+.\.venv\Scripts\pdd-sync-refunds.exe --lookback-hours 72
+```
+
+可用 `--statuses 2 3`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。
+
+同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
 
 ## 健康检查
 

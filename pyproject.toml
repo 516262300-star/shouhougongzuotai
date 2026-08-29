@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 pdd-check-shop = "aftersales_workbench.integrations.pdd.check_shop:main"
+pdd-sync-refunds = "aftersales_workbench.integrations.pdd.sync_cli:main"
 
 [project.optional-dependencies]
 dev = [

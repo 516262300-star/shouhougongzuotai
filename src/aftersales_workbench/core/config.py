@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     pdd_timeout_seconds: float = Field(default=10, gt=0, le=60)
     pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
     pdd_write_enabled: bool = False
+    pdd_sync_initial_lookback_hours: int = Field(default=72, ge=1, le=720)
+    pdd_sync_overlap_seconds: int = Field(default=300, ge=0, le=1800)
+    pdd_sync_page_size: int = Field(default=100, ge=1, le=100)
 
     pdd_app_1_client_id: SecretStr | None = None
     pdd_app_1_client_secret: SecretStr | None = None
