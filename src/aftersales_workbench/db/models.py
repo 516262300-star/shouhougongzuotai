@@ -55,6 +55,8 @@ class WorkflowStatus(StrEnum):
     INTERCEPT_SUCCESS = "INTERCEPT_SUCCESS"
     INTERCEPT_FAILED = "INTERCEPT_FAILED"
     RETURN_WAITING_SCAN = "RETURN_WAITING_SCAN"
+    RETURN_RECEIVED_STAGED = "RETURN_RECEIVED_STAGED"
+    RETURN_RECEIVED_ASSIGNED = "RETURN_RECEIVED_ASSIGNED"
     RETURN_INSPECTED_PASS = "RETURN_INSPECTED_PASS"
     RETURN_INSPECTED_FAIL = "RETURN_INSPECTED_FAIL"
     SCRAPPED_REFUNDED = "SCRAPPED_REFUNDED"
@@ -87,6 +89,11 @@ class AutomationTaskStatus(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+
+
+class WarehouseReturnDestination(StrEnum):
+    STAGING = "STAGING"
+    CUSTOMER_PROFILE = "CUSTOMER_PROFILE"
 
 
 class Shop(Base):
@@ -277,6 +284,73 @@ class AftersalesActionTask(Base):
         DateTime,
         server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
     )
+
+
+class WarehouseReturnRecord(Base):
+    __tablename__ = "warehouse_return_records"
+    __table_args__ = (
+        UniqueConstraint("receipt_sn", name="uk_warehouse_return_receipt_sn"),
+        UniqueConstraint(
+            "return_tracking_number", name="uk_warehouse_return_tracking_number"
+        ),
+        Index("idx_warehouse_return_after_sales", "after_sales_sn"),
+        Index("idx_warehouse_return_destination", "destination"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    receipt_sn: Mapped[str] = mapped_column(String(64), nullable=False)
+    return_tracking_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    after_sales_sn: Mapped[str | None] = mapped_column(
+        ForeignKey("aftersales_orders.after_sales_sn", ondelete="SET NULL")
+    )
+    destination: Mapped[WarehouseReturnDestination] = mapped_column(
+        ENUM(*[item.value for item in WarehouseReturnDestination]), nullable=False
+    )
+    customer_reference: Mapped[str | None] = mapped_column(String(100))
+    customer_name: Mapped[str | None] = mapped_column(String(100))
+    operator: Mapped[str] = mapped_column(String(50), nullable=False)
+    assigned_by: Mapped[str | None] = mapped_column(String(50))
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime)
+    carrier_code: Mapped[str | None] = mapped_column(String(50))
+    sender_name: Mapped[str | None] = mapped_column(String(100))
+    sender_phone: Mapped[str | None] = mapped_column(String(50))
+    note: Mapped[str | None] = mapped_column(Text)
+    evidence_urls: Mapped[list[str] | None] = mapped_column(JSON)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
+    items: Mapped[list[WarehouseReturnItem]] = relationship(
+        back_populates="return_record",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class WarehouseReturnItem(Base):
+    __tablename__ = "warehouse_return_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "return_record_id",
+            "product_code",
+            "color",
+            name="uk_warehouse_return_item_product_color",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    return_record_id: Mapped[int] = mapped_column(
+        ForeignKey("warehouse_return_records.id", ondelete="CASCADE"), nullable=False
+    )
+    product_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    color: Mapped[str] = mapped_column(String(50), nullable=False)
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    remark: Mapped[str | None] = mapped_column(String(255))
+    return_record: Mapped[WarehouseReturnRecord] = relationship(back_populates="items")
 
 
 JsonObject = dict[str, Any]

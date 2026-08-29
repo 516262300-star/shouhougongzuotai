@@ -1,12 +1,13 @@
 # 利德仕电商自动化售后工作台
 
-面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店只读同步，以及模块 3 的安全决策队列。
+面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店只读同步、模块 2 仓库人工退货建单，以及模块 3 的安全决策队列。
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 3 未发货/已出包判定队列。
-- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
-- 未实现：拼多多写操作、企微 Webhook、真实 ERP API 适配器、仓库 PDA 业务接口；外部写能力保持关闭。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、仓库人工退货扫码/暂存/客户认领接口、模块 3 未发货/已出包判定队列。
+- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`、`warehouse_return_records`、`warehouse_return_items`。
+- 未实现：拼多多写操作、企微 Webhook、真实 ERP API 适配器、客户主档同步、仓库验货后的合格/异常判定及自动退款；外部写能力保持关闭。
+- `D:\desktop\codex\daima` 中的自研管理系统源码只作为业务规则参考，售后工作台不会修改、调用或直接写入该系统。
 
 ## 本地启动
 
@@ -122,6 +123,65 @@ alembic upgrade head
 可用 `--statuses 2 3`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。
 
 同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
+
+## 模块 2：仓库人工退货收货
+
+当前实现遵循仓库实际操作，不在扫描快递单号时自动判断合格或异常：
+
+1. 仓库人员扫描买家退货运单号，工作台反查已同步的售后单和平台申请 SKU；
+2. 人工拆包并录入实际收到的型号、颜色和数量；
+3. 无法确定客户时保存到工作台自己的退货暂存列表；
+4. 已确定客户时直接填写本地 `customer_reference`，或将暂存单后续认领到该客户；
+5. 当前步骤不会调用拼多多同意退款，不会写 ERP，也不会生成财务退款流水。
+
+先执行数据库升级：
+
+```powershell
+alembic upgrade head
+```
+
+扫描运单号只读反查：
+
+```powershell
+$scanBody = @{ return_tracking_number = "买家退货运单号" } | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/warehouse/scan" `
+  -ContentType "application/json" -Body $scanBody
+```
+
+拆包清点后保存到退货暂存：
+
+```powershell
+$returnBody = @{
+  receipt_sn = "WR-20260829-0001"
+  return_tracking_number = "买家退货运单号"
+  destination = "STAGING"
+  operator = "仓库操作员"
+  items = @(
+    @{ product_code = "6805-96"; color = "黑"; quantity = 2 }
+  )
+} | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/warehouse/returns" `
+  -ContentType "application/json" -Body $returnBody
+```
+
+直接归到客户档案时将 `destination` 改为 `CUSTOMER_PROFILE`，并填写 `customer_reference`；当前字段是售后工作台内部保存的客户引用，不会写入现有管理系统。暂存后认领客户：
+
+```powershell
+$assignBody = @{
+  customer_reference = "客户唯一引用"
+  customer_name = "客户显示名称"
+  assigned_by = "认领人"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:8000/api/v1/warehouse/returns/WR-20260829-0001/assign-customer" `
+  -ContentType "application/json" -Body $assignBody
+```
+
+`receipt_sn` 是 PDA 每次收货提交生成的幂等单号；同一单号和相同内容重复提交会返回原结果，不会重复建单。同一个退货运单号只能登记一次。运单号匹配到多个售后单时，直接归档客户必须明确传入 `after_sales_sn`；未识别或暂时无法确认的包裹仍可进入暂存。
+
+退货暂存列表使用 `GET /api/v1/warehouse/returns?destination=STAGING` 查询；客户档案需要展示其退货单时，使用 `GET /api/v1/warehouse/returns?destination=CUSTOMER_PROFILE&customer_reference=客户唯一引用` 查询。默认返回最近 100 单，`limit` 可设置为 1–500。
 
 ## 模块 3：未发货退款判定队列
 
