@@ -4,9 +4,9 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 全量建表迁移、存活/就绪健康检查、Docker Compose 本地编排。
+- 已实现：配置加载、MySQL 连接池、Alembic 全量建表迁移、存活/就绪健康检查、Docker Compose 本地编排、拼多多单店只读联调。
 - 已建立全局表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`。
-- 未实现：拼多多 API 适配器、企微 Webhook、ERP 适配器、仓库 PDA 业务接口；它们属于后续 Step 2–5。
+- 未实现：拼多多写操作、企微 Webhook、ERP 适配器、仓库 PDA 业务接口；它们属于后续 Step 2–5。
 
 ## 本地启动
 
@@ -54,8 +54,34 @@ alembic downgrade -1
 | `DB_POOL_RECYCLE_SECONDS` | 连接回收秒数 | `1800` |
 | `APP_ENV` | 运行环境标识 | `development` |
 | `LOG_LEVEL` | 日志级别 | `INFO` |
+| `PDD_SHOP_CODE` | 本地店铺标识，不是密钥 | `pdd-test-shop` |
+| `PDD_CLIENT_ID` | 拼多多开放平台应用 ClientId | 无 |
+| `PDD_CLIENT_SECRET` | 拼多多应用 Secret | 无 |
+| `PDD_ACCESS_TOKEN` | 单店铺授权 Token | 无 |
+| `PDD_API_URL` | 拼多多官方网关 | `https://gw-api.pinduoduo.com/api/router` |
+| `PDD_TIMEOUT_SECONDS` | 单次请求超时秒数 | `10` |
+| `PDD_READ_MAX_ATTEMPTS` | 只读请求最大尝试次数 | `3` |
+| `PDD_WRITE_ENABLED` | 拼多多写操作开关，当前未开放 | `false` |
 
 生产环境不得使用示例密码，也不得将 `.env`、店铺 Secret 或 Token 提交到 Git。
+
+## 拼多多单店只读联调
+
+1. 在拼多多开放平台确认应用已获得 `pdd.refund.list.increment.get` 和 `pdd.refund.information.get` 权限。`pdd.mall.info.get` 仅在使用 `--with-mall-info` 时需要。
+2. 复制 `.env.example` 为 `.env`，填入一个店铺的 `PDD_CLIENT_ID`、`PDD_CLIENT_SECRET`、`PDD_ACCESS_TOKEN`。
+3. 执行只读测试：
+
+```powershell
+.\.venv\Scripts\pdd-check-shop.exe --minutes 30 --status 2 --page-size 20
+```
+
+命令校验店铺授权和近 30 分钟售后增量列表，只输出店铺标识和记录数。如需同时读取店铺名称，增加 `--with-mall-info`。如需测试某一售后详情：
+
+```powershell
+.\.venv\Scripts\pdd-check-shop.exe --order-sn "平台订单号" --after-sales-id 123456
+```
+
+只读请求在网关 HTTP 429/5xx 或网络异常时指数退避重试；返回平台业务错误时不重试，保留 `error_code` 和 `request_id` 供排查。当前命令不会调用 `pdd.refund.agree` 或任何写接口。
 
 ## 健康检查
 

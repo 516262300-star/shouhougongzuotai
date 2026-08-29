@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,6 +25,15 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=20, ge=0)
     db_pool_recycle_seconds: int = Field(default=1800, ge=60)
     log_level: str = "INFO"
+
+    pdd_shop_code: str = "pdd-test-shop"
+    pdd_client_id: SecretStr | None = None
+    pdd_client_secret: SecretStr | None = None
+    pdd_access_token: SecretStr | None = None
+    pdd_api_url: str = "https://gw-api.pinduoduo.com/api/router"
+    pdd_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
+    pdd_write_enabled: bool = False
 
 
 @lru_cache
