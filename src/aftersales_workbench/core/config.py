@@ -31,10 +31,24 @@ class Settings(BaseSettings):
     pdd_client_secret: SecretStr | None = None
     pdd_access_token: SecretStr | None = None
     pdd_api_url: str = "https://gw-api.pinduoduo.com/api/router"
-    pdd_auth_code: SecretStr | None = None
     pdd_timeout_seconds: float = Field(default=10, gt=0, le=60)
     pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
     pdd_write_enabled: bool = False
+
+    pdd_shop_1_code: str = "pdd-shop-01"
+    pdd_shop_1_access_token: SecretStr | None = None
+    pdd_shop_2_code: str = "pdd-shop-02"
+    pdd_shop_2_access_token: SecretStr | None = None
+    pdd_shop_3_code: str = "pdd-shop-03"
+    pdd_shop_3_access_token: SecretStr | None = None
+    pdd_shop_4_code: str = "pdd-shop-04"
+    pdd_shop_4_access_token: SecretStr | None = None
+    pdd_shop_5_code: str = "pdd-shop-05"
+    pdd_shop_5_access_token: SecretStr | None = None
+    pdd_shop_6_code: str = "pdd-shop-06"
+    pdd_shop_6_access_token: SecretStr | None = None
+    pdd_shop_7_code: str = "pdd-shop-07"
+    pdd_shop_7_access_token: SecretStr | None = None
 
 
 @lru_cache
