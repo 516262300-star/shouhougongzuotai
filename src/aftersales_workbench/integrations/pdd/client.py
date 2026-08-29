@@ -20,6 +20,7 @@ PDD_ORDER_INFORMATION_GET = "pdd.order.information.get"
 
 _RESERVED_PARAMETERS = {"access_token", "client_id", "data_type", "sign", "timestamp", "type"}
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+_RETRYABLE_API_ERROR_CODES = {"70031"}
 
 
 class PddError(RuntimeError):
@@ -168,10 +169,10 @@ class PddClient:
         return payload
 
     def execute_read(self, api_type: str, **parameters: Any) -> dict[str, Any]:
-        payload = self.build_signed_payload(api_type, parameters)
         last_error: Exception | None = None
 
         for attempt in range(1, self.read_max_attempts + 1):
+            payload = self.build_signed_payload(api_type, parameters)
             try:
                 response = self._http_client.post(self.api_url, data=payload)
                 if response.status_code in _RETRYABLE_STATUS_CODES:
@@ -182,6 +183,13 @@ class PddClient:
                     raise PddTransportError("拼多多网关返回了非 JSON 对象")
                 self._raise_for_api_error(body)
                 return body
+            except PddApiError as exc:
+                if str(exc.error_code) not in _RETRYABLE_API_ERROR_CODES:
+                    raise
+                last_error = exc
+                if attempt == self.read_max_attempts:
+                    raise
+                self._sleep(min(5.0 * (2 ** (attempt - 1)), 30.0))
             except httpx.HTTPStatusError as exc:
                 raise PddTransportError(f"网关拒绝请求: HTTP {exc.response.status_code}") from exc
             except (httpx.TransportError, json.JSONDecodeError, PddTransportError) as exc:

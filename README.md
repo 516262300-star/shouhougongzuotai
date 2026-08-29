@@ -60,7 +60,7 @@ alembic downgrade -1
 | `PDD_ACCESS_TOKEN` | 单店铺授权 Token | 无 |
 | `PDD_API_URL` | 拼多多官方网关 | `https://gw-api.pinduoduo.com/api/router` |
 | `PDD_TIMEOUT_SECONDS` | 单次请求超时秒数 | `10` |
-| `PDD_READ_MAX_ATTEMPTS` | 只读请求最大尝试次数 | `3` |
+| `PDD_READ_MAX_ATTEMPTS` | 只读请求最大尝试次数（含平台频率限制重试） | `5` |
 | `PDD_WRITE_ENABLED` | 拼多多写操作开关，当前未开放 | `false` |
 | `PDD_SYNC_INITIAL_LOOKBACK_HOURS` | 新店铺无游标时的首次回溯小时数 | `72` |
 | `PDD_SYNC_OVERLAP_SECONDS` | 续传时向前重叠秒数，用于防止边界漏单 | `300` |
@@ -91,7 +91,7 @@ alembic downgrade -1
 .\.venv\Scripts\pdd-check-shop.exe --order-sn "平台订单号" --after-sales-id 123456
 ```
 
-只读请求在网关 HTTP 429/5xx 或网络异常时指数退避重试；返回平台业务错误时不重试，保留 `error_code` 和 `request_id` 供排查。当前命令不会调用 `pdd.refund.agree` 或任何写接口。
+只读请求在网关 HTTP 429/5xx、网络异常或平台频率限制码 `70031` 时指数退避重试；其他平台业务错误不重试，并保留 `error_code` 和 `request_id` 供排查。当前命令不会调用 `pdd.refund.agree` 或任何写接口。
 
 ## 七店售后增量同步
 

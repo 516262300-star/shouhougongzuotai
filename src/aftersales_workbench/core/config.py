@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     pdd_access_token: SecretStr | None = None
     pdd_api_url: str = "https://gw-api.pinduoduo.com/api/router"
     pdd_timeout_seconds: float = Field(default=10, gt=0, le=60)
-    pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
+    pdd_read_max_attempts: int = Field(default=5, ge=1, le=5)
     pdd_write_enabled: bool = False
     pdd_sync_initial_lookback_hours: int = Field(default=72, ge=1, le=720)
     pdd_sync_overlap_seconds: int = Field(default=300, ge=0, le=1800)

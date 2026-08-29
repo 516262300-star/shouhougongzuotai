@@ -114,6 +114,47 @@ def test_api_error_keeps_error_code_and_request_id(credentials: PddCredentials) 
     http_client.close()
 
 
+def test_read_request_retries_pdd_frequency_limit(credentials: PddCredentials) -> None:
+    attempts = 0
+    sleeps: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(
+                200,
+                json={
+                    "error_response": {
+                        "error_code": 70031,
+                        "error_msg": "too frequent",
+                        "request_id": f"request-{attempts}",
+                    }
+                },
+                request=request,
+            )
+        return httpx.Response(
+            200,
+            json={"mall_info_get_response": {"mall_id": 1}},
+            request=request,
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = PddClient(
+        credentials,
+        http_client=http_client,
+        read_max_attempts=5,
+        sleep=sleeps.append,
+    )
+
+    response = client.get_mall_info()
+
+    assert attempts == 3
+    assert sleeps == [5.0, 10.0]
+    assert response["mall_info_get_response"]["mall_id"] == 1
+    http_client.close()
+
+
 def test_refund_query_rejects_a_window_longer_than_30_minutes(
     credentials: PddCredentials,
 ) -> None:
