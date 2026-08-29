@@ -1,12 +1,12 @@
 # 利德仕电商自动化售后工作台
 
-面向利德仕多平台、多店铺的售后中台。当前仓库完成 **Phase 1 / Step 1**：FastAPI 工程骨架和全量数据库初始化。
+面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店只读同步，以及模块 3 的安全决策队列。
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 全量建表迁移、存活/就绪健康检查、Docker Compose 本地编排、拼多多单店只读联调、七店售后增量同步。
-- 已建立全局表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`。
-- 未实现：拼多多写操作、企微 Webhook、ERP 适配器、仓库 PDA 业务接口；它们属于后续 Step 2–5。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 3 未发货/已出包判定队列。
+- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
+- 未实现：拼多多写操作、企微 Webhook、真实 ERP API 适配器、仓库 PDA 业务接口；外部写能力保持关闭。
 
 ## 本地启动
 
@@ -65,6 +65,7 @@ alembic downgrade -1
 | `PDD_SYNC_INITIAL_LOOKBACK_HOURS` | 新店铺无游标时的首次回溯小时数 | `72` |
 | `PDD_SYNC_OVERLAP_SECONDS` | 续传时向前重叠秒数，用于防止边界漏单 | `300` |
 | `PDD_SYNC_PAGE_SIZE` | 售后增量单页数量 | `100` |
+| `ERP_WRITE_ENABLED` | ERP 外部写操作总开关，当前未开放 | `false` |
 | `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET` | 1–4 店共用的开放平台应用凭据 | 无 |
 | `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET` | 5–7 店共用的另一组应用凭据 | 无 |
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
@@ -121,6 +122,31 @@ alembic upgrade head
 可用 `--statuses 2 3`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。
 
 同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
+
+## 模块 3：未发货退款判定队列
+
+模块 3 只扫描 `PENDING_CHECK` 且平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED` 的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此系统不会直接退款：
+
+- `UNSHIPPED`：生成唯一的 `ERP_CHECK_FULFILLMENT` 待办，等待 ERP 返回未打包或已出包；
+- `PACKED_NOT_SHIPPED`：生成唯一的 `ERP_LOCK_PACKING` 待办；
+- 在途和已签收订单不属于模块 3，本命令不会处理；
+- `PDD_WRITE_ENABLED=false`、`ERP_WRITE_ENABLED=false` 时不会调用任何外部写接口。
+
+先执行迁移并进行只读预览：
+
+```powershell
+alembic upgrade head
+.\.venv\Scripts\aftersales-process-module3.exe
+```
+
+预览结果确认后，写入本地动作队列：
+
+```powershell
+.\.venv\Scripts\aftersales-process-module3.exe --apply
+.\.venv\Scripts\aftersales-process-module3.exe --shops pdd-shop-01 pdd-shop-02 --limit 500 --apply
+```
+
+命令输入来自 `aftersales_orders`，输出为不含订单号的汇总 JSON。动作使用“模块 + 售后单号 + 动作类型”作为幂等键，已有动作的订单不会继续占用扫描额度；并发碰撞会计入 `tasks_existing`，不会重复创建。数据库异常时本批次回滚；修复后可直接重跑。目前只生成本地 ERP 待办，尚不执行取消排单、锁包、平台退款或 ERP 财务退款单。
 
 ## 健康检查
 

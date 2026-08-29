@@ -73,6 +73,22 @@ class ReviewProcessStatus(StrEnum):
     RESOLVED = "RESOLVED"
 
 
+class AutomationActionType(StrEnum):
+    ERP_CHECK_FULFILLMENT = "ERP_CHECK_FULFILLMENT"
+    ERP_CANCEL_UNSHIPPED_ORDER = "ERP_CANCEL_UNSHIPPED_ORDER"
+    ERP_LOCK_PACKING = "ERP_LOCK_PACKING"
+    ERP_CREATE_REFUND_RECORD = "ERP_CREATE_REFUND_RECORD"
+    PDD_AGREE_REFUND = "PDD_AGREE_REFUND"
+
+
+class AutomationTaskStatus(StrEnum):
+    PENDING = "PENDING"
+    RUNNING = "RUNNING"
+    SUCCEEDED = "SUCCEEDED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
 class Shop(Base):
     __tablename__ = "shops"
     __table_args__ = (
@@ -220,6 +236,39 @@ class PddSyncCursor(Base):
     sync_scope: Mapped[str] = mapped_column(String(100), nullable=False)
     cursor_end_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
     last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
+
+
+class AftersalesActionTask(Base):
+    __tablename__ = "aftersales_action_tasks"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uk_action_task_idempotency"),
+        Index("idx_action_task_queue", "action_status", "action_type"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    after_sales_sn: Mapped[str] = mapped_column(
+        ForeignKey("aftersales_orders.after_sales_sn", ondelete="CASCADE"), nullable=False
+    )
+    action_type: Mapped[AutomationActionType] = mapped_column(
+        ENUM(*[item.value for item in AutomationActionType]), nullable=False
+    )
+    action_status: Mapped[AutomationTaskStatus] = mapped_column(
+        ENUM(*[item.value for item in AutomationTaskStatus]),
+        nullable=False,
+        default=AutomationTaskStatus.PENDING,
+        server_default=AutomationTaskStatus.PENDING.value,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(191), nullable=False)
+    payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime, server_default=text("CURRENT_TIMESTAMP")

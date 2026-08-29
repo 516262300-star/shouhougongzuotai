@@ -1,5 +1,6 @@
 from aftersales_workbench.db.base import Base
 from aftersales_workbench.db.models import (
+    AftersalesActionTask,
     AfterSalesItem,
     AfterSalesOrder,
     NegativeReview,
@@ -17,6 +18,7 @@ def test_global_schema_contains_all_master_tables() -> None:
         ReturnScrapRecord.__tablename__,
         NegativeReview.__tablename__,
         PddSyncCursor.__tablename__,
+        AftersalesActionTask.__tablename__,
     }
 
     assert expected == set(Base.metadata.tables)
