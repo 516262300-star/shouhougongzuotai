@@ -6,6 +6,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from aftersales_workbench.core.config import Settings
 from aftersales_workbench.integrations.pdd.client import (
     PDD_REFUND_LIST_INCREMENT_GET,
     PddApiError,
@@ -24,6 +25,20 @@ def credentials() -> PddCredentials:
         client_secret=SecretStr("testSecret"),
         access_token=SecretStr("access-token"),
     )
+
+
+def test_seven_shop_defaults_use_two_application_groups() -> None:
+    settings = Settings(_env_file=None)
+
+    assert [
+        settings.pdd_shop_1_app,
+        settings.pdd_shop_2_app,
+        settings.pdd_shop_3_app,
+        settings.pdd_shop_4_app,
+        settings.pdd_shop_5_app,
+        settings.pdd_shop_6_app,
+        settings.pdd_shop_7_app,
+    ] == [1, 1, 1, 1, 2, 2, 2]
 
 
 def test_generate_sign_sorts_parameters_and_returns_uppercase_md5() -> None:

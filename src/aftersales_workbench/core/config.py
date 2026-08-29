@@ -35,19 +35,31 @@ class Settings(BaseSettings):
     pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
     pdd_write_enabled: bool = False
 
+    pdd_app_1_client_id: SecretStr | None = None
+    pdd_app_1_client_secret: SecretStr | None = None
+    pdd_app_2_client_id: SecretStr | None = None
+    pdd_app_2_client_secret: SecretStr | None = None
+
     pdd_shop_1_code: str = "pdd-shop-01"
+    pdd_shop_1_app: int = Field(default=1, ge=1, le=2)
     pdd_shop_1_access_token: SecretStr | None = None
     pdd_shop_2_code: str = "pdd-shop-02"
+    pdd_shop_2_app: int = Field(default=1, ge=1, le=2)
     pdd_shop_2_access_token: SecretStr | None = None
     pdd_shop_3_code: str = "pdd-shop-03"
+    pdd_shop_3_app: int = Field(default=1, ge=1, le=2)
     pdd_shop_3_access_token: SecretStr | None = None
     pdd_shop_4_code: str = "pdd-shop-04"
+    pdd_shop_4_app: int = Field(default=1, ge=1, le=2)
     pdd_shop_4_access_token: SecretStr | None = None
     pdd_shop_5_code: str = "pdd-shop-05"
+    pdd_shop_5_app: int = Field(default=2, ge=1, le=2)
     pdd_shop_5_access_token: SecretStr | None = None
     pdd_shop_6_code: str = "pdd-shop-06"
+    pdd_shop_6_app: int = Field(default=2, ge=1, le=2)
     pdd_shop_6_access_token: SecretStr | None = None
     pdd_shop_7_code: str = "pdd-shop-07"
+    pdd_shop_7_app: int = Field(default=2, ge=1, le=2)
     pdd_shop_7_access_token: SecretStr | None = None
 
 
