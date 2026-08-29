@@ -1,0 +1,452 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from enum import StrEnum
+from typing import Any
+
+from sqlalchemy import select, update
+from sqlalchemy.orm import Session
+
+from aftersales_workbench.core.config import Settings
+from aftersales_workbench.db.models import (
+    AftersalesActionTask,
+    AfterSalesOrder,
+    AutomationActionType,
+    AutomationTaskStatus,
+    ShippingStatus,
+    Shop,
+    WorkflowStatus,
+)
+from aftersales_workbench.integrations.pdd.client import PddClient, PddConfigurationError
+from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
+from aftersales_workbench.integrations.qywx.client import InterceptNotice, QywxWebhookClient
+
+
+class WorkflowTransitionError(ValueError):
+    """动作状态或回填结果不允许当前转换。"""
+
+
+class ErpResultCode(StrEnum):
+    NOT_PACKED = "NOT_PACKED"
+    PACKED_NOT_SHIPPED = "PACKED_NOT_SHIPPED"
+    SHIPPED = "SHIPPED"
+    COMPLETED = "COMPLETED"
+
+
+class InterceptResult(StrEnum):
+    RETURNED = "RETURNED"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalTaskSnapshot:
+    id: int
+    after_sales_sn: str
+    action_type: AutomationActionType
+    payload: dict[str, Any]
+    platform_order_sn: str
+    shop_code: str
+
+
+@dataclass(slots=True)
+class ExternalActionRunResult:
+    dry_run: bool
+    scanned: int = 0
+    qywx_notices: int = 0
+    pdd_refunds: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+
+    def safe_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+class ActionCoordinator:
+    _ERP_ACTIONS = {
+        AutomationActionType.ERP_CHECK_FULFILLMENT,
+        AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER,
+        AutomationActionType.ERP_LOCK_PACKING,
+        AutomationActionType.ERP_CREATE_REFUND_RECORD,
+    }
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def confirm_erp_action(
+        self,
+        *,
+        task_id: int,
+        success: bool,
+        result_code: ErpResultCode | None = None,
+        reference_sn: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        try:
+            task = self._get_task(task_id)
+            action_type = AutomationActionType(task.action_type)
+            if action_type not in self._ERP_ACTIONS:
+                raise WorkflowTransitionError("该任务不是 ERP 动作")
+            self._require_pending(task)
+            if not success:
+                task.action_status = AutomationTaskStatus.FAILED
+                task.last_error = (message or "ERP 回填失败")[:2000]
+                task.attempts = (task.attempts or 0) + 1
+                self.session.commit()
+                return
+
+            order = self._get_order(task.after_sales_sn)
+            task.action_status = AutomationTaskStatus.SUCCEEDED
+            task.last_error = None
+            task.attempts = (task.attempts or 0) + 1
+            task.payload = {
+                **(task.payload or {}),
+                "result_code": result_code.value if result_code else None,
+                "reference_sn": reference_sn,
+            }
+
+            if action_type is AutomationActionType.ERP_CHECK_FULFILLMENT:
+                if result_code is ErpResultCode.NOT_PACKED:
+                    self._enqueue(
+                        task.after_sales_sn,
+                        AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER,
+                        {"origin": "module3"},
+                    )
+                elif result_code is ErpResultCode.PACKED_NOT_SHIPPED:
+                    order.order_shipping_status = ShippingStatus.PACKED_NOT_SHIPPED
+                    self._enqueue(
+                        task.after_sales_sn,
+                        AutomationActionType.ERP_LOCK_PACKING,
+                        {"origin": "module3"},
+                    )
+                elif result_code is ErpResultCode.SHIPPED:
+                    order.order_shipping_status = ShippingStatus.IN_TRANSIT
+                else:
+                    raise WorkflowTransitionError(
+                        "ERP_CHECK_FULFILLMENT 必须回填 NOT_PACKED、"
+                        "PACKED_NOT_SHIPPED 或 SHIPPED"
+                    )
+            elif action_type is AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER:
+                self._require_completed(result_code)
+                self._enqueue(
+                    task.after_sales_sn,
+                    AutomationActionType.PDD_AGREE_REFUND,
+                    {"origin": "module3"},
+                )
+            elif action_type is AutomationActionType.ERP_LOCK_PACKING:
+                self._require_completed(result_code)
+                order.workflow_status = WorkflowStatus.PACKING_LOCKED
+            elif action_type is AutomationActionType.ERP_CREATE_REFUND_RECORD:
+                self._require_completed(result_code)
+                origin = str((task.payload or {}).get("origin") or "")
+                if origin == "module3":
+                    order.workflow_status = WorkflowStatus.UNSHIPPED_AUTO_REFUNDED
+                elif origin == "module1":
+                    order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+                else:
+                    raise WorkflowTransitionError("退款流水任务缺少有效 origin")
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def confirm_intercept_result(
+        self,
+        *,
+        after_sales_sn: str,
+        result: InterceptResult,
+        note: str | None = None,
+    ) -> bool:
+        try:
+            order = self._get_order(after_sales_sn)
+            current = WorkflowStatus(order.workflow_status)
+            if result is InterceptResult.RETURNED and current is WorkflowStatus.INTERCEPT_SUCCESS:
+                return False
+            if result is InterceptResult.FAILED and current is WorkflowStatus.INTERCEPT_FAILED:
+                return False
+            if current is not WorkflowStatus.INTERCEPT_PUSHED:
+                raise WorkflowTransitionError("只有已推送拦截的订单才能回填拦截结果")
+            if result is InterceptResult.FAILED:
+                order.workflow_status = WorkflowStatus.INTERCEPT_FAILED
+                order.exception_type = (note or "快递拦截失败")[:50]
+                self.session.commit()
+                return True
+            order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+            created = self._enqueue(
+                after_sales_sn,
+                AutomationActionType.PDD_AGREE_REFUND,
+                {"origin": "module1", "intercept_note": note},
+            )
+            self.session.commit()
+            return created
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def record_external_success(self, task_id: int) -> None:
+        try:
+            task = self._get_task(task_id)
+            if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.RUNNING:
+                raise WorkflowTransitionError("只有 RUNNING 外部动作才能确认成功")
+            action_type = AutomationActionType(task.action_type)
+            order = self._get_order(task.after_sales_sn)
+            task.action_status = AutomationTaskStatus.SUCCEEDED
+            task.last_error = None
+            if action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
+                order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+            elif action_type is AutomationActionType.PDD_AGREE_REFUND:
+                origin = str((task.payload or {}).get("origin") or "")
+                if origin not in {"module1", "module3"}:
+                    raise WorkflowTransitionError("平台退款动作缺少有效 origin")
+                self._enqueue(
+                    task.after_sales_sn,
+                    AutomationActionType.ERP_CREATE_REFUND_RECORD,
+                    {"origin": origin},
+                )
+            else:
+                raise WorkflowTransitionError("该任务不是可执行的外部动作")
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
+
+    def record_external_failure(self, task_id: int, error: str) -> None:
+        self.session.rollback()
+        task = self._get_task(task_id)
+        if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.RUNNING:
+            raise WorkflowTransitionError("只有 RUNNING 外部动作才能确认失败")
+        task.action_status = AutomationTaskStatus.FAILED
+        task.last_error = error[:2000]
+        self.session.commit()
+
+    def _get_task(self, task_id: int) -> AftersalesActionTask:
+        task = self.session.get(AftersalesActionTask, task_id)
+        if task is None:
+            raise WorkflowTransitionError(f"动作任务不存在: {task_id}")
+        return task
+
+    def _get_order(self, after_sales_sn: str) -> AfterSalesOrder:
+        order = self.session.execute(
+            select(AfterSalesOrder).where(
+                AfterSalesOrder.after_sales_sn == after_sales_sn
+            )
+        ).scalar_one_or_none()
+        if order is None:
+            raise WorkflowTransitionError("关联售后单不存在")
+        return order
+
+    @staticmethod
+    def _require_pending(task: AftersalesActionTask) -> None:
+        if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
+            raise WorkflowTransitionError("只有 PENDING 动作才能回填")
+
+    @staticmethod
+    def _require_completed(result_code: ErpResultCode | None) -> None:
+        if result_code is not ErpResultCode.COMPLETED:
+            raise WorkflowTransitionError("该 ERP 动作成功时必须回填 COMPLETED")
+
+    def _enqueue(
+        self,
+        after_sales_sn: str,
+        action_type: AutomationActionType,
+        payload: dict[str, Any],
+    ) -> bool:
+        existing = self.session.execute(
+            select(AftersalesActionTask.id).where(
+                AftersalesActionTask.after_sales_sn == after_sales_sn,
+                AftersalesActionTask.action_type == action_type,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return False
+        self.session.add(
+            AftersalesActionTask(
+                after_sales_sn=after_sales_sn,
+                action_type=action_type,
+                action_status=AutomationTaskStatus.PENDING,
+                idempotency_key=f"workflow:{after_sales_sn}:{action_type.value}",
+                payload=payload,
+                attempts=0,
+            )
+        )
+        return True
+
+
+class ExternalActionExecutor:
+    _EXTERNAL_TYPES = (
+        AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+        AutomationActionType.PDD_AGREE_REFUND,
+    )
+
+    def __init__(self, session: Session, settings: Settings) -> None:
+        self.session = session
+        self.settings = settings
+
+    def run(
+        self,
+        *,
+        action_types: tuple[AutomationActionType, ...] | None = None,
+        limit: int = 50,
+        dry_run: bool = True,
+    ) -> ExternalActionRunResult:
+        if limit < 1 or limit > 500:
+            raise ValueError("limit 必须在 1–500 之间")
+        selected = action_types or self._EXTERNAL_TYPES
+        invalid = set(selected).difference(self._EXTERNAL_TYPES)
+        if invalid:
+            raise ValueError("只允许执行企微通知和拼多多退款动作")
+        tasks = self._list_pending(selected, limit)
+        result = ExternalActionRunResult(dry_run=dry_run, scanned=len(tasks))
+        result.qywx_notices = sum(
+            task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY for task in tasks
+        )
+        result.pdd_refunds = sum(
+            task.action_type is AutomationActionType.PDD_AGREE_REFUND for task in tasks
+        )
+        if dry_run:
+            return result
+        present_types = tuple({task.action_type for task in tasks})
+        self._validate_write_gates(present_types)
+
+        configured_shops = {}
+        if AutomationActionType.PDD_AGREE_REFUND in present_types:
+            configured_shops = {
+                shop.shop_code: shop
+                for shop in load_configured_pdd_shops(self.settings, require_all=False)
+            }
+        qywx_client = QywxWebhookClient(
+            self.settings.qywx_intercept_webhook_url,
+            write_enabled=self.settings.qywx_write_enabled,
+            timeout_seconds=self.settings.qywx_timeout_seconds,
+        )
+        pdd_clients: dict[str, PddClient] = {}
+        try:
+            for task in tasks:
+                if not self._claim(task.id):
+                    result.skipped += 1
+                    continue
+                try:
+                    if task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
+                        self._send_qywx(qywx_client, task)
+                    else:
+                        shop = configured_shops.get(task.shop_code)
+                        if shop is None:
+                            raise PddConfigurationError(
+                                f"店铺 {task.shop_code} 没有可用的拼多多凭据"
+                            )
+                        client = pdd_clients.get(task.shop_code)
+                        if client is None:
+                            client = PddClient(
+                                shop.credentials(),
+                                api_url=self.settings.pdd_api_url,
+                                timeout_seconds=self.settings.pdd_timeout_seconds,
+                                read_max_attempts=self.settings.pdd_read_max_attempts,
+                                write_enabled=self.settings.pdd_write_enabled,
+                            )
+                            pdd_clients[task.shop_code] = client
+                        self._agree_pdd(client, task)
+                    ActionCoordinator(self.session).record_external_success(task.id)
+                    result.succeeded += 1
+                except Exception as exc:
+                    ActionCoordinator(self.session).record_external_failure(task.id, str(exc))
+                    result.failed += 1
+            return result
+        finally:
+            qywx_client.close()
+            for client in pdd_clients.values():
+                client.close()
+
+    def _list_pending(
+        self,
+        action_types: tuple[AutomationActionType, ...],
+        limit: int,
+    ) -> list[ExternalTaskSnapshot]:
+        statement = (
+            select(
+                AftersalesActionTask.id,
+                AftersalesActionTask.after_sales_sn,
+                AftersalesActionTask.action_type,
+                AftersalesActionTask.payload,
+                AfterSalesOrder.platform_order_sn,
+                Shop.shop_code,
+            )
+            .join(
+                AfterSalesOrder,
+                AfterSalesOrder.after_sales_sn == AftersalesActionTask.after_sales_sn,
+            )
+            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .where(
+                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                AftersalesActionTask.action_type.in_(action_types),
+            )
+            .order_by(AftersalesActionTask.id)
+            .limit(limit)
+        )
+        return [
+            ExternalTaskSnapshot(
+                id=row.id,
+                after_sales_sn=row.after_sales_sn,
+                action_type=AutomationActionType(row.action_type),
+                payload=row.payload or {},
+                platform_order_sn=row.platform_order_sn,
+                shop_code=row.shop_code,
+            )
+            for row in self.session.execute(statement).all()
+        ]
+
+    def _claim(self, task_id: int) -> bool:
+        result = self.session.execute(
+            update(AftersalesActionTask)
+            .where(
+                AftersalesActionTask.id == task_id,
+                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+            )
+            .values(
+                action_status=AutomationTaskStatus.RUNNING,
+                attempts=AftersalesActionTask.attempts + 1,
+                last_error=None,
+            )
+        )
+        self.session.commit()
+        return result.rowcount == 1
+
+    def _validate_write_gates(
+        self, action_types: tuple[AutomationActionType, ...]
+    ) -> None:
+        if (
+            AutomationActionType.QYWX_INTERCEPT_NOTIFY in action_types
+            and not self.settings.qywx_write_enabled
+        ):
+            raise WorkflowTransitionError("QYWX_WRITE_ENABLED=false，不能发送拦截通知")
+        if (
+            AutomationActionType.PDD_AGREE_REFUND in action_types
+            and not self.settings.pdd_write_enabled
+        ):
+            raise WorkflowTransitionError("PDD_WRITE_ENABLED=false，不能执行平台退款")
+
+    @staticmethod
+    def _send_qywx(client: QywxWebhookClient, task: ExternalTaskSnapshot) -> None:
+        payload = task.payload
+        required = ("shop_name", "platform_order_sn", "tracking_number")
+        if any(not str(payload.get(key) or "").strip() for key in required):
+            raise WorkflowTransitionError("企微通知任务缺少店铺、订单号或运单号")
+        client.send_intercept_notice(
+            InterceptNotice(
+                shop_name=str(payload["shop_name"]),
+                platform_order_sn=str(payload["platform_order_sn"]),
+                after_sales_sn=task.after_sales_sn,
+                tracking_number=str(payload["tracking_number"]),
+                carrier_code=(
+                    str(payload["carrier_code"]) if payload.get("carrier_code") else None
+                ),
+            )
+        )
+
+    @staticmethod
+    def _agree_pdd(client: PddClient, task: ExternalTaskSnapshot) -> None:
+        if not task.after_sales_sn.isdigit():
+            raise WorkflowTransitionError("拼多多售后单号不是数字，已阻止退款")
+        client.agree_refund(
+            after_sales_id=int(task.after_sales_sn),
+            order_sn=task.platform_order_sn,
+        )

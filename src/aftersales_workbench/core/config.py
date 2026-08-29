@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     pdd_sync_page_size: int = Field(default=100, ge=1, le=100)
     erp_write_enabled: bool = False
 
+    qywx_intercept_webhook_url: SecretStr | None = None
+    qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    qywx_write_enabled: bool = False
+
     pdd_app_1_client_id: SecretStr | None = None
     pdd_app_1_client_secret: SecretStr | None = None
     pdd_app_2_client_id: SecretStr | None = None

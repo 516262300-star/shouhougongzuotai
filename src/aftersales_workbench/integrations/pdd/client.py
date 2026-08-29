@@ -17,6 +17,7 @@ PDD_REFUND_LIST_INCREMENT_GET = "pdd.refund.list.increment.get"
 PDD_REFUND_INFORMATION_GET = "pdd.refund.information.get"
 PDD_MALL_INFO_GET = "pdd.mall.info.get"
 PDD_ORDER_INFORMATION_GET = "pdd.order.information.get"
+PDD_REFUND_AGREE = "pdd.refund.agree"
 
 _RESERVED_PARAMETERS = {"access_token", "client_id", "data_type", "sign", "timestamp", "type"}
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -116,6 +117,7 @@ class PddClient:
         api_url: str = "https://gw-api.pinduoduo.com/api/router",
         timeout_seconds: float = 10,
         read_max_attempts: int = 3,
+        write_enabled: bool = False,
         http_client: httpx.Client | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -125,6 +127,7 @@ class PddClient:
         self.credentials = credentials
         self.api_url = api_url
         self.read_max_attempts = read_max_attempts
+        self.write_enabled = write_enabled
         self._now = now
         self._sleep = sleep
         self._owns_http_client = http_client is None
@@ -202,6 +205,26 @@ class PddClient:
             f"请求 {api_type} 失败，已尝试 {self.read_max_attempts} 次"
         ) from last_error
 
+    def execute_write(self, api_type: str, **parameters: Any) -> dict[str, Any]:
+        """写接口只尝试一次，避免网络响应不明时自动重试造成重复写入。"""
+        if not self.write_enabled:
+            raise PddConfigurationError("PDD_WRITE_ENABLED=false，已阻止拼多多外部写入")
+        payload = self.build_signed_payload(api_type, parameters)
+        try:
+            response = self._http_client.post(self.api_url, data=payload)
+            response.raise_for_status()
+            body = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise PddTransportError(f"拼多多写请求被拒绝: HTTP {exc.response.status_code}") from exc
+        except (httpx.TransportError, json.JSONDecodeError) as exc:
+            raise PddTransportError(
+                "拼多多写请求结果不明，系统不会自动重试，请人工核对平台后处理"
+            ) from exc
+        if not isinstance(body, dict):
+            raise PddTransportError("拼多多网关返回了非 JSON 对象")
+        self._raise_for_api_error(body)
+        return body
+
     @staticmethod
     def _raise_for_api_error(body: Mapping[str, Any]) -> None:
         error = body.get("error_response")
@@ -266,3 +289,23 @@ class PddClient:
         if not order_sn.strip():
             raise ValueError("order_sn 不能为空")
         return self.execute_read(PDD_ORDER_INFORMATION_GET, order_sn=order_sn)
+
+    def agree_refund(
+        self,
+        *,
+        after_sales_id: int,
+        order_sn: str,
+        operate_desc: str = "售后工作台自动退款",
+    ) -> dict[str, Any]:
+        if after_sales_id < 1:
+            raise ValueError("after_sales_id 必须大于 0")
+        if not order_sn.strip():
+            raise ValueError("order_sn 不能为空")
+        return self.execute_write(
+            PDD_REFUND_AGREE,
+            request={
+                "after_sales_id": after_sales_id,
+                "order_sn": order_sn,
+                "operate_desc": operate_desc,
+            },
+        )

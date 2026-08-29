@@ -8,9 +8,11 @@ from pydantic import SecretStr
 
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.integrations.pdd.client import (
+    PDD_REFUND_AGREE,
     PDD_REFUND_LIST_INCREMENT_GET,
     PddApiError,
     PddClient,
+    PddConfigurationError,
     PddCredentials,
     PddTransportError,
     generate_sign,
@@ -221,6 +223,68 @@ def test_non_retryable_http_error_is_attempted_only_once(credentials: PddCredent
 
     with pytest.raises(PddTransportError, match="HTTP 401"):
         client.get_mall_info()
+
+    assert attempts == 1
+    http_client.close()
+
+
+def test_write_gate_blocks_refund_request(credentials: PddCredentials) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(200, json={}, request=request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = PddClient(credentials, http_client=http_client, write_enabled=False)
+
+    with pytest.raises(PddConfigurationError, match="PDD_WRITE_ENABLED=false"):
+        client.agree_refund(after_sales_id=123, order_sn="order-1")
+
+    assert attempts == 0
+    http_client.close()
+
+
+def test_agree_refund_sends_request_once(credentials: PddCredentials) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(dict(httpx.QueryParams(request.content.decode())))
+        return httpx.Response(
+            200,
+            json={"refund_agree_response": {"success": True}},
+            request=request,
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = PddClient(credentials, http_client=http_client, write_enabled=True)
+
+    client.agree_refund(after_sales_id=123, order_sn="order-1")
+
+    assert captured["type"] == PDD_REFUND_AGREE
+    assert json.loads(captured["request"])["after_sales_id"] == 123
+    http_client.close()
+
+
+def test_agree_refund_does_not_retry_uncertain_write(credentials: PddCredentials) -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx.Response(503, request=request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = PddClient(
+        credentials,
+        http_client=http_client,
+        read_max_attempts=5,
+        write_enabled=True,
+    )
+
+    with pytest.raises(PddTransportError, match="写请求被拒绝"):
+        client.agree_refund(after_sales_id=123, order_sn="order-1")
 
     assert attempts == 1
     http_client.close()
