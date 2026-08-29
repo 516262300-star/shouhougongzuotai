@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     pdd_client_secret: SecretStr | None = None
     pdd_access_token: SecretStr | None = None
     pdd_api_url: str = "https://gw-api.pinduoduo.com/api/router"
+    pdd_auth_code: SecretStr | None = None
     pdd_timeout_seconds: float = Field(default=10, gt=0, le=60)
     pdd_read_max_attempts: int = Field(default=3, ge=1, le=5)
     pdd_write_enabled: bool = False

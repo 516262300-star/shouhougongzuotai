@@ -59,11 +59,14 @@ alembic downgrade -1
 | `PDD_CLIENT_SECRET` | 拼多多应用 Secret | 无 |
 | `PDD_ACCESS_TOKEN` | 单店铺授权 Token | 无 |
 | `PDD_API_URL` | 拼多多官方网关 | `https://gw-api.pinduoduo.com/api/router` |
+| `PDD_AUTH_CODE` | OAuth 回调的一次性 code，仅换取 Token 时临时填写 | 无 |
 | `PDD_TIMEOUT_SECONDS` | 单次请求超时秒数 | `10` |
 | `PDD_READ_MAX_ATTEMPTS` | 只读请求最大尝试次数 | `3` |
 | `PDD_WRITE_ENABLED` | 拼多多写操作开关，当前未开放 | `false` |
 
 生产环境不得使用示例密码，也不得将 `.env`、店铺 Secret 或 Token 提交到 Git。
+
+`PDD_AUTH_CODE` 和 `PDD_ACCESS_TOKEN` 不是同一字段：前者是短时、一次性的换取凭证，后者是换取结果。填写 code 时不要删除已验证可用的 AccessToken；换取成功后应立即清空 `PDD_AUTH_CODE`。
 
 ## 拼多多单店只读联调
 
