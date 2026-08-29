@@ -1,0 +1,45 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: aftersales
+      MYSQL_USER: aftersales
+      MYSQL_PASSWORD: change_me
+      MYSQL_ROOT_PASSWORD: change_root_me
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+
+  migrate:
+    build: .
+    environment:
+      DATABASE_URL: mysql+pymysql://aftersales:change_me@mysql:3306/aftersales?charset=utf8mb4
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build: .
+    environment:
+      APP_ENV: development
+      DATABASE_URL: mysql+pymysql://aftersales:change_me@mysql:3306/aftersales?charset=utf8mb4
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
