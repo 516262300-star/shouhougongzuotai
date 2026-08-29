@@ -74,7 +74,7 @@ class FakeClient:
         return {
             "id": 123,
             "order_sn": "order-1",
-            "after_sales_type": 3,
+            "after_sales_type": 2,
             "refund_amount": 100,
             "goods_number": 1,
             "out_sku_sn": "sku-1",
@@ -125,3 +125,4 @@ def test_sync_one_window_maps_and_advances_cursor() -> None:
     assert result.records_created == 1
     assert repository.cursor_end == 1800
     assert repository.refunds[0].platform_order_sn == "order-1"
+    assert repository.refunds[0].after_sales_type.value == "RETURN_AND_REFUND"

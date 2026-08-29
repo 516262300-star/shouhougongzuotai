@@ -24,7 +24,7 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     detail = {
         "id": 123,
         "order_sn": "order-1",
-        "after_sales_type": 3,
+        "after_sales_type": 2,
         "refund_amount": 27857,
         "goods_number": 22,
         "out_sku_sn": "sku-1",
@@ -60,6 +60,25 @@ def test_unknown_after_sales_type_is_rejected() -> None:
             {"after_sales_type": 99, "refund_amount": 100, "out_sku_sn": "sku"},
             {"order_status": 1},
         )
+
+
+def test_detail_type_is_used_only_when_list_type_is_missing() -> None:
+    result = normalize_refund(
+        {
+            "id": 1,
+            "order_sn": "order",
+            "refund_amount": "1.00",
+            "goods_number": 1,
+        },
+        {
+            "after_sales_type": 1,
+            "refund_amount": 100,
+            "out_sku_sn": "sku",
+        },
+        {"order_status": 1},
+    )
+
+    assert result.after_sales_type is AfterSalesType.ONLY_REFUND
 
 
 def test_unwrap_order_information_requires_nested_order() -> None:

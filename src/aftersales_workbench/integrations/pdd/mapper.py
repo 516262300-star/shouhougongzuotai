@@ -64,16 +64,24 @@ def _refund_amount(detail: dict[str, Any], list_record: dict[str, Any]) -> Decim
         raise PddDataMappingError("缺少有效 refund_amount") from exc
 
 
-def _after_sales_type(value: Any) -> AfterSalesType:
-    mapping = {
+def _after_sales_type(list_value: Any, detail_value: Any) -> AfterSalesType:
+    list_mapping = {
         2: AfterSalesType.ONLY_REFUND,
         3: AfterSalesType.RETURN_AND_REFUND,
         4: AfterSalesType.EXCHANGE,
     }
+    detail_mapping = {
+        1: AfterSalesType.ONLY_REFUND,
+        2: AfterSalesType.RETURN_AND_REFUND,
+        3: AfterSalesType.EXCHANGE,
+    }
+    value = list_value if list_value is not None else detail_value
+    mapping = list_mapping if list_value is not None else detail_mapping
     try:
         return mapping[int(value)]
     except (KeyError, TypeError, ValueError) as exc:
-        raise PddDataMappingError(f"不支持的 after_sales_type: {value}") from exc
+        source = "增量列表" if list_value is not None else "售后详情"
+        raise PddDataMappingError(f"不支持的 {source} after_sales_type: {value}") from exc
 
 
 def _shipping_status(order: dict[str, Any]) -> ShippingStatus:
@@ -127,7 +135,7 @@ def normalize_refund(
         after_sales_sn=after_sales_sn,
         platform_order_sn=order_sn,
         after_sales_type=_after_sales_type(
-            detail.get("after_sales_type", list_record.get("after_sales_type"))
+            list_record.get("after_sales_type"), detail.get("after_sales_type")
         ),
         refund_amount=_refund_amount(detail, list_record),
         buyer_reason_raw=_nonempty(
