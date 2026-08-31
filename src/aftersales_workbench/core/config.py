@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     pdd_sync_overlap_seconds: int = Field(default=300, ge=0, le=1800)
     pdd_sync_page_size: int = Field(default=100, ge=1, le=100)
     erp_write_enabled: bool = False
+    erp_read_database_url: SecretStr | None = None
+    erp_read_cache_seconds: int = Field(default=300, ge=0, le=86400)
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)

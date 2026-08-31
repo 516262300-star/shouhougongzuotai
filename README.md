@@ -69,6 +69,8 @@ alembic downgrade -1
 | `PDD_SYNC_OVERLAP_SECONDS` | 续传时向前重叠秒数，用于防止边界漏单 | `300` |
 | `PDD_SYNC_PAGE_SIZE` | 售后增量单页数量 | `100` |
 | `ERP_WRITE_ENABLED` | ERP 外部写操作总开关，当前未开放 | `false` |
+| `ERP_READ_DATABASE_URL` | 旧管理系统 MySQL 只读连接串，用于按拼多多订单反查客户档案归属业务员 | 无 |
+| `ERP_READ_CACHE_SECONDS` | 归属业务员查询在工作台内的缓存秒数 | `300` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -92,6 +94,8 @@ alembic downgrade -1
 生产环境不得使用示例密码，也不得将 `.env`、店铺 Secret 或 Token 提交到 Git。
 
 1–4 店共用 `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET`，5–7 店共用 `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET`。每个店铺仍必须将自己的 Token 填入对应的 `PDD_SHOP_N_ACCESS_TOKEN`，不要将多个 Token 用逗号拼在同一行。单店的 `PDD_CLIENT_ID`、`PDD_CLIENT_SECRET` 和 `PDD_ACCESS_TOKEN` 暂时保留，仅用于旧联调命令回退。
+
+售后订单记录页的“归属业务员”来自旧管理系统客户档案。查询规则与原客户档案一致：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照的归属业务员。请为 `ERP_READ_DATABASE_URL` 单独创建只有 `00sobackup`、`kehu` 查询权限的数据库账号，不要复用可写账号。未配置时页面会显示“待接入 ERP”，不会影响拼多多售后同步。
 
 ## 拼多多单店只读联调
 

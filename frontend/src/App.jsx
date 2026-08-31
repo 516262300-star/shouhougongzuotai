@@ -214,7 +214,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
       <table>
         <thead>
           <tr>
-            <th>店铺</th><th>售后单号</th><th>类型</th><th>退款金额</th><th>发货运单</th>
+            <th>店铺</th><th>售后单号</th><th>归属业务员</th><th>类型</th><th>退款金额</th><th>发货运单</th>
             <th>物流状态</th><th>拦截状态</th><th>平台退款</th><th>最近更新</th><th>操作</th>
           </tr>
         </thead>
@@ -227,6 +227,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
             >
               <td title={item.shop_name}><span className="truncate shop-cell">{item.shop_name}</span></td>
               <td className="mono">{item.after_sales_sn}</td>
+              <td title={item.erp_customer_name}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td>{item.after_sales_type_label}</td>
               <td>{formatCurrency(item.refund_amount)}</td>
               <td title={`${item.carrier_name} ${item.tracking_number}`}><span className="truncate tracking-cell">{item.tracking_number}</span></td>
@@ -300,6 +301,8 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="店铺" value={detail.shop_name} />
               <DetailRow label="售后单号" value={detail.after_sales_sn} copyable onCopy={onCopy} />
               <DetailRow label="订单号" value={detail.platform_order_sn} copyable onCopy={onCopy} />
+              <DetailRow label="归属业务员" value={detail.erp_customer.sales_owner} />
+              <DetailRow label="ERP客户" value={detail.erp_customer.customer_name} />
               <DetailRow label="快递单号" value={detail.tracking_number} copyable onCopy={onCopy} />
               <DetailRow label="申请时间" value={formatDateTime(detail.created_at, true)} />
               <DetailRow label="售后类型" value={detail.after_sales_type} />
@@ -313,7 +316,7 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
             <dl>
               <DetailRow label="拦截策略" value={detail.decision.strategy} />
               <div className="detail-row"><dt>当前状态</dt><dd><StatusTag tone={detail.decision.status_tone}>{detail.decision.status}</StatusTag></dd></div>
-              <DetailRow label="处理人" value={detail.decision.handler} />
+              <DetailRow label="当前处理人" value={detail.decision.handler} />
               <DetailRow label="处理时间" value={formatDateTime(detail.decision.handled_at, true)} />
               <DetailRow label="备注" value={detail.decision.note} />
             </dl>
@@ -423,9 +426,10 @@ export function App() {
   };
 
   const exportRows = () => {
-    const rows = [["店铺", "售后单号", "类型", "退款金额", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
+    const rows = [["店铺", "售后单号", "归属业务员", "ERP客户", "类型", "退款金额", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
     data.items.forEach((item) => rows.push([
-      item.shop_name, item.after_sales_sn, item.after_sales_type_label, item.refund_amount,
+      item.shop_name, item.after_sales_sn, item.sales_owner, item.erp_customer_name,
+      item.after_sales_type_label, item.refund_amount,
       item.tracking_number, item.logistics_label, item.intercept_label, item.platform_refund_label,
       formatDateTime(item.updated_at, true),
     ]));

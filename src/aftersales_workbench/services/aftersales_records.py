@@ -17,6 +17,11 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.sales_owner import (
+    ErpSalesOwnerResolver,
+    SalesOwnerLookup,
+    get_erp_sales_owner_resolver,
+)
 
 WORKFLOW_LABELS = {
     "PENDING_CHECK": "待系统判定",
@@ -139,8 +144,13 @@ def _task_tone(status: str) -> str:
 
 
 class AftersalesRecordService:
-    def __init__(self, session: Session) -> None:
+    def __init__(
+        self,
+        session: Session,
+        sales_owner_resolver: ErpSalesOwnerResolver | None = None,
+    ) -> None:
         self.session = session
+        self.sales_owner_resolver = sales_owner_resolver or get_erp_sales_owner_resolver()
 
     def list_orders(
         self,
@@ -200,9 +210,17 @@ class AftersalesRecordService:
         rows = self.session.execute(statement).all()
         after_sales_sns = [row.AfterSalesOrder.after_sales_sn for row in rows]
         tasks_by_order = self._tasks_by_order(after_sales_sns)
+        owners_by_order = self.sales_owner_resolver.resolve_many(
+            row.AfterSalesOrder.platform_order_sn for row in rows
+        )
 
         items = [
-            self._serialize_list_item(order, shop, tasks_by_order.get(order.after_sales_sn, []))
+            self._serialize_list_item(
+                order,
+                shop,
+                tasks_by_order.get(order.after_sales_sn, []),
+                owners_by_order.get(order.platform_order_sn),
+            )
             for order, shop in rows
         ]
         return {
@@ -244,6 +262,7 @@ class AftersalesRecordService:
             or "平台未返回商品明细"
         )
         decision_note = order.logistics_latest_context or self._decision_note(workflow, logistics)
+        owner = self.sales_owner_resolver.resolve(order.platform_order_sn)
         return {
             "after_sales_sn": order.after_sales_sn,
             "shop_name": shop.shop_name,
@@ -258,6 +277,7 @@ class AftersalesRecordService:
             "buyer_name": "平台未返回",
             "buyer_reason": order.buyer_reason_raw or "—",
             "buyer_memo": order.buyer_memo or "—",
+            "erp_customer": self._serialize_owner(owner),
             "decision": {
                 "strategy": "极速拦截（智能）" if order.forward_tracking_number else "人工规则判定",
                 "status": WORKFLOW_LABELS.get(workflow, workflow),
@@ -281,6 +301,7 @@ class AftersalesRecordService:
         order: AfterSalesOrder,
         shop: Shop,
         tasks: list[AftersalesActionTask],
+        owner: SalesOwnerLookup | None,
     ) -> dict[str, Any]:
         workflow = _enum_value(order.workflow_status)
         logistics = order.logistics_state or self._fallback_logistics(order)
@@ -310,12 +331,18 @@ class AftersalesRecordService:
             or workflow in COMPLETED_WORKFLOWS
             or workflow == WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN.value
         )
+        owner = owner or SalesOwnerLookup(None, None, "not_found", "ERP 客户档案未匹配")
+        serialized_owner = self._serialize_owner(owner)
         return {
             "shop_id": shop.shop_id,
             "shop_name": shop.shop_name,
             "shop_code": shop.shop_code,
             "after_sales_sn": order.after_sales_sn,
             "platform_order_sn": order.platform_order_sn,
+            "sales_owner": serialized_owner["sales_owner"],
+            "sales_owner_status": serialized_owner["status"],
+            "sales_owner_tone": serialized_owner["tone"],
+            "erp_customer_name": serialized_owner["customer_name"],
             "after_sales_type": _enum_value(order.after_sales_type),
             "after_sales_type_label": self._type_label(_enum_value(order.after_sales_type)),
             "refund_amount": _money(order.refund_amount),
@@ -330,6 +357,29 @@ class AftersalesRecordService:
             "platform_refund_label": "平台已退款" if platform_refunded else "—",
             "platform_refund_tone": "success" if platform_refunded else "neutral",
             "updated_at": _dt(order.updated_at),
+        }
+
+    @staticmethod
+    def _serialize_owner(owner: SalesOwnerLookup) -> dict[str, Any]:
+        tone = {
+            "matched": "success",
+            "conflict": "danger",
+            "unavailable": "warning",
+            "not_configured": "warning",
+            "not_found": "neutral",
+        }.get(owner.status, "neutral")
+        display_name = owner.sales_owner or {
+            "not_configured": "待接入 ERP",
+            "unavailable": "ERP 暂不可用",
+            "not_found": "未匹配",
+        }.get(owner.status, "未匹配")
+        return {
+            "sales_owner": display_name,
+            "customer_name": owner.customer_name or "—",
+            "status": owner.status,
+            "tone": tone,
+            "message": owner.message,
+            "source": "ERP 客户档案",
         }
 
     def _summary(self) -> dict[str, int]:
