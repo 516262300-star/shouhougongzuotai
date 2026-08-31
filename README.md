@@ -78,6 +78,8 @@ alembic downgrade -1
 | `MODULE1_WORKER_TASK_LIMIT` | 每周期最多准备、发送或退款的动作任务数 | `20` |
 | `MODULE1_NOTIFICATION_TRANSPORT` | 拦截通知出口；当前支持 `disabled` / `qywx_webhook` | `disabled` |
 | `MODULE1_PDD_REFUND_EXECUTION_ENABLED` | 后台运行器的平台退款执行总开关 | `false` |
+| `MODULE1_DESKTOP_GROUP_MAP` | 拼多多物流公司 ID 到企业微信外部群完整精确群名的 JSON 白名单 | `{}` |
+| `MODULE1_DESKTOP_SEND_ENABLED` | 企业微信桌面自动发送总开关；当前保持关闭 | `false` |
 | `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
 | `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
 | `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong","131":"debangwuliu","384":"jtexpress"}` |
@@ -238,6 +240,18 @@ alembic upgrade head
 ```
 
 未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`；若采用企业微信桌面自动发送，则新增独立适配器和总开关，现阶段不要把通知出口设置为未支持的值。
+
+### 企业微信桌面发送准备
+
+外部快递群不支持群机器人 Webhook，因此桌面发送使用拼多多物流公司 ID 到“完整精确群名”的本机白名单。真实群名只允许写入被 Git 忽略的 `.env`，示例仓库和日志不得输出完整订单消息。2026-08-31 已在当前企业微信客户端中用键盘搜索逐一验证德邦、极兔、圆通和顺丰四个外部群均能被完整群名唯一命中；没有进入聊天、填写草稿或发送消息。拼多多官方物流公司列表对应关系为普通顺丰 `44/SF`、圆通 `85/YTO`、德邦 `131/DB`、极兔 `384/JTSD`。
+
+先预览本地待发送任务能否全部解析到群白名单：
+
+```powershell
+.\.venv\Scripts\aftersales-preview-desktop-notices.exe --limit 20
+```
+
+该命令只读数据库，只输出脱敏后的售后单号、订单号和运单号，不激活企业微信、不填写草稿、不发送消息。`blocked_missing_group` 必须为 `0` 才能进入桌面自动化。当前 `MODULE1_DESKTOP_SEND_ENABLED=false`，桌面发送适配器完成群标题、输入框和发送结果验证前不得开启。
 
 ## 模块 3：未发货退款与锁包
 

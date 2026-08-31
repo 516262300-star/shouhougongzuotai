@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     module1_worker_task_limit: int = Field(default=20, ge=1, le=500)
     module1_notification_transport: Literal["disabled", "qywx_webhook"] = "disabled"
     module1_pdd_refund_execution_enabled: bool = False
+    module1_desktop_group_map: dict[str, str] = Field(default_factory=dict)
+    module1_desktop_send_enabled: bool = False
 
     kuaidi100_api_url: str = "https://poll.kuaidi100.com/poll/query.do"
     kuaidi100_customer: SecretStr | None = None
