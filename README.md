@@ -149,9 +149,13 @@ alembic upgrade head
 先预览候选数量，再写入本地队列：
 
 ```powershell
+.\.venv\Scripts\aftersales-preview-module1.exe --shops pdd-shop-01 --limit 100
+.\.venv\Scripts\aftersales-preview-module1.exe --shops pdd-shop-01 --limit 100 --details
 .\.venv\Scripts\aftersales-process-module1.exe
 .\.venv\Scripts\aftersales-process-module1.exe --shops pdd-shop-01 --limit 100 --apply
 ```
+
+`aftersales-preview-module1` 是上线前的一键只读核对命令：它读取严格筛选后的真实订单并查询快递 100，汇总企微预计通知数、平台退款预计调用数、已退款跳过数、物流冻结数及查询失败数。`--details` 只显示脱敏后的订单号、售后单号和运单号。该命令没有 `--apply` 参数，不写数据库、不创建动作任务、不发送企微、不调用拼多多退款接口；即使 `.env` 中的写入开关已经打开也不会执行写操作。
 
 配置 `QYWX_INTERCEPT_WEBHOOK_URL` 后，将 `QYWX_WRITE_ENABLED` 改为 `true`，先预览，再真实发送：
 

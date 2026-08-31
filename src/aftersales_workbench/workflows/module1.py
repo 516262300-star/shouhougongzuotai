@@ -25,6 +25,7 @@ class Module1Candidate:
     shop_name: str
     tracking_number: str
     carrier_code: str | None
+    platform_refund_completed: bool = False
 
 
 @dataclass(slots=True)
@@ -68,6 +69,8 @@ class SqlAlchemyModule1Repository:
                 Shop.shop_name,
                 AfterSalesOrder.forward_tracking_number,
                 AfterSalesOrder.carrier_code,
+                AfterSalesOrder.platform_after_sales_status,
+                AfterSalesOrder.platform_order_refund_status,
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
@@ -91,6 +94,10 @@ class SqlAlchemyModule1Repository:
                 shop_name=row.shop_name,
                 tracking_number=row.forward_tracking_number,
                 carrier_code=row.carrier_code,
+                platform_refund_completed=(
+                    row.platform_after_sales_status == 10
+                    or row.platform_order_refund_status == 4
+                ),
             )
             for row in rows
         ]
