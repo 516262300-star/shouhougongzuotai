@@ -45,6 +45,8 @@ alembic downgrade -1
 
 自动迁移的输入是 `migrations/versions/` 中的版本脚本，输出是 `DATABASE_URL` 指向的 MySQL schema。迁移失败时 API 容器不会启动；修复配置或数据库后重新执行 `docker compose run --rm migrate`。
 
+本机没有 Docker 或已注册 MySQL 服务时，可使用本机 MySQL 8.4 的项目专用实例。当前联调实例只监听 `127.0.0.1:3306`，数据保存在被 Git 忽略的 `.mysql-data/`；因中文工作区路径兼容性，MySQL 配置与数据目录联接保存在用户 AppData 的 `lds-aftersales-mysql.ini` / `lds-aftersales-mysql-data`。不得对非空 `.mysql-data/` 再执行初始化；该实例不是 Windows 服务，电脑重启后需要重新启动进程，再执行 `alembic current` 确认迁移版本。
+
 ## 环境变量
 
 | 变量 | 用途 | 默认值 |
@@ -72,7 +74,7 @@ alembic downgrade -1
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
 | `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
 | `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
-| `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong"}` |
+| `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong","131":"debangwuliu","384":"jtexpress"}` |
 | `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET` | 1–4 店共用的开放平台应用凭据 | 无 |
 | `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET` | 5–7 店共用的另一组应用凭据 | 无 |
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
@@ -134,7 +136,7 @@ alembic upgrade head
 
 ## 模块 1：在途拦截与退款
 
-模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号，且售后类型为仅退款或退货退款的订单；换货单不会进入自动退款链路。拼多多只负责售后读取和同意退款，物流状态由独立的快递 100 适配器读取，不依赖或修改旧管理系统代码。当前流转为：
+模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号，且售后类型严格为 `ONLY_REFUND` 的订单；退货退款留给模块 2，换货单也不会进入自动退款链路。拼多多只负责售后读取和同意退款，物流状态由独立的快递 100 适配器读取，不依赖或修改旧管理系统代码。当前流转为：
 
 1. 生成幂等的 `QYWX_INTERCEPT_NOTIFY` 动作；
 2. 企微发送成功后，订单进入 `INTERCEPT_PUSHED`；
@@ -167,7 +169,7 @@ alembic upgrade head
 
 配置快递 100 后先只读预览物流闸门，再写入本地状态和待办。`KUAIDI100_CARRIER_MAP` 示例为 `{"拼多多物流公司ID":"kuaidi100公司代码"}`，真实映射应以当前订单数据为准：
 
-2026-08-31 已使用真实近期售后运单完成只读联调：旧系统现有快递 100 授权可正常返回轨迹，拼多多物流公司 ID `85` 已确认对应圆通代码 `yuantong`。授权值只允许保存在被 Git 忽略的本机 `.env`，不得写入 README、`.env.example` 或提交记录；其他快递公司映射须逐一用真实订单确认，不能猜测。
+2026-08-31 已使用真实近期售后运单完成只读联调：旧系统现有快递 100 授权可正常返回轨迹；通过拼多多官方物流公司列表确认 `85` 对应圆通 `yuantong`、`131` 对应德邦 `debangwuliu`、`384` 对应极兔 `jtexpress`。授权值只允许保存在被 Git 忽略的本机 `.env`，不得写入 README、`.env.example` 或提交记录；其他快递公司映射须逐一用真实订单确认，不能猜测。
 
 ```powershell
 .\.venv\Scripts\aftersales-check-intercept-logistics.exe --limit 100
@@ -180,6 +182,8 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-execute-actions.exe --types PDD_AGREE_REFUND
 .\.venv\Scripts\aftersales-execute-actions.exe --types PDD_AGREE_REFUND --apply
 ```
+
+2026-08-31 以1店近72小时真实售后数据完成模块1只读预演：严格按 `ONLY_REFUND` 筛出2笔、均为极兔；快递100判定1笔 `IN_TRANSIT`（退款闸门可放行）、1笔 `DELIVERED` 且没有退回记录（退款闸门冻结），物流查询失败0笔。预演未创建动作任务、未发送企微消息、未调用拼多多退款接口。
 
 ## 模块 3：未发货退款与锁包
 

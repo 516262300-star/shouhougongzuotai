@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from aftersales_workbench.db.models import AfterSalesType
 from aftersales_workbench.workflows.module1 import (
     Module1Candidate,
     Module1InterceptService,
+    SqlAlchemyModule1Repository,
 )
 
 
@@ -58,3 +60,30 @@ def test_module1_apply_is_idempotent() -> None:
     assert first.tasks_created == 1
     assert second.tasks_existing == 1
     assert repository.commits == 2
+
+
+class _EmptyRows:
+    def all(self):
+        return []
+
+
+class _CaptureSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_module1_repository_only_selects_only_refund() -> None:
+    session = _CaptureSession()
+
+    SqlAlchemyModule1Repository(session).list_candidates(
+        shop_codes=None,
+        limit=100,
+    )
+
+    assert session.statement is not None
+    assert AfterSalesType.ONLY_REFUND in session.statement.compile().params.values()
+    assert AfterSalesType.RETURN_AND_REFUND not in session.statement.compile().params.values()
