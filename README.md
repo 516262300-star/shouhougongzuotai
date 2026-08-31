@@ -308,6 +308,46 @@ alembic upgrade head
 
 回填失败使用 `--failed --message "失败原因"`，系统记录错误并停止后续流转。当前不会直接写入旧管理系统源码或复用其登录页面；旧系统仅作为 ERP 业务规则参考。
 
+## 售后订单记录中心
+
+当前项目已包含独立的 React 网页工作台，并通过只读 API 查询本地 MySQL 中的真实售后订单、店铺、SKU 和自动化任务记录。页面提供：
+
+- 今日新增、待拦截、待人工、已完成汇总；
+- 按店铺、售后类型、处理状态、物流状态、申请时间和单号检索；
+- 15/30/50 条分页、当前页 CSV 导出和手动刷新；
+- 选中订单后查看基础信息、当前处理决策、物流状态和自动化审计时间线；
+- 1280 像素及以下把详情栏改为覆盖层，避免压缩订单表。
+
+开发时分别启动 FastAPI 和 Vite：
+
+```powershell
+# 终端 1：项目根目录
+.\.venv\Scripts\uvicorn.exe aftersales_workbench.main:app --host 127.0.0.1 --port 8000
+
+# 终端 2：frontend 目录
+cd frontend
+npm install --prefer-offline --no-audit --no-fund
+npm run dev -- --host 127.0.0.1 --port 4173 --strictPort
+```
+
+浏览器打开 `http://127.0.0.1:4173/`。Vite 会把 `/api` 和 `/health` 代理到本机 8000 端口。
+
+需要由 FastAPI 单端口提供页面时，先构建前端，再启动 API：
+
+```powershell
+cd frontend
+npm run build
+cd ..
+.\.venv\Scripts\uvicorn.exe aftersales_workbench.main:app --host 127.0.0.1 --port 8000
+```
+
+构建产物存在时，FastAPI 会在根路径挂载 `frontend/dist/client`，浏览器打开 `http://127.0.0.1:8000/`。只读接口为：
+
+- `GET /api/v1/aftersales/orders`：汇总、筛选、分页和店铺选项；
+- `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
+
+页面不会直接调用拼多多退款、企微发送或 ERP 写接口。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
+
 ## 健康检查
 
 - `GET /health/live`：进程存活，不访问外部依赖。

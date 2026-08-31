@@ -3,7 +3,9 @@
 .mysql-data/
 .mysql-local.ini
 .runtime/
+design-qa-*.png
 .venv/
+node_modules/
 __pycache__/
 *.py[cod]
 .pytest_cache/
