@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.14,<2.0",
   "fastapi>=0.115,<1.0",
+  "httpx>=0.28,<1.0",
   "pydantic-settings>=2.7,<3.0",
   "pymysql>=1.1,<2.0",
   "sqlalchemy>=2.0,<3.0",
@@ -26,10 +27,10 @@ aftersales-execute-actions = "aftersales_workbench.workflows.action_cli:execute_
 aftersales-list-actions = "aftersales_workbench.workflows.action_cli:list_main"
 aftersales-confirm-action = "aftersales_workbench.workflows.action_cli:confirm_main"
 aftersales-confirm-intercept = "aftersales_workbench.workflows.action_cli:intercept_main"
+aftersales-check-intercept-logistics = "aftersales_workbench.workflows.module1_logistics_cli:main"
 
 [project.optional-dependencies]
 dev = [
-  "httpx>=0.28,<1.0",
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
   "ruff>=0.9,<1.0",

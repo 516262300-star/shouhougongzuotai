@@ -52,8 +52,12 @@ class WorkflowStatus(StrEnum):
     UNSHIPPED_AUTO_REFUNDED = "UNSHIPPED_AUTO_REFUNDED"
     PACKING_LOCKED = "PACKING_LOCKED"
     INTERCEPT_PUSHED = "INTERCEPT_PUSHED"
+    INTERCEPT_CONFIRMED = "INTERCEPT_CONFIRMED"
+    INTERCEPT_WAITING_RETURN = "INTERCEPT_WAITING_RETURN"
+    INTERCEPT_REFUNDED_WAITING_RETURN = "INTERCEPT_REFUNDED_WAITING_RETURN"
     INTERCEPT_SUCCESS = "INTERCEPT_SUCCESS"
     INTERCEPT_FAILED = "INTERCEPT_FAILED"
+    RETURN_WAITING_ERP_MATCH = "RETURN_WAITING_ERP_MATCH"
     RETURN_WAITING_SCAN = "RETURN_WAITING_SCAN"
     RETURN_INSPECTED_PASS = "RETURN_INSPECTED_PASS"
     RETURN_INSPECTED_FAIL = "RETURN_INSPECTED_FAIL"
@@ -79,6 +83,7 @@ class AutomationActionType(StrEnum):
     ERP_CANCEL_UNSHIPPED_ORDER = "ERP_CANCEL_UNSHIPPED_ORDER"
     ERP_LOCK_PACKING = "ERP_LOCK_PACKING"
     ERP_CREATE_REFUND_RECORD = "ERP_CREATE_REFUND_RECORD"
+    ERP_MATCH_RETURN_ORDER = "ERP_MATCH_RETURN_ORDER"
     PDD_AGREE_REFUND = "PDD_AGREE_REFUND"
 
 
@@ -136,6 +141,10 @@ class AfterSalesOrder(Base):
     forward_tracking_number: Mapped[str | None] = mapped_column(String(100))
     carrier_code: Mapped[str | None] = mapped_column(String(50))
     return_tracking_number: Mapped[str | None] = mapped_column(String(100))
+    logistics_state: Mapped[str | None] = mapped_column(String(30))
+    logistics_latest_context: Mapped[str | None] = mapped_column(String(500))
+    logistics_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    logistics_return_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
     platform_after_sales_status: Mapped[int | None] = mapped_column(SmallInteger)
     platform_order_refund_status: Mapped[int | None] = mapped_column(SmallInteger)
     is_speed_refund: Mapped[int] = mapped_column(

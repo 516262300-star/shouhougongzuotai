@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)
     qywx_write_enabled: bool = False
 
+    kuaidi100_api_url: str = "https://poll.kuaidi100.com/poll/query.do"
+    kuaidi100_customer: SecretStr | None = None
+    kuaidi100_key: SecretStr | None = None
+    kuaidi100_default_phone: SecretStr | None = None
+    kuaidi100_timeout_seconds: float = Field(default=10, gt=0, le=60)
+    kuaidi100_carrier_map: dict[str, str] = Field(default_factory=dict)
+
     pdd_app_1_client_id: SecretStr | None = None
     pdd_app_1_client_secret: SecretStr | None = None
     pdd_app_2_client_id: SecretStr | None = None

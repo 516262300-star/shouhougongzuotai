@@ -37,6 +37,7 @@ class TestCoordinator(ActionCoordinator):
         self.task = task
         self.order = order
         self.enqueued: list[tuple[AutomationActionType, dict[str, Any]]] = []
+        self.cancelled_refund = False
 
     def _get_task(self, task_id: int):
         assert task_id == self.task.id
@@ -51,6 +52,11 @@ class TestCoordinator(ActionCoordinator):
         self.enqueued.append((action_type, payload))
         return True
 
+    def _cancel_pending_refund(self, after_sales_sn):
+        assert after_sales_sn == self.order.after_sales_sn
+        self.cancelled_refund = True
+        return True
+
 
 def _order() -> Any:
     return SimpleNamespace(
@@ -60,16 +66,26 @@ def _order() -> Any:
         exception_type=None,
         platform_after_sales_status=None,
         platform_order_refund_status=None,
+        logistics_state=None,
+        logistics_latest_context=None,
+        logistics_checked_at=None,
+        logistics_return_detected_at=None,
+        forward_tracking_number="YT123",
     )
 
 
-def _task(action_type: AutomationActionType, *, status=AutomationTaskStatus.PENDING) -> Any:
+def _task(
+    action_type: AutomationActionType,
+    *,
+    status=AutomationTaskStatus.PENDING,
+    origin="module3",
+) -> Any:
     return SimpleNamespace(
         id=1,
         after_sales_sn="after-1",
         action_type=action_type,
         action_status=status,
-        payload={"origin": "module3"},
+        payload={"origin": origin},
         last_error=None,
         attempts=0,
     )
@@ -151,6 +167,22 @@ def test_qywx_success_marks_intercept_pushed() -> None:
     assert coordinator.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
 
 
+def test_module1_failed_cancels_pending_refund() -> None:
+    order = _order()
+    order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+    coordinator = TestCoordinator(
+        _task(AutomationActionType.QYWX_INTERCEPT_NOTIFY), order
+    )
+
+    coordinator.confirm_intercept_result(
+        after_sales_sn="after-1",
+        result=InterceptResult.FAILED,
+    )
+
+    assert coordinator.cancelled_refund is True
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_FAILED
+
+
 def test_module1_returned_queues_pdd_refund() -> None:
     order = _order()
     order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
@@ -164,7 +196,8 @@ def test_module1_returned_queues_pdd_refund() -> None:
     )
 
     assert changed is True
-    assert order.workflow_status is WorkflowStatus.INTERCEPT_SUCCESS
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_CONFIRMED
+    assert order.logistics_state == "RETURNED"
     assert coordinator.enqueued[0][0] is AutomationActionType.PDD_AGREE_REFUND
 
 
@@ -181,4 +214,41 @@ def test_module1_returned_skips_pdd_when_platform_already_refunded() -> None:
         result=InterceptResult.RETURNED,
     )
 
-    assert coordinator.enqueued[0][0] is AutomationActionType.ERP_CREATE_REFUND_RECORD
+    assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    assert coordinator.enqueued[0][0] is AutomationActionType.ERP_MATCH_RETURN_ORDER
+
+
+def test_module1_pdd_success_waits_for_parcel_return() -> None:
+    order = _order()
+    order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.PDD_AGREE_REFUND,
+            status=AutomationTaskStatus.RUNNING,
+            origin="module1",
+        ),
+        order,
+    )
+
+    coordinator.record_external_success(1)
+
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+    assert coordinator.enqueued == []
+
+
+def test_module1_pdd_success_after_return_queues_erp_match() -> None:
+    order = _order()
+    order.logistics_return_detected_at = object()
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.PDD_AGREE_REFUND,
+            status=AutomationTaskStatus.RUNNING,
+            origin="module1",
+        ),
+        order,
+    )
+
+    coordinator.record_external_success(1)
+
+    assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    assert coordinator.enqueued[0][0] is AutomationActionType.ERP_MATCH_RETURN_ORDER

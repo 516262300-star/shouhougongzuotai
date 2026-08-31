@@ -4,7 +4,7 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列、模块 3 未发货/已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 3 未发货/已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
 - 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
 - 暂未直连：真实 ERP API。模块 3 先使用人工回填 CLI 完成 ERP 动作确认，待 ERP 接口规则明确后替换为适配器。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
 - 所有外部写入默认关闭。只有分别配置并打开 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED` 后，执行命令才会真正发送企微通知或同意退款。
@@ -70,6 +70,9 @@ alembic downgrade -1
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
+| `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
+| `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
+| `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{}` |
 | `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET` | 1–4 店共用的开放平台应用凭据 | 无 |
 | `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET` | 5–7 店共用的另一组应用凭据 | 无 |
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
@@ -131,13 +134,15 @@ alembic upgrade head
 
 ## 模块 1：在途拦截与退款
 
-模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号，且售后类型为仅退款或退货退款的订单；换货单不会进入自动退款链路。当前流转为：
+模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号，且售后类型为仅退款或退货退款的订单；换货单不会进入自动退款链路。拼多多只负责售后读取和同意退款，物流状态由独立的快递 100 适配器读取，不依赖或修改旧管理系统代码。当前流转为：
 
 1. 生成幂等的 `QYWX_INTERCEPT_NOTIFY` 动作；
 2. 企微发送成功后，订单进入 `INTERCEPT_PUSHED`；
-3. 快递确认拦截失败时进入 `INTERCEPT_FAILED`；包裹确实退回并确认入库时才回填 `RETURNED`，进入 `INTERCEPT_SUCCESS`；
-4. 若平台尚未退款，则生成 `PDD_AGREE_REFUND`；若平台状态已明确为退款成功，则跳过拼多多写接口，直接生成 ERP 财务流水待办，防止重复退款；
-5. 拼多多同意退款成功后生成 `ERP_CREATE_REFUND_RECORD`，等待 ERP 财务流水确认。
+3. 企微发送成功后，快递 100 轨迹闸门可直接处理该订单，不需要人工再次确认“已受理”；普通在途允许生成 `PDD_AGREE_REFUND`；
+4. 命中“派件/派送/投递”或“已签收但没有退回记录”时进入 `INTERCEPT_WAITING_RETURN`，不自动退款；查询失败或公司代码未映射时同样不放行；拦截失败则进入 `INTERCEPT_FAILED`；
+5. 出现“退回/退件/拒收/原路返回”等明确退回记录后才解除派件冻结。若平台尚未退款则生成 `PDD_AGREE_REFUND`；若平台已经退款则跳过平台写接口；
+6. 平台退款完成但包裹尚未回来时进入 `INTERCEPT_REFUNDED_WAITING_RETURN`。包裹出现退回记录后进入 `RETURN_WAITING_ERP_MATCH`，生成 `ERP_MATCH_RETURN_ORDER` 本地待办；该待办只预留后续“客户档案退货单精确匹配/暂存认领”接口，目前不会直接操作旧管理系统；
+7. 后续 ERP 匹配规则以发货运单号、型号、颜色、数量、单价完全一致为自动处理前提；暂存认领流程等收到完整操作步骤后再接入。
 
 先预览候选数量，再写入本地队列：
 
@@ -153,14 +158,21 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-execute-actions.exe --types QYWX_INTERCEPT_NOTIFY --apply
 ```
 
-收到快递反馈后回填。`RETURNED` 必须表示包裹已退回且完成入库确认，不能只表示快递已受理拦截：
+`RETURNED` 只作为人工核实已有明确退回轨迹时的兜底，不能只表示快递已受理拦截；拦截失败则回填 `FAILED`：
 
 ```powershell
-.\.venv\Scripts\aftersales-confirm-intercept.exe --after-sales-sn "售后单号" --result RETURNED
+.\.venv\Scripts\aftersales-confirm-intercept.exe --after-sales-sn "售后单号" --result RETURNED --note "已核实退回轨迹"
 .\.venv\Scripts\aftersales-confirm-intercept.exe --after-sales-sn "售后单号" --result FAILED --note "快递拦截失败"
 ```
 
-拼多多退款执行前必须把 `PDD_WRITE_ENABLED` 改为 `true`。写请求只发送一次，网络结果不明时不会自动重试，应先到平台核对，防止重复退款：
+配置快递 100 后先只读预览物流闸门，再写入本地状态和待办。`KUAIDI100_CARRIER_MAP` 示例为 `{"拼多多物流公司ID":"kuaidi100公司代码"}`，真实映射应以当前订单数据为准：
+
+```powershell
+.\.venv\Scripts\aftersales-check-intercept-logistics.exe --limit 100
+.\.venv\Scripts\aftersales-check-intercept-logistics.exe --limit 100 --apply
+```
+
+只有物流闸门放行后才会产生拼多多退款待办。真实执行 `PDD_AGREE_REFUND` 前，执行器还会再次读取快递 100；如果此时已进入派件、已签收无退回记录，或者物流查询失败，待办会被冻结而不会调用拼多多。执行前必须把 `PDD_WRITE_ENABLED` 改为 `true`。写请求只发送一次，网络结果不明时不会自动重试，应先到平台核对，防止重复退款：
 
 ```powershell
 .\.venv\Scripts\aftersales-execute-actions.exe --types PDD_AGREE_REFUND

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -20,6 +21,10 @@ from aftersales_workbench.db.models import (
 from aftersales_workbench.integrations.pdd.client import PddClient, PddConfigurationError
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.qywx.client import InterceptNotice, QywxWebhookClient
+from aftersales_workbench.workflows.module1_logistics import (
+    Module1LogisticsGateService,
+    build_kuaidi100_client,
+)
 
 
 class WorkflowTransitionError(ValueError):
@@ -31,6 +36,8 @@ class ErpResultCode(StrEnum):
     PACKED_NOT_SHIPPED = "PACKED_NOT_SHIPPED"
     SHIPPED = "SHIPPED"
     COMPLETED = "COMPLETED"
+    RETURN_ORDER_MATCHED = "RETURN_ORDER_MATCHED"
+    RETURN_ORDER_STAGED = "RETURN_ORDER_STAGED"
 
 
 class InterceptResult(StrEnum):
@@ -68,6 +75,7 @@ class ActionCoordinator:
         AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER,
         AutomationActionType.ERP_LOCK_PACKING,
         AutomationActionType.ERP_CREATE_REFUND_RECORD,
+        AutomationActionType.ERP_MATCH_RETURN_ORDER,
     }
 
     def __init__(self, session: Session) -> None:
@@ -150,6 +158,17 @@ class ActionCoordinator:
                     order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
                 else:
                     raise WorkflowTransitionError("退款流水任务缺少有效 origin")
+            elif action_type is AutomationActionType.ERP_MATCH_RETURN_ORDER:
+                if result_code is ErpResultCode.RETURN_ORDER_MATCHED:
+                    order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+                elif result_code is ErpResultCode.RETURN_ORDER_STAGED:
+                    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+                    order.exception_type = "退货单在暂存列表，等待认领"
+                else:
+                    raise WorkflowTransitionError(
+                        "ERP_MATCH_RETURN_ORDER 必须回填 RETURN_ORDER_MATCHED "
+                        "或 RETURN_ORDER_STAGED"
+                    )
             self.session.commit()
         except Exception:
             self.session.rollback()
@@ -165,27 +184,60 @@ class ActionCoordinator:
         try:
             order = self._get_order(after_sales_sn)
             current = WorkflowStatus(order.workflow_status)
-            if result is InterceptResult.RETURNED and current is WorkflowStatus.INTERCEPT_SUCCESS:
-                return False
             if result is InterceptResult.FAILED and current is WorkflowStatus.INTERCEPT_FAILED:
                 return False
-            if current is not WorkflowStatus.INTERCEPT_PUSHED:
-                raise WorkflowTransitionError("只有已推送拦截的订单才能回填拦截结果")
+            if result is InterceptResult.RETURNED and current in {
+                WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                WorkflowStatus.INTERCEPT_SUCCESS,
+            }:
+                return False
             if result is InterceptResult.FAILED:
+                if current not in {
+                    WorkflowStatus.INTERCEPT_PUSHED,
+                    WorkflowStatus.INTERCEPT_CONFIRMED,
+                    WorkflowStatus.INTERCEPT_WAITING_RETURN,
+                }:
+                    raise WorkflowTransitionError("当前状态不允许回填拦截失败")
+                self._cancel_pending_refund(after_sales_sn)
                 order.workflow_status = WorkflowStatus.INTERCEPT_FAILED
                 order.exception_type = (note or "快递拦截失败")[:50]
                 self.session.commit()
                 return True
-            order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+            if current not in {
+                WorkflowStatus.INTERCEPT_PUSHED,
+                WorkflowStatus.INTERCEPT_CONFIRMED,
+                WorkflowStatus.INTERCEPT_WAITING_RETURN,
+                WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,
+            }:
+                raise WorkflowTransitionError("当前状态不允许确认包裹退回")
+            order.logistics_state = "RETURNED"
+            order.logistics_latest_context = (note or "人工确认已有明确退回记录")[:500]
+            now = datetime.now(UTC).replace(tzinfo=None)
+            order.logistics_checked_at = now
+            order.logistics_return_detected_at = now
+            platform_refunded = self._platform_refund_completed(order) or (
+                current is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+            )
             next_action = (
-                AutomationActionType.ERP_CREATE_REFUND_RECORD
-                if self._platform_refund_completed(order)
+                AutomationActionType.ERP_MATCH_RETURN_ORDER
+                if platform_refunded
                 else AutomationActionType.PDD_AGREE_REFUND
             )
+            order.workflow_status = (
+                WorkflowStatus.RETURN_WAITING_ERP_MATCH
+                if platform_refunded
+                else WorkflowStatus.INTERCEPT_CONFIRMED
+            )
+            payload: dict[str, Any] = {
+                "origin": "module1",
+                "intercept_note": note,
+            }
+            if next_action is AutomationActionType.ERP_MATCH_RETURN_ORDER:
+                payload["tracking_number"] = order.forward_tracking_number
             created = self._enqueue(
                 after_sales_sn,
                 next_action,
-                {"origin": "module1", "intercept_note": note},
+                payload,
             )
             self.session.commit()
             return created
@@ -208,11 +260,27 @@ class ActionCoordinator:
                 origin = str((task.payload or {}).get("origin") or "")
                 if origin not in {"module1", "module3"}:
                     raise WorkflowTransitionError("平台退款动作缺少有效 origin")
-                self._enqueue(
-                    task.after_sales_sn,
-                    AutomationActionType.ERP_CREATE_REFUND_RECORD,
-                    {"origin": origin},
-                )
+                if origin == "module1":
+                    if order.logistics_return_detected_at is not None:
+                        order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
+                        self._enqueue(
+                            task.after_sales_sn,
+                            AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                            {
+                                "origin": "module1",
+                                "tracking_number": order.forward_tracking_number,
+                            },
+                        )
+                    else:
+                        order.workflow_status = (
+                            WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+                        )
+                else:
+                    self._enqueue(
+                        task.after_sales_sn,
+                        AutomationActionType.ERP_CREATE_REFUND_RECORD,
+                        {"origin": origin},
+                    )
             else:
                 raise WorkflowTransitionError("该任务不是可执行的外部动作")
             self.session.commit()
@@ -288,6 +356,27 @@ class ActionCoordinator:
         )
         return True
 
+    def _cancel_pending_refund(self, after_sales_sn: str) -> bool:
+        task = self.session.execute(
+            select(AftersalesActionTask).where(
+                AftersalesActionTask.after_sales_sn == after_sales_sn,
+                AftersalesActionTask.action_type
+                == AutomationActionType.PDD_AGREE_REFUND,
+            )
+        ).scalar_one_or_none()
+        if task is None:
+            return False
+        status = AutomationTaskStatus(task.action_status)
+        if status is AutomationTaskStatus.PENDING:
+            task.action_status = AutomationTaskStatus.CANCELLED
+            task.last_error = "快递拦截失败，已取消自动退款"
+            return True
+        if status in {AutomationTaskStatus.RUNNING, AutomationTaskStatus.SUCCEEDED}:
+            raise WorkflowTransitionError(
+                "平台退款任务已执行或正在执行，不能直接回填拦截失败"
+            )
+        return False
+
 
 class ExternalActionExecutor:
     _EXTERNAL_TYPES = (
@@ -322,6 +411,25 @@ class ExternalActionExecutor:
         )
         if dry_run:
             return result
+        self._validate_write_gates(tuple({task.action_type for task in tasks}))
+        module1_refunds = tuple(
+            task.after_sales_sn
+            for task in tasks
+            if task.action_type is AutomationActionType.PDD_AGREE_REFUND
+            and str(task.payload.get("origin") or "") == "module1"
+        )
+        if module1_refunds:
+            self._refresh_module1_refund_gates(module1_refunds)
+            tasks = self._list_pending(selected, limit)
+            result.scanned = len(tasks)
+            result.qywx_notices = sum(
+                task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY
+                for task in tasks
+            )
+            result.pdd_refunds = sum(
+                task.action_type is AutomationActionType.PDD_AGREE_REFUND
+                for task in tasks
+            )
         present_types = tuple({task.action_type for task in tasks})
         self._validate_write_gates(present_types)
 
@@ -372,6 +480,29 @@ class ExternalActionExecutor:
             qywx_client.close()
             for client in pdd_clients.values():
                 client.close()
+
+    def _refresh_module1_refund_gates(
+        self, after_sales_sns: tuple[str, ...]
+    ) -> None:
+        client = build_kuaidi100_client(self.settings)
+        try:
+            default_phone = (
+                self.settings.kuaidi100_default_phone.get_secret_value().strip()
+                if self.settings.kuaidi100_default_phone
+                else None
+            )
+            Module1LogisticsGateService(
+                self.session,
+                client,
+                carrier_map=self.settings.kuaidi100_carrier_map,
+                default_phone=default_phone,
+            ).run(
+                limit=min(len(after_sales_sns), 500),
+                dry_run=False,
+                after_sales_sns=after_sales_sns,
+            )
+        finally:
+            client.close()
 
     def _list_pending(
         self,
