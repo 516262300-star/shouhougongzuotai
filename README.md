@@ -4,7 +4,7 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 3 未发货/已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1 常驻后台运行器、模块 3 未发货/已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
 - 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
 - 暂未直连：真实 ERP API。模块 3 先使用人工回填 CLI 完成 ERP 动作确认，待 ERP 接口规则明确后替换为适配器。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
 - 所有外部写入默认关闭。只有分别配置并打开 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED` 后，执行命令才会真正发送企微通知或同意退款。
@@ -72,6 +72,12 @@ alembic downgrade -1
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
+| `MODULE1_WORKER_SHOP_NUMBERS` | 模块 1 后台运行店铺序号 JSON 数组；5 店 Token 失效期间默认排除 | `[1,2,3,4,6,7]` |
+| `MODULE1_WORKER_INTERVAL_SECONDS` | 后台运行器每个完整周期结束后的等待秒数 | `60` |
+| `MODULE1_WORKER_MAX_SYNC_WINDOWS` | 每店每周期最多处理的 30 分钟同步窗口数 | `2` |
+| `MODULE1_WORKER_TASK_LIMIT` | 每周期最多准备、发送或退款的动作任务数 | `20` |
+| `MODULE1_NOTIFICATION_TRANSPORT` | 拦截通知出口；当前支持 `disabled` / `qywx_webhook` | `disabled` |
+| `MODULE1_PDD_REFUND_EXECUTION_ENABLED` | 后台运行器的平台退款执行总开关 | `false` |
 | `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
 | `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
 | `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong","131":"debangwuliu","384":"jtexpress"}` |
@@ -188,6 +194,50 @@ alembic upgrade head
 ```
 
 2026-08-31 以1店近72小时真实售后数据完成模块1只读预演：严格按 `ONLY_REFUND` 筛出2笔、均为极兔；快递100判定1笔 `IN_TRANSIT`（退款闸门可放行）、1笔 `DELIVERED` 且没有退回记录（退款闸门冻结），物流查询失败0笔。预演未创建动作任务、未发送企微消息、未调用拼多多退款接口。
+
+### 模块 1 实际后台运行
+
+后台运行器把现有的一次性命令串成固定周期，执行顺序为：
+
+1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；
+2. 筛出“在途 + 仅退款”并幂等生成本地拦截通知任务；
+3. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通知出口；默认 `disabled`，任务只保留在待发送队列；
+4. 对已经成功发出拦截通知的订单查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
+5. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
+
+因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。以后新增桌面发送适配器只替换第 3 步，不修改前后状态机。
+
+先在前台执行一个周期核对输出。该命令会增量写入本地 MySQL 和本地动作队列，但不会发送通知或调用平台退款：
+
+```powershell
+.\.venv\Scripts\aftersales-run-module1.exe
+```
+
+确认后使用 Windows 启停脚本让它隐藏在后台持续运行：
+
+```powershell
+& .\scripts\module1-worker.ps1 -Action Start
+& .\scripts\module1-worker.ps1 -Action Status
+& .\scripts\module1-worker.ps1 -Action Stop
+```
+
+默认运行 1、2、3、4、6、7 店，暂时跳过 Token 已失效的 5 店；每店每周期最多追赶两个 30 分钟窗口，每周期最多处理 20 条动作任务，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
+
+后台运行失败时按以下方式恢复：
+
+- 单店拼多多读取失败：其他店继续完成；修复 Token 或网络后，下个周期从该店最后成功游标重试，不会跳过失败窗口；
+- 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
+- 快递 100 未配置或查询失败：不放行平台退款，下个周期重查；
+- 电脑重启：本地 MySQL 不是 Windows 服务时先启动 MySQL，再重新执行 `Start`；
+- 重复启动：启停脚本通过 PID 文件阻止第二个后台进程。不要绕过脚本同时启动多个 `--forever` 实例。
+
+如需前台观察持续循环或临时覆盖店铺，可直接执行：
+
+```powershell
+.\.venv\Scripts\aftersales-run-module1.exe --forever --shops 1 2 3 4 6 7 --interval-seconds 60
+```
+
+未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`；若采用企业微信桌面自动发送，则新增独立适配器和总开关，现阶段不要把通知出口设置为未支持的值。
 
 ## 模块 3：未发货退款与锁包
 

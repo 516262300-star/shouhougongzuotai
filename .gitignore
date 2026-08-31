@@ -2,6 +2,7 @@
 .env.backup.*
 .mysql-data/
 .mysql-local.ini
+.runtime/
 .venv/
 __pycache__/
 *.py[cod]

@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,6 +43,15 @@ class Settings(BaseSettings):
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)
     qywx_write_enabled: bool = False
+
+    module1_worker_shop_numbers: list[int] = Field(
+        default_factory=lambda: [1, 2, 3, 4, 6, 7]
+    )
+    module1_worker_interval_seconds: int = Field(default=60, ge=10, le=3600)
+    module1_worker_max_sync_windows: int = Field(default=2, ge=1, le=48)
+    module1_worker_task_limit: int = Field(default=20, ge=1, le=500)
+    module1_notification_transport: Literal["disabled", "qywx_webhook"] = "disabled"
+    module1_pdd_refund_execution_enabled: bool = False
 
     kuaidi100_api_url: str = "https://poll.kuaidi100.com/poll/query.do"
     kuaidi100_customer: SecretStr | None = None
