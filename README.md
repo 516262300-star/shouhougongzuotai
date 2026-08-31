@@ -72,7 +72,7 @@ alembic downgrade -1
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
 | `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
 | `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
-| `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{}` |
+| `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong"}` |
 | `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET` | 1–4 店共用的开放平台应用凭据 | 无 |
 | `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET` | 5–7 店共用的另一组应用凭据 | 无 |
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
@@ -166,6 +166,8 @@ alembic upgrade head
 ```
 
 配置快递 100 后先只读预览物流闸门，再写入本地状态和待办。`KUAIDI100_CARRIER_MAP` 示例为 `{"拼多多物流公司ID":"kuaidi100公司代码"}`，真实映射应以当前订单数据为准：
+
+2026-08-31 已使用真实近期售后运单完成只读联调：旧系统现有快递 100 授权可正常返回轨迹，拼多多物流公司 ID `85` 已确认对应圆通代码 `yuantong`。授权值只允许保存在被 Git 忽略的本机 `.env`，不得写入 README、`.env.example` 或提交记录；其他快递公司映射须逐一用真实订单确认，不能猜测。
 
 ```powershell
 .\.venv\Scripts\aftersales-check-intercept-logistics.exe --limit 100
