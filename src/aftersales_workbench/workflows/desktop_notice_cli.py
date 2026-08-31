@@ -27,7 +27,12 @@ def main(argv: list[str] | None = None) -> int:
             DesktopNoticePlanner(settings.module1_desktop_group_map),
         ).run(limit=args.limit)
     print(json.dumps(result.safe_dict(), ensure_ascii=False, indent=2))
-    return 0 if result.blocked_missing_group == 0 else 1
+    return (
+        0
+        if result.blocked_preflight == 0
+        and result.blocked_missing_group == 0
+        else 1
+    )
 
 
 if __name__ == "__main__":

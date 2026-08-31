@@ -238,6 +238,7 @@ def test_module1_pdd_success_waits_for_parcel_return() -> None:
 
 def test_module1_pdd_success_after_return_queues_erp_match() -> None:
     order = _order()
+    order.logistics_state = "RETURNED"
     order.logistics_return_detected_at = object()
     coordinator = TestCoordinator(
         _task(
@@ -252,3 +253,22 @@ def test_module1_pdd_success_after_return_queues_erp_match() -> None:
 
     assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
     assert coordinator.enqueued[0][0] is AutomationActionType.ERP_MATCH_RETURN_ORDER
+
+
+def test_module1_pdd_success_while_returning_waits_for_arrival() -> None:
+    order = _order()
+    order.logistics_state = "RETURNING"
+    order.logistics_return_detected_at = object()
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.PDD_AGREE_REFUND,
+            status=AutomationTaskStatus.RUNNING,
+            origin="module1",
+        ),
+        order,
+    )
+
+    coordinator.record_external_success(1)
+
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+    assert coordinator.enqueued == []

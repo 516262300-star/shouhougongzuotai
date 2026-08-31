@@ -193,3 +193,19 @@ def test_returned_refunded_order_waits_for_erp_match() -> None:
     assert result.waiting_erp_match == 1
     assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
     assert session.added[0].action_type is AutomationActionType.ERP_MATCH_RETURN_ORDER
+
+
+def test_returning_refunded_order_does_not_start_erp_match_early() -> None:
+    order = _order(platform_refunded=True)
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["包裹正在退回发件方"]),
+        carrier_map={"1": "yuantong"},
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.waiting_erp_match == 0
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+    assert session.added == []

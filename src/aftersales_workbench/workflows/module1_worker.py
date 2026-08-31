@@ -25,6 +25,9 @@ from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
 )
+from aftersales_workbench.workflows.module1_preflight import (
+    Module1NotificationPreflightService,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,6 +79,7 @@ class Module1WorkerCycleResult:
     ok: bool = True
     sync: WorkerStageResult | None = None
     intercept_tasks: WorkerStageResult | None = None
+    notification_preflight: WorkerStageResult | None = None
     notification: WorkerStageResult | None = None
     logistics_gate: WorkerStageResult | None = None
     pdd_refund: WorkerStageResult | None = None
@@ -104,6 +108,15 @@ class Module1WorkerCycleResult:
             "intercept_tasks": self._stage_counts(
                 self.intercept_tasks,
                 ("scanned", "tasks_created", "tasks_existing"),
+            ),
+            "notification_preflight": self._stage_counts(
+                self.notification_preflight,
+                (
+                    "scanned",
+                    "notices_ready",
+                    "notices_cancelled",
+                    "logistics_query_failed",
+                ),
             ),
             "notification": self._stage_counts(
                 self.notification,
@@ -148,17 +161,25 @@ class Module1WorkerRuntime:
         self.options = options
         self.shops = self._selected_shops()
         self.shop_codes = tuple(shop.shop_code for shop in self.shops)
+        self._notification_preflight_completed = False
 
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
         result.intercept_tasks = self._capture(self._prepare_intercept_tasks)
+        result.notification_preflight = self._capture(
+            self._preflight_notifications
+        )
+        self._notification_preflight_completed = (
+            result.notification_preflight.status == "completed"
+        )
         result.notification = self._capture(self._process_notifications)
         result.logistics_gate = self._capture(self._process_logistics_gate)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
         stages = (
             result.sync,
             result.intercept_tasks,
+            result.notification_preflight,
             result.notification,
             result.logistics_gate,
             result.pdd_refund,
@@ -220,6 +241,14 @@ class Module1WorkerRuntime:
         return WorkerStageResult.completed(run.safe_dict())
 
     def _process_notifications(self) -> WorkerStageResult:
+        if not self._notification_preflight_completed:
+            return WorkerStageResult.skipped(
+                "物流前置闸门未完成，禁止发送拦截通知",
+                transport=self.options.notification_transport,
+                scanned=0,
+                succeeded=0,
+                failed=0,
+            )
         apply = self.options.notification_transport == "qywx_webhook"
         if apply and not self.settings.qywx_write_enabled:
             raise RuntimeError(
@@ -245,6 +274,33 @@ class Module1WorkerRuntime:
                 error=f"通知发送失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)
+
+    def _preflight_notifications(self) -> WorkerStageResult:
+        if not (
+            _secret_configured(self.settings.kuaidi100_customer)
+            and _secret_configured(self.settings.kuaidi100_key)
+        ):
+            return WorkerStageResult.skipped(
+                "未配置快递 100，物流前置闸门失败关闭通知发送",
+                safe_to_notify=False,
+            )
+        client = build_kuaidi100_client(self.settings)
+        try:
+            default_phone = (
+                self.settings.kuaidi100_default_phone.get_secret_value().strip()
+                if self.settings.kuaidi100_default_phone
+                else None
+            )
+            with SessionLocal() as session:
+                run = Module1NotificationPreflightService(
+                    session,
+                    client,
+                    carrier_map=self.settings.kuaidi100_carrier_map,
+                    default_phone=default_phone,
+                ).run(limit=self.options.task_limit, dry_run=False)
+        finally:
+            client.close()
+        return WorkerStageResult.completed(run.safe_dict())
 
     def _process_logistics_gate(self) -> WorkerStageResult:
         if not (

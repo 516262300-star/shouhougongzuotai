@@ -25,6 +25,9 @@ from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
 )
+from aftersales_workbench.workflows.module1_preflight import (
+    notification_preflight_ready,
+)
 
 
 class WorkflowTransitionError(ValueError):
@@ -64,6 +67,7 @@ class ExternalActionRunResult:
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
+    preflight_blocked: int = 0
 
     def safe_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -261,7 +265,7 @@ class ActionCoordinator:
                 if origin not in {"module1", "module3"}:
                     raise WorkflowTransitionError("平台退款动作缺少有效 origin")
                 if origin == "module1":
-                    if order.logistics_return_detected_at is not None:
+                    if order.logistics_state == "RETURNED":
                         order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
                         self._enqueue(
                             task.after_sales_sn,
@@ -401,8 +405,13 @@ class ExternalActionExecutor:
         invalid = set(selected).difference(self._EXTERNAL_TYPES)
         if invalid:
             raise ValueError("只允许执行企微通知和拼多多退款动作")
-        tasks = self._list_pending(selected, limit)
-        result = ExternalActionRunResult(dry_run=dry_run, scanned=len(tasks))
+        listed_tasks = self._list_pending(selected, limit)
+        tasks, preflight_blocked = self._filter_notification_preflight(listed_tasks)
+        result = ExternalActionRunResult(
+            dry_run=dry_run,
+            scanned=len(listed_tasks),
+            preflight_blocked=preflight_blocked,
+        )
         result.qywx_notices = sum(
             task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY for task in tasks
         )
@@ -420,8 +429,12 @@ class ExternalActionExecutor:
         )
         if module1_refunds:
             self._refresh_module1_refund_gates(module1_refunds)
-            tasks = self._list_pending(selected, limit)
-            result.scanned = len(tasks)
+            listed_tasks = self._list_pending(selected, limit)
+            tasks, preflight_blocked = self._filter_notification_preflight(
+                listed_tasks
+            )
+            result.scanned = len(listed_tasks)
+            result.preflight_blocked = preflight_blocked
             result.qywx_notices = sum(
                 task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY
                 for task in tasks
@@ -480,6 +493,22 @@ class ExternalActionExecutor:
             qywx_client.close()
             for client in pdd_clients.values():
                 client.close()
+
+    @staticmethod
+    def _filter_notification_preflight(
+        tasks: list[ExternalTaskSnapshot],
+    ) -> tuple[list[ExternalTaskSnapshot], int]:
+        ready: list[ExternalTaskSnapshot] = []
+        blocked = 0
+        for task in tasks:
+            if (
+                task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY
+                and not notification_preflight_ready(task.payload)
+            ):
+                blocked += 1
+                continue
+            ready.append(task)
+        return ready, blocked
 
     def _refresh_module1_refund_gates(
         self, after_sales_sns: tuple[str, ...]

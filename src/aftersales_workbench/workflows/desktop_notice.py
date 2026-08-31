@@ -13,6 +13,9 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
     Shop,
 )
+from aftersales_workbench.workflows.module1_preflight import (
+    notification_preflight_ready,
+)
 from aftersales_workbench.workflows.module1_preview import mask_identifier
 
 
@@ -55,6 +58,7 @@ class DesktopNoticePreviewResult:
     read_only: bool
     pending_tasks: int
     ready: int
+    blocked_preflight: int
     blocked_missing_group: int
     plans: list[DesktopNoticePlan]
 
@@ -63,6 +67,7 @@ class DesktopNoticePreviewResult:
             "read_only": self.read_only,
             "pending_tasks": self.pending_tasks,
             "ready": self.ready,
+            "blocked_preflight": self.blocked_preflight,
             "blocked_missing_group": self.blocked_missing_group,
             "plans": [plan.safe_dict() for plan in self.plans],
             "messages_drafted": 0,
@@ -123,6 +128,7 @@ class DesktopNoticePreviewService:
                 Shop.shop_name,
                 AfterSalesOrder.forward_tracking_number,
                 AfterSalesOrder.carrier_code,
+                AftersalesActionTask.payload,
             )
             .join(
                 AfterSalesOrder,
@@ -139,8 +145,12 @@ class DesktopNoticePreviewService:
         )
         rows = self.session.execute(statement).all()
         plans: list[DesktopNoticePlan] = []
+        blocked_preflight = 0
         blocked = 0
         for row in rows:
+            if not notification_preflight_ready(row.payload):
+                blocked_preflight += 1
+                continue
             candidate = DesktopNoticeCandidate(
                 task_id=row.id,
                 after_sales_sn=row.after_sales_sn,
@@ -157,6 +167,7 @@ class DesktopNoticePreviewService:
             read_only=True,
             pending_tasks=len(rows),
             ready=len(plans),
+            blocked_preflight=blocked_preflight,
             blocked_missing_group=blocked,
             plans=plans,
         )

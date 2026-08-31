@@ -21,9 +21,15 @@ def _settings(**overrides) -> Settings:
 
 
 class FakeRuntime(Module1WorkerRuntime):
-    def __init__(self, *, fail_sync: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_sync: bool = False,
+        fail_preflight: bool = False,
+    ) -> None:
         self.calls: list[str] = []
         self.fail_sync = fail_sync
+        self.fail_preflight = fail_preflight
         super().__init__(
             _settings(),
             Module1WorkerOptions(shop_numbers=(1,)),
@@ -41,7 +47,17 @@ class FakeRuntime(Module1WorkerRuntime):
 
     def _process_notifications(self) -> WorkerStageResult:
         self.calls.append("notification")
+        if not self._notification_preflight_completed:
+            return WorkerStageResult.skipped("preflight blocked", qywx_notices=0)
         return WorkerStageResult.skipped("disabled", qywx_notices=1)
+
+    def _preflight_notifications(self) -> WorkerStageResult:
+        self.calls.append("notification_preflight")
+        if self.fail_preflight:
+            raise RuntimeError("preflight failed")
+        return WorkerStageResult.completed(
+            {"scanned": 1, "notices_ready": 1, "notices_cancelled": 0}
+        )
 
     def _process_logistics_gate(self) -> WorkerStageResult:
         self.calls.append("logistics_gate")
@@ -61,6 +77,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert runtime.calls == [
         "sync",
         "intercept_tasks",
+        "notification_preflight",
         "notification",
         "logistics_gate",
         "pdd_refund",
@@ -84,6 +101,19 @@ def test_worker_cycle_isolates_stage_failure_and_never_skips_later_safety_stages
     assert result.sync.status == "failed"
     assert "sync failed" in str(result.sync.error)
     assert runtime.calls[-1] == "pdd_refund"
+
+
+def test_worker_blocks_notification_when_preflight_fails() -> None:
+    runtime = FakeRuntime(fail_preflight=True)
+
+    result = runtime.run_cycle()
+
+    assert result.ok is False
+    assert result.notification_preflight is not None
+    assert result.notification_preflight.status == "failed"
+    assert result.notification is not None
+    assert result.notification.status == "skipped"
+    assert result.notification.details["qywx_notices"] == 0
 
 
 @pytest.mark.parametrize(

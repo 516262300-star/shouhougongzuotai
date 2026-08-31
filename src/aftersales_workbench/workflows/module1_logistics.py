@@ -220,10 +220,12 @@ class Module1LogisticsGateService:
         )
         if state in (LogisticsState.RETURNING, LogisticsState.RETURNED):
             result.return_detected += 1
-            if platform_refunded:
+            if state is LogisticsState.RETURNED and platform_refunded:
                 result.waiting_erp_match += 1
-            else:
+            elif not platform_refunded:
                 result.allowed_refunds += 1
+            else:
+                result.blocked_delivery += 1
         elif (
             state is LogisticsState.IN_TRANSIT
             and not platform_refunded
@@ -251,7 +253,19 @@ class Module1LogisticsGateService:
             WorkflowStatus(order.workflow_status)
             is WorkflowStatus.INTERCEPT_WAITING_RETURN
         )
-        if state in (LogisticsState.RETURNING, LogisticsState.RETURNED):
+        if state is LogisticsState.RETURNING:
+            order.logistics_return_detected_at = now
+            if platform_refunded:
+                order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+            else:
+                order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+                self._enqueue(
+                    order.after_sales_sn,
+                    AutomationActionType.PDD_AGREE_REFUND,
+                    {"origin": "module1", "refund_gate": state.value},
+                )
+            return
+        if state is LogisticsState.RETURNED:
             order.logistics_return_detected_at = now
             if platform_refunded:
                 order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
