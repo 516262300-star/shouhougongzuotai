@@ -42,6 +42,7 @@ from aftersales_workbench.workflows.module1 import (
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
+    build_logistics_polling_policy,
 )
 from aftersales_workbench.workflows.module1_manual_todo import (
     Module1ManualTodoService,
@@ -461,6 +462,7 @@ class Module1WorkerRuntime:
                     client,
                     carrier_map=self.settings.kuaidi100_carrier_map,
                     default_phone=default_phone,
+                    polling_policy=build_logistics_polling_policy(self.settings),
                     notification_min_task_id=(
                         self.settings.module1_notification_min_task_id
                     ),
@@ -488,6 +490,7 @@ class Module1WorkerRuntime:
                     client,
                     carrier_map=self.settings.kuaidi100_carrier_map,
                     default_phone=default_phone,
+                    polling_policy=build_logistics_polling_policy(self.settings),
                 ).run(limit=self.options.task_limit, dry_run=False)
         finally:
             client.close()

@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
                 client,
                 carrier_map=settings.kuaidi100_carrier_map,
                 default_phone=_secret(settings.kuaidi100_default_phone),
-            ).run(limit=args.limit, dry_run=not args.apply)
+            ).run(limit=args.limit, dry_run=not args.apply, force_refresh=True)
     finally:
         client.close()
     print(json.dumps(result.safe_dict(), ensure_ascii=False, indent=2))

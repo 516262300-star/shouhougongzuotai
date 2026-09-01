@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     kuaidi100_default_phone: SecretStr | None = None
     kuaidi100_timeout_seconds: float = Field(default=10, gt=0, le=60)
     kuaidi100_carrier_map: dict[str, str] = Field(default_factory=dict)
+    kuaidi100_success_refresh_seconds: int = Field(default=300, ge=60, le=3600)
+    kuaidi100_failure_initial_retry_seconds: int = Field(
+        default=300, ge=60, le=3600
+    )
+    kuaidi100_failure_max_retry_seconds: int = Field(
+        default=1800, ge=300, le=86400
+    )
+    kuaidi100_manual_after_failures: int = Field(default=6, ge=1, le=100)
 
     pdd_app_1_client_id: SecretStr | None = None
     pdd_app_1_client_secret: SecretStr | None = None

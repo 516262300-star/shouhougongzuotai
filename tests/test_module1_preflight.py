@@ -90,6 +90,9 @@ def _order(*, platform_refunded: bool = False):
         logistics_latest_context=None,
         logistics_checked_at=None,
         logistics_return_detected_at=None,
+        logistics_query_failures=0,
+        logistics_last_error=None,
+        logistics_next_check_at=None,
         workflow_status=WorkflowStatus.PENDING_CHECK,
         exception_type=None,
     )
@@ -144,6 +147,42 @@ def test_query_failure_keeps_notice_and_freezes_refund() -> None:
     assert task.action_status is AutomationTaskStatus.PENDING
     assert order.logistics_state == "UNKNOWN"
     assert task.payload["refund_gate"] == "HOLD"
+    assert order.logistics_query_failures == 1
+    assert order.logistics_last_error == "no trace"
+    assert order.logistics_next_check_at > order.logistics_checked_at
+    assert task.payload["manual_check_required"] is False
+    assert "等待自动重试" in task.last_error
+
+
+def test_sixth_query_failure_marks_task_for_manual_review() -> None:
+    task = _task()
+    order = _order()
+    order.logistics_query_failures = 5
+
+    _session, result = _run(
+        task,
+        order,
+        FakeQuery(error=RuntimeError("查询无结果，请隔段时间再查")),
+    )
+
+    assert result.manual_review_required == 1
+    assert order.logistics_query_failures == 6
+    assert task.payload["manual_check_required"] is True
+    assert "需人工核对" in task.last_error
+
+
+def test_success_resets_query_failure_audit() -> None:
+    task = _task()
+    order = _order()
+    order.logistics_query_failures = 3
+    order.logistics_last_error = "old error"
+
+    _run(task, order, FakeQuery("快件运输中"))
+
+    assert order.logistics_query_failures == 0
+    assert order.logistics_last_error is None
+    assert task.last_error is None
+    assert task.payload["manual_check_required"] is False
 
 
 def test_delivered_notice_is_cancelled_and_sent_to_manual_processing() -> None:

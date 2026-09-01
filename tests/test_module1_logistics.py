@@ -11,6 +11,7 @@ from aftersales_workbench.workflows.module1_logistics import (
     LogisticsState,
     Module1LogisticsGateService,
     classify_logistics_trace,
+    query_logistics_cached,
 )
 
 
@@ -55,10 +56,16 @@ class FakeSession:
 
 
 class FakeQuery:
-    def __init__(self, contexts):
+    def __init__(self, contexts=None, *, error=None):
+        self.error = error
+        self.calls = 0
+        contexts = contexts or []
         self.events = [LogisticsEvent(context=value) for value in contexts]
 
     def query(self, **_kwargs):
+        self.calls += 1
+        if self.error:
+            raise self.error
         return self.events
 
 
@@ -75,6 +82,9 @@ def _order(*, platform_refunded=False):
         logistics_latest_context=None,
         logistics_checked_at=None,
         logistics_return_detected_at=None,
+        logistics_query_failures=0,
+        logistics_last_error=None,
+        logistics_next_check_at=None,
     )
 
 
@@ -82,6 +92,29 @@ def test_classifier_blocks_out_for_delivery() -> None:
     state = classify_logistics_trace([LogisticsEvent(context="快件正在派送中")])
 
     assert state is LogisticsState.OUT_FOR_DELIVERY
+
+
+def test_same_tracking_number_is_only_queried_once_per_run() -> None:
+    query = FakeQuery(["快件运输中"])
+    cache = {}
+
+    first = query_logistics_cached(
+        query,
+        cache,
+        carrier_code="jtexpress",
+        tracking_number="JT123",
+        phone=None,
+    )
+    second = query_logistics_cached(
+        query,
+        cache,
+        carrier_code="jtexpress",
+        tracking_number="JT123",
+        phone=None,
+    )
+
+    assert first is second
+    assert query.calls == 1
 
 
 def test_classifier_return_evidence_overrides_delivery() -> None:
@@ -209,3 +242,24 @@ def test_returning_refunded_order_does_not_start_erp_match_early() -> None:
     assert result.waiting_erp_match == 0
     assert order.workflow_status is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
     assert session.added == []
+
+
+def test_query_failure_preserves_last_known_state_and_schedules_retry() -> None:
+    order = _order()
+    order.logistics_state = "OUT_FOR_DELIVERY"
+    order.logistics_latest_context = "正在派件"
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(error=RuntimeError("查询无结果，请隔段时间再查")),
+        carrier_map={"1": "yuantong"},
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.failed == 1
+    assert order.logistics_state == "OUT_FOR_DELIVERY"
+    assert order.logistics_latest_context == "正在派件"
+    assert order.logistics_query_failures == 1
+    assert "查询无结果" in order.logistics_last_error
+    assert order.logistics_next_check_at > order.logistics_checked_at

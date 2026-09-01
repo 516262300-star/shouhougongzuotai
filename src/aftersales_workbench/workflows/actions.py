@@ -574,6 +574,7 @@ class ExternalActionExecutor:
                 limit=min(len(after_sales_sns), 500),
                 dry_run=False,
                 after_sales_sns=after_sales_sns,
+                force_refresh=True,
             )
         finally:
             client.close()

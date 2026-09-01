@@ -366,7 +366,11 @@ class AftersalesRecordService:
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
         )
-        decision_note = order.logistics_latest_context or self._decision_note(workflow, logistics)
+        decision_note = (
+            order.logistics_last_error
+            or order.logistics_latest_context
+            or self._decision_note(workflow, logistics)
+        )
         owner = self._cached_owner(order) or self.sales_owner_resolver.resolve(
             order.platform_order_sn
         )
@@ -431,6 +435,9 @@ class AftersalesRecordService:
                 "tone": _tone_for_logistics(logistics),
                 "latest_context": order.logistics_latest_context or "尚无快递 100 轨迹记录",
                 "checked_at": _utc_naive_dt(order.logistics_checked_at),
+                "query_failures": order.logistics_query_failures,
+                "last_error": order.logistics_last_error,
+                "next_check_at": _utc_naive_dt(order.logistics_next_check_at),
             },
             "timeline": self._timeline(order, tasks),
         }
@@ -579,7 +586,11 @@ class AftersalesRecordService:
             "logistics_state": logistics,
             "logistics_label": LOGISTICS_LABELS.get(logistics, "待更新"),
             "logistics_tone": _tone_for_logistics(logistics),
-            "logistics_context": order.logistics_latest_context or "尚无物流轨迹",
+            "logistics_context": (
+                order.logistics_last_error
+                or order.logistics_latest_context
+                or "尚无物流轨迹"
+            ),
             "logistics_checked_at": _utc_naive_dt(order.logistics_checked_at),
             "refund_gate_label": refund_label,
             "refund_gate_tone": refund_tone,

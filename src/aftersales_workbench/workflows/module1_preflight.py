@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -14,9 +14,14 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.module1_logistics import (
+    LogisticsPollingPolicy,
     LogisticsQuery,
+    LogisticsQueryCache,
     LogisticsState,
     classify_logistics_trace,
+    query_logistics_cached,
+    record_logistics_query_failure,
+    record_logistics_query_success,
 )
 
 
@@ -35,6 +40,7 @@ class NotificationPreflightResult:
     refund_ready: int = 0
     erp_match_ready: int = 0
     logistics_query_failed: int = 0
+    manual_review_required: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
         return asdict(self)
@@ -72,6 +78,7 @@ class Module1NotificationPreflightService:
         carrier_map: dict[str, str] | None = None,
         default_phone: str | None = None,
         notification_min_task_id: int = 0,
+        polling_policy: LogisticsPollingPolicy | None = None,
     ) -> None:
         if notification_min_task_id < 0:
             raise ValueError("notification_min_task_id 不能小于 0")
@@ -80,6 +87,7 @@ class Module1NotificationPreflightService:
         self.carrier_map = carrier_map or {}
         self.default_phone = default_phone
         self.notification_min_task_id = notification_min_task_id
+        self.polling_policy = polling_policy or LogisticsPollingPolicy()
 
     def run(
         self,
@@ -89,36 +97,53 @@ class Module1NotificationPreflightService:
     ) -> NotificationPreflightResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
+        now = _utcnow_naive()
         statement = (
             select(AftersalesActionTask, AfterSalesOrder)
             .join(
                 AfterSalesOrder,
-                AfterSalesOrder.after_sales_sn
-                == AftersalesActionTask.after_sales_sn,
+                AfterSalesOrder.after_sales_sn == AftersalesActionTask.after_sales_sn,
             )
             .where(
-                AftersalesActionTask.action_type
-                == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
-                AftersalesActionTask.action_status
-                == AutomationTaskStatus.PENDING,
+                AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                or_(
+                    AfterSalesOrder.logistics_next_check_at.is_(None),
+                    AfterSalesOrder.logistics_next_check_at <= now,
+                ),
             )
             .order_by(AftersalesActionTask.id)
             .limit(limit)
         )
         if self.notification_min_task_id:
-            statement = statement.where(
-                AftersalesActionTask.id >= self.notification_min_task_id
-            )
+            statement = statement.where(AftersalesActionTask.id >= self.notification_min_task_id)
         rows = self.session.execute(statement).all()
         result = NotificationPreflightResult(dry_run=dry_run, scanned=len(rows))
+        query_cache: LogisticsQueryCache = {}
         try:
             for task, order in rows:
-                state, latest_context, query_failed = self._inspect(order)
-                if query_failed:
+                try:
+                    state, latest_context = self._inspect(order, query_cache)
+                except Exception as exc:
                     result.logistics_query_failed += 1
+                    self._count(result, order, LogisticsState.UNKNOWN)
+                    if not dry_run:
+                        failures = self._apply_query_failure(task, order, exc)
+                        if failures >= self.polling_policy.manual_after_failures:
+                            result.manual_review_required += 1
+                    continue
                 self._count(result, order, state)
                 if not dry_run:
-                    self._apply(task, order, state, latest_context)
+                    checked_at = _utcnow_naive()
+                    record_logistics_query_success(
+                        order,
+                        state=state,
+                        latest_context=latest_context,
+                        checked_at=checked_at,
+                        policy=self.polling_policy,
+                    )
+                    task.last_error = None
+                    self._apply(task, order, state, checked_at=checked_at)
             if not dry_run:
                 self.session.commit()
             return result
@@ -129,31 +154,24 @@ class Module1NotificationPreflightService:
     def _inspect(
         self,
         order: AfterSalesOrder,
-    ) -> tuple[LogisticsState, str, bool]:
-        try:
-            raw_carrier = str(order.carrier_code or "").strip()
-            carrier_code = self.carrier_map.get(raw_carrier, raw_carrier).strip()
-            if not carrier_code or carrier_code.isdigit():
-                raise ValueError("物流公司代码未映射")
-            events = self.query.query(
-                carrier_code=carrier_code,
-                tracking_number=str(order.forward_tracking_number or ""),
-                phone=self.default_phone,
-            )
-            return classify_logistics_trace(events), events[0].context, False
-        except Exception:
-            return (
-                LogisticsState.UNKNOWN,
-                "物流预检查询失败，保留拦截通知并冻结自动退款",
-                True,
-            )
+        query_cache: LogisticsQueryCache,
+    ) -> tuple[LogisticsState, str]:
+        raw_carrier = str(order.carrier_code or "").strip()
+        carrier_code = self.carrier_map.get(raw_carrier, raw_carrier).strip()
+        if not carrier_code or carrier_code.isdigit():
+            raise ValueError("物流公司代码未映射")
+        events = query_logistics_cached(
+            self.query,
+            query_cache,
+            carrier_code=carrier_code,
+            tracking_number=str(order.forward_tracking_number or ""),
+            phone=self.default_phone,
+        )
+        return classify_logistics_trace(events), events[0].context
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:
-        return (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-        )
+        return order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4
 
     def _count(
         self,
@@ -191,22 +209,21 @@ class Module1NotificationPreflightService:
         task: AftersalesActionTask,
         order: AfterSalesOrder,
         state: LogisticsState,
-        latest_context: str,
+        *,
+        checked_at: datetime,
     ) -> None:
-        now = _utcnow_naive()
-        order.logistics_state = state.value
-        order.logistics_latest_context = latest_context[:500]
-        order.logistics_checked_at = now
         payload = dict(task.payload or {})
         payload.update(
             {
                 "preflight_state": state.value,
-                "preflight_checked_at": now.isoformat(),
+                "preflight_checked_at": checked_at.isoformat(),
                 "refund_gate": (
-                    "ALLOW_AFTER_NOTICE"
-                    if state is LogisticsState.IN_TRANSIT
-                    else "HOLD"
+                    "ALLOW_AFTER_NOTICE" if state is LogisticsState.IN_TRANSIT else "HOLD"
                 ),
+                "logistics_query_failures": 0,
+                "logistics_last_error": None,
+                "logistics_next_check_at": order.logistics_next_check_at.isoformat(),
+                "manual_check_required": False,
             }
         )
         task.payload = payload
@@ -224,7 +241,7 @@ class Module1NotificationPreflightService:
             order.exception_type = "包裹已签收，无法执行在途拦截"
             return
 
-        order.logistics_return_detected_at = now
+        order.logistics_return_detected_at = checked_at
         platform_refunded = self._platform_refunded(order)
         if state is LogisticsState.RETURNING:
             if platform_refunded:
@@ -253,6 +270,38 @@ class Module1NotificationPreflightService:
                 {"origin": "module1", "refund_gate": state.value},
             )
 
+    def _apply_query_failure(
+        self,
+        task: AftersalesActionTask,
+        order: AfterSalesOrder,
+        error: Exception,
+    ) -> int:
+        checked_at = _utcnow_naive()
+        failures, error_text = record_logistics_query_failure(
+            order,
+            error=error,
+            checked_at=checked_at,
+            policy=self.polling_policy,
+        )
+        manual_required = failures >= self.polling_policy.manual_after_failures
+        retry_at = order.logistics_next_check_at
+        payload = dict(task.payload or {})
+        payload.update(
+            {
+                "preflight_state": LogisticsState.UNKNOWN.value,
+                "preflight_checked_at": checked_at.isoformat(),
+                "refund_gate": "HOLD",
+                "logistics_query_failures": failures,
+                "logistics_last_error": error_text[:500],
+                "logistics_next_check_at": retry_at.isoformat() if retry_at else None,
+                "manual_check_required": manual_required,
+            }
+        )
+        task.payload = payload
+        prefix = "需人工核对" if manual_required else "等待自动重试"
+        task.last_error = (f"快递100连续{failures}次查询失败（{prefix}）：{error_text}")[:1000]
+        return failures
+
     @staticmethod
     def _cancellation_reason(state: LogisticsState) -> str:
         if state is LogisticsState.DELIVERED:
@@ -276,8 +325,7 @@ class Module1NotificationPreflightService:
         if existing is not None:
             if (
                 action_type is AutomationActionType.PDD_AGREE_REFUND
-                and AutomationTaskStatus(existing.action_status)
-                is AutomationTaskStatus.CANCELLED
+                and AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.CANCELLED
             ):
                 existing.action_status = AutomationTaskStatus.PENDING
                 existing.payload = payload

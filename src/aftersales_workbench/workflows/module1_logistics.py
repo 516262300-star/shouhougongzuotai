@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
@@ -33,6 +33,31 @@ class LogisticsState(StrEnum):
     RETURNED = "RETURNED"
 
 
+@dataclass(frozen=True, slots=True)
+class LogisticsPollingPolicy:
+    success_refresh_seconds: int = 300
+    failure_initial_retry_seconds: int = 300
+    failure_max_retry_seconds: int = 1800
+    manual_after_failures: int = 6
+
+    def __post_init__(self) -> None:
+        if self.success_refresh_seconds < 60:
+            raise ValueError("物流成功刷新间隔不能小于 60 秒")
+        if self.failure_initial_retry_seconds < 60:
+            raise ValueError("物流失败初始重试间隔不能小于 60 秒")
+        if self.failure_max_retry_seconds < self.failure_initial_retry_seconds:
+            raise ValueError("物流失败最大重试间隔不能小于初始重试间隔")
+        if self.manual_after_failures < 1:
+            raise ValueError("物流转人工失败次数不能小于 1")
+
+    def failure_delay_seconds(self, failures: int) -> int:
+        exponent = max(0, failures - 1)
+        return min(
+            self.failure_initial_retry_seconds * (2**exponent),
+            self.failure_max_retry_seconds,
+        )
+
+
 _RETURN_KEYWORDS = (
     "退回",
     "退件",
@@ -58,14 +83,10 @@ def classify_logistics_trace(events: list[LogisticsEvent]) -> LogisticsState:
     if not events:
         return LogisticsState.UNKNOWN
     contexts = [event.context.replace(" ", "") for event in events]
-    has_return = any(
-        keyword in context for context in contexts for keyword in _RETURN_KEYWORDS
-    )
+    has_return = any(keyword in context for context in contexts for keyword in _RETURN_KEYWORDS)
     if has_return:
         if any(
-            keyword in context
-            for context in contexts
-            for keyword in _RETURN_COMPLETED_KEYWORDS
+            keyword in context for context in contexts for keyword in _RETURN_COMPLETED_KEYWORDS
         ):
             return LogisticsState.RETURNED
         # 先出现退回/拒收，之后再出现签收，视为退回件已到达。
@@ -113,8 +134,88 @@ class LogisticsQuery(Protocol):
     ) -> list[LogisticsEvent]: ...
 
 
+LogisticsQueryCache = dict[
+    tuple[str, str, str | None],
+    list[LogisticsEvent] | Exception,
+]
+
+
+def query_logistics_cached(
+    query: LogisticsQuery,
+    cache: LogisticsQueryCache,
+    *,
+    carrier_code: str,
+    tracking_number: str,
+    phone: str | None,
+) -> list[LogisticsEvent]:
+    cache_key = (carrier_code, tracking_number, phone)
+    cached = cache.get(cache_key)
+    if isinstance(cached, Exception):
+        raise cached
+    if cached is not None:
+        return cached
+    try:
+        events = query.query(
+            carrier_code=carrier_code,
+            tracking_number=tracking_number,
+            phone=phone,
+        )
+    except Exception as exc:
+        cache[cache_key] = exc
+        raise
+    cache[cache_key] = events
+    return events
+
+
 def _utcnow_naive() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def build_logistics_polling_policy(settings: Settings) -> LogisticsPollingPolicy:
+    return LogisticsPollingPolicy(
+        success_refresh_seconds=settings.kuaidi100_success_refresh_seconds,
+        failure_initial_retry_seconds=(settings.kuaidi100_failure_initial_retry_seconds),
+        failure_max_retry_seconds=settings.kuaidi100_failure_max_retry_seconds,
+        manual_after_failures=settings.kuaidi100_manual_after_failures,
+    )
+
+
+def record_logistics_query_success(
+    order: AfterSalesOrder,
+    *,
+    state: LogisticsState,
+    latest_context: str,
+    checked_at: datetime,
+    policy: LogisticsPollingPolicy,
+) -> None:
+    order.logistics_state = state.value
+    order.logistics_latest_context = latest_context[:500]
+    order.logistics_checked_at = checked_at
+    order.logistics_query_failures = 0
+    order.logistics_last_error = None
+    order.logistics_next_check_at = checked_at + timedelta(seconds=policy.success_refresh_seconds)
+
+
+def record_logistics_query_failure(
+    order: AfterSalesOrder,
+    *,
+    error: Exception,
+    checked_at: datetime,
+    policy: LogisticsPollingPolicy,
+) -> tuple[int, str]:
+    failures = int(getattr(order, "logistics_query_failures", 0) or 0) + 1
+    error_text = str(error).strip() or type(error).__name__
+    order.logistics_query_failures = failures
+    order.logistics_last_error = error_text[:500]
+    order.logistics_checked_at = checked_at
+    order.logistics_next_check_at = checked_at + timedelta(
+        seconds=policy.failure_delay_seconds(failures)
+    )
+    if not getattr(order, "logistics_state", None):
+        order.logistics_state = LogisticsState.UNKNOWN.value
+    if not getattr(order, "logistics_latest_context", None):
+        order.logistics_latest_context = "快递100暂未返回有效轨迹"
+    return failures, error_text
 
 
 class Module1LogisticsGateService:
@@ -132,11 +233,13 @@ class Module1LogisticsGateService:
         *,
         carrier_map: dict[str, str] | None = None,
         default_phone: str | None = None,
+        polling_policy: LogisticsPollingPolicy | None = None,
     ) -> None:
         self.session = session
         self.query = query
         self.carrier_map = carrier_map or {}
         self.default_phone = default_phone
+        self.polling_policy = polling_policy or LogisticsPollingPolicy()
 
     def run(
         self,
@@ -144,9 +247,11 @@ class Module1LogisticsGateService:
         limit: int = 100,
         dry_run: bool = True,
         after_sales_sns: tuple[str, ...] | None = None,
+        force_refresh: bool = False,
     ) -> LogisticsGateRunResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
+        now = _utcnow_naive()
         statement = (
             select(AfterSalesOrder)
             .where(
@@ -160,15 +265,23 @@ class Module1LogisticsGateService:
             .limit(limit)
         )
         if after_sales_sns:
+            statement = statement.where(AfterSalesOrder.after_sales_sn.in_(after_sales_sns))
+        if not force_refresh:
             statement = statement.where(
-                AfterSalesOrder.after_sales_sn.in_(after_sales_sns)
+                or_(
+                    AfterSalesOrder.logistics_next_check_at.is_(None),
+                    AfterSalesOrder.logistics_next_check_at <= now,
+                )
             )
         orders = self.session.scalars(statement).all()
         result = LogisticsGateRunResult(dry_run=dry_run, scanned=len(orders))
+        query_cache: LogisticsQueryCache = {}
         for order in orders:
             try:
                 carrier_code = self._resolve_carrier(str(order.carrier_code))
-                events = self.query.query(
+                events = query_logistics_cached(
+                    self.query,
+                    query_cache,
                     carrier_code=carrier_code,
                     tracking_number=str(order.forward_tracking_number),
                     phone=self.default_phone,
@@ -178,12 +291,15 @@ class Module1LogisticsGateService:
                 if not dry_run:
                     self._apply(order, state, events[0].context)
                     self.session.commit()
-            except Exception:
+            except Exception as exc:
                 self.session.rollback()
                 if not dry_run:
-                    order.logistics_state = LogisticsState.UNKNOWN.value
-                    order.logistics_latest_context = "物流查询失败，未放行自动退款"
-                    order.logistics_checked_at = _utcnow_naive()
+                    record_logistics_query_failure(
+                        order,
+                        error=exc,
+                        checked_at=_utcnow_naive(),
+                        policy=self.polling_policy,
+                    )
                     self._cancel_pending_refund(order.after_sales_sn)
                     self.session.commit()
                 result.failed += 1
@@ -199,10 +315,7 @@ class Module1LogisticsGateService:
 
     @staticmethod
     def _platform_refund_completed(order: AfterSalesOrder) -> bool:
-        return (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-        )
+        return order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4
 
     def _count_decision(
         self,
@@ -215,8 +328,7 @@ class Module1LogisticsGateService:
             is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
         )
         waiting_return_latched = (
-            WorkflowStatus(order.workflow_status)
-            is WorkflowStatus.INTERCEPT_WAITING_RETURN
+            WorkflowStatus(order.workflow_status) is WorkflowStatus.INTERCEPT_WAITING_RETURN
         )
         if state in (LogisticsState.RETURNING, LogisticsState.RETURNED):
             result.return_detected += 1
@@ -242,16 +354,19 @@ class Module1LogisticsGateService:
         latest_context: str,
     ) -> None:
         now = _utcnow_naive()
-        order.logistics_state = state.value
-        order.logistics_latest_context = latest_context[:500]
-        order.logistics_checked_at = now
+        record_logistics_query_success(
+            order,
+            state=state,
+            latest_context=latest_context,
+            checked_at=now,
+            policy=self.polling_policy,
+        )
         platform_refunded = self._platform_refund_completed(order) or (
             WorkflowStatus(order.workflow_status)
             is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
         )
         waiting_return_latched = (
-            WorkflowStatus(order.workflow_status)
-            is WorkflowStatus.INTERCEPT_WAITING_RETURN
+            WorkflowStatus(order.workflow_status) is WorkflowStatus.INTERCEPT_WAITING_RETURN
         )
         if state is LogisticsState.RETURNING:
             order.logistics_return_detected_at = now
@@ -315,8 +430,7 @@ class Module1LogisticsGateService:
         if existing is not None:
             if (
                 action_type is AutomationActionType.PDD_AGREE_REFUND
-                and AutomationTaskStatus(existing.action_status)
-                is AutomationTaskStatus.CANCELLED
+                and AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.CANCELLED
             ):
                 existing.action_status = AutomationTaskStatus.PENDING
                 existing.payload = payload
@@ -339,16 +453,12 @@ class Module1LogisticsGateService:
         task = self.session.execute(
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == after_sales_sn,
-                AftersalesActionTask.action_type
-                == AutomationActionType.PDD_AGREE_REFUND,
+                AftersalesActionTask.action_type == AutomationActionType.PDD_AGREE_REFUND,
             )
         ).scalar_one_or_none()
         if task is None:
             return False
-        if (
-            AutomationTaskStatus(task.action_status)
-            is not AutomationTaskStatus.PENDING
-        ):
+        if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
             return False
         task.action_status = AutomationTaskStatus.CANCELLED
         task.last_error = "物流退款闸门已冻结自动退款"
@@ -357,9 +467,7 @@ class Module1LogisticsGateService:
 
 def build_kuaidi100_client(settings: Settings) -> Kuaidi100Client:
     if not settings.kuaidi100_customer or not settings.kuaidi100_key:
-        raise Kuaidi100ConfigurationError(
-            "请先配置 KUAIDI100_CUSTOMER 和 KUAIDI100_KEY"
-        )
+        raise Kuaidi100ConfigurationError("请先配置 KUAIDI100_CUSTOMER 和 KUAIDI100_KEY")
     return Kuaidi100Client(
         Kuaidi100Credentials(
             customer=settings.kuaidi100_customer,

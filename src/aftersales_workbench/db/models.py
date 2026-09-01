@@ -153,6 +153,11 @@ class AfterSalesOrder(Base):
     logistics_latest_context: Mapped[str | None] = mapped_column(String(500))
     logistics_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
     logistics_return_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    logistics_query_failures: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
+    logistics_last_error: Mapped[str | None] = mapped_column(String(500))
+    logistics_next_check_at: Mapped[datetime | None] = mapped_column(DateTime)
     platform_after_sales_status: Mapped[int | None] = mapped_column(SmallInteger)
     platform_order_refund_status: Mapped[int | None] = mapped_column(SmallInteger)
     erp_customer_name: Mapped[str | None] = mapped_column(String(255))
