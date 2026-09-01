@@ -46,6 +46,7 @@ from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
     build_logistics_polling_policy,
+    build_refund_business_hours,
 )
 from aftersales_workbench.workflows.module1_manual_todo import (
     Module1ManualTodoService,
@@ -657,6 +658,7 @@ class Module1WorkerRuntime:
                     carrier_map=self.settings.kuaidi100_carrier_map,
                     default_phone=default_phone,
                     polling_policy=build_logistics_polling_policy(self.settings),
+                    business_hours=build_refund_business_hours(self.settings),
                 ).run(limit=self.options.task_limit, dry_run=False)
         finally:
             client.close()

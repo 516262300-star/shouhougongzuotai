@@ -25,6 +25,8 @@ from aftersales_workbench.integrations.qywx.client import InterceptNotice, QywxW
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
+    build_logistics_polling_policy,
+    build_refund_business_hours,
 )
 from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
@@ -570,6 +572,8 @@ class ExternalActionExecutor:
                 client,
                 carrier_map=self.settings.kuaidi100_carrier_map,
                 default_phone=default_phone,
+                polling_policy=build_logistics_polling_policy(self.settings),
+                business_hours=build_refund_business_hours(self.settings),
             ).run(
                 limit=min(len(after_sales_sns), 500),
                 dry_run=False,

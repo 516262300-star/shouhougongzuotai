@@ -74,6 +74,9 @@ class Settings(BaseSettings):
     module1_worker_interval_seconds: int = Field(default=60, ge=10, le=3600)
     module1_worker_max_sync_windows: int = Field(default=2, ge=1, le=48)
     module1_worker_task_limit: int = Field(default=20, ge=1, le=500)
+    module1_refund_business_timezone: str = "Asia/Shanghai"
+    module1_refund_business_start_hour: int = Field(default=9, ge=0, le=23)
+    module1_refund_business_end_hour: int = Field(default=21, ge=1, le=24)
     module1_notification_transport: Literal[
         "disabled", "qywx_webhook", "desktop"
     ] = "disabled"

@@ -1,18 +1,20 @@
 from __future__ import annotations
 
+from datetime import datetime
 from types import SimpleNamespace
 
-from aftersales_workbench.db.models import (
-    AutomationActionType,
-    WorkflowStatus,
-)
+from aftersales_workbench.db.models import AutomationActionType, WorkflowStatus
 from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
 from aftersales_workbench.workflows.module1_logistics import (
     LogisticsState,
     Module1LogisticsGateService,
+    RefundBusinessHours,
     classify_logistics_trace,
     query_logistics_cached,
 )
+
+BUSINESS_OPEN_UTC = datetime(2026, 9, 1, 4, 0)
+BUSINESS_CLOSED_UTC = datetime(2026, 9, 1, 13, 0)
 
 
 class _ScalarResult:
@@ -136,6 +138,7 @@ def test_delivery_state_does_not_queue_pdd_refund() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["快件正在派送中"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -156,6 +159,7 @@ def test_delivery_state_cancels_a_pending_refund() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["快件正在派送中"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     service.run(dry_run=False)
@@ -171,6 +175,7 @@ def test_normal_transit_queues_platform_refund() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["快件已离开转运中心"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -187,6 +192,7 @@ def test_qywx_pushed_order_enters_logistics_gate_without_manual_confirmation() -
         session,  # type: ignore[arg-type]
         FakeQuery(["快件已离开转运中心"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     service.run(dry_run=False)
@@ -203,6 +209,7 @@ def test_delivery_freeze_requires_explicit_return_evidence() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["快件已离开网点，发往转运中心"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -219,6 +226,7 @@ def test_returned_refunded_order_waits_for_erp_match() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["退回件已签收"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -235,6 +243,7 @@ def test_returning_refunded_order_does_not_start_erp_match_early() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(["包裹正在退回发件方"]),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -253,6 +262,7 @@ def test_query_failure_preserves_last_known_state_and_schedules_retry() -> None:
         session,  # type: ignore[arg-type]
         FakeQuery(error=RuntimeError("查询无结果，请隔段时间再查")),
         carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
     )
 
     result = service.run(dry_run=False)
@@ -263,3 +273,83 @@ def test_query_failure_preserves_last_known_state_and_schedules_retry() -> None:
     assert order.logistics_query_failures == 1
     assert "查询无结果" in order.logistics_last_error
     assert order.logistics_next_check_at > order.logistics_checked_at
+
+
+def test_refund_business_hours_use_beijing_time_boundaries() -> None:
+    hours = RefundBusinessHours()
+
+    assert not hours.is_open(datetime(2026, 9, 1, 0, 59))
+    assert hours.is_open(datetime(2026, 9, 1, 1, 0))
+    assert hours.is_open(datetime(2026, 9, 1, 12, 59))
+    assert not hours.is_open(datetime(2026, 9, 1, 13, 0))
+    assert hours.next_open_utc_naive(BUSINESS_CLOSED_UTC) == datetime(
+        2026, 9, 2, 1, 0
+    )
+
+
+def test_night_transit_waits_until_next_business_open() -> None:
+    order = _order()
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["快件已离开转运中心"]),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_CLOSED_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.allowed_refunds == 0
+    assert result.held_outside_business_hours == 1
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+    assert order.logistics_next_check_at == datetime(2026, 9, 2, 1, 0)
+    assert session.added == []
+
+
+def test_night_gate_cancels_then_morning_requeues_pending_refund() -> None:
+    order = _order()
+    task = SimpleNamespace(action_status="PENDING", last_error=None)
+    session = FakeSession(order, existing_task=task)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["包裹正在退回发件方"]),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_CLOSED_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.held_outside_business_hours == 1
+    assert task.action_status == "CANCELLED"
+    assert "下一个工作时段复查" in task.last_error
+
+    morning_service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["快件已离开转运中心"]),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: datetime(2026, 9, 2, 1, 0),
+    )
+
+    morning_result = morning_service.run(dry_run=False)
+
+    assert morning_result.allowed_refunds == 1
+    assert task.action_status == "PENDING"
+    assert task.last_error is None
+
+
+def test_night_out_for_delivery_stays_frozen() -> None:
+    order = _order()
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["快件正在派送中"]),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_CLOSED_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.blocked_delivery == 1
+    assert result.held_outside_business_hours == 0
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_WAITING_RETURN
+    assert session.added == []

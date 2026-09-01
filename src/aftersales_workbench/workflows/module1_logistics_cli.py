@@ -8,6 +8,8 @@ from aftersales_workbench.db.session import SessionLocal
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
+    build_logistics_polling_policy,
+    build_refund_business_hours,
 )
 
 
@@ -37,6 +39,8 @@ def main(argv: list[str] | None = None) -> int:
                 client,
                 carrier_map=settings.kuaidi100_carrier_map,
                 default_phone=_secret(settings.kuaidi100_default_phone),
+                polling_policy=build_logistics_polling_policy(settings),
+                business_hours=build_refund_business_hours(settings),
             ).run(limit=args.limit, dry_run=not args.apply, force_refresh=True)
     finally:
         client.close()

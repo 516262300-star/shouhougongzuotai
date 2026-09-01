@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime, time, timedelta, tzinfo
+from datetime import timezone as fixed_timezone
 from enum import StrEnum
 from typing import Protocol
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -56,6 +59,56 @@ class LogisticsPollingPolicy:
             self.failure_initial_retry_seconds * (2**exponent),
             self.failure_max_retry_seconds,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RefundBusinessHours:
+    """拼多多自动退款允许执行的快递拦截客服工作时间。"""
+
+    timezone_name: str = "Asia/Shanghai"
+    start_hour: int = 9
+    end_hour: int = 21
+    timezone: tzinfo = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.start_hour <= 23:
+            raise ValueError("退款工作时间开始小时必须在 0–23 之间")
+        if not 1 <= self.end_hour <= 24:
+            raise ValueError("退款工作时间结束小时必须在 1–24 之间")
+        if self.start_hour >= self.end_hour:
+            raise ValueError("退款工作时间开始小时必须早于结束小时")
+        try:
+            timezone = ZoneInfo(self.timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            if self.timezone_name == "Asia/Shanghai":
+                timezone = fixed_timezone(timedelta(hours=8), name="Asia/Shanghai")
+            else:
+                raise ValueError(
+                    f"无效的退款工作时区：{self.timezone_name}"
+                ) from exc
+        object.__setattr__(self, "timezone", timezone)
+
+    @staticmethod
+    def _utc_aware(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
+
+    def is_open(self, value: datetime) -> bool:
+        local = self._utc_aware(value).astimezone(self.timezone)
+        return self.start_hour <= local.hour < self.end_hour
+
+    def next_open_utc_naive(self, value: datetime) -> datetime:
+        local = self._utc_aware(value).astimezone(self.timezone)
+        target_date = local.date()
+        if local.hour >= self.end_hour:
+            target_date += timedelta(days=1)
+        target = datetime.combine(
+            target_date,
+            time(hour=self.start_hour),
+            tzinfo=self.timezone,
+        )
+        return target.astimezone(UTC).replace(tzinfo=None)
 
 
 _RETURN_KEYWORDS = (
@@ -115,6 +168,7 @@ class LogisticsGateRunResult:
     dry_run: bool
     scanned: int = 0
     allowed_refunds: int = 0
+    held_outside_business_hours: int = 0
     blocked_delivery: int = 0
     return_detected: int = 0
     waiting_erp_match: int = 0
@@ -180,6 +234,14 @@ def build_logistics_polling_policy(settings: Settings) -> LogisticsPollingPolicy
     )
 
 
+def build_refund_business_hours(settings: Settings) -> RefundBusinessHours:
+    return RefundBusinessHours(
+        timezone_name=settings.module1_refund_business_timezone,
+        start_hour=settings.module1_refund_business_start_hour,
+        end_hour=settings.module1_refund_business_end_hour,
+    )
+
+
 def record_logistics_query_success(
     order: AfterSalesOrder,
     *,
@@ -234,12 +296,16 @@ class Module1LogisticsGateService:
         carrier_map: dict[str, str] | None = None,
         default_phone: str | None = None,
         polling_policy: LogisticsPollingPolicy | None = None,
+        business_hours: RefundBusinessHours | None = None,
+        now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.session = session
         self.query = query
         self.carrier_map = carrier_map or {}
         self.default_phone = default_phone
         self.polling_policy = polling_policy or LogisticsPollingPolicy()
+        self.business_hours = business_hours or RefundBusinessHours()
+        self.now_provider = now_provider or _utcnow_naive
 
     def run(
         self,
@@ -251,7 +317,7 @@ class Module1LogisticsGateService:
     ) -> LogisticsGateRunResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
-        now = _utcnow_naive()
+        now = self.now_provider()
         statement = (
             select(AfterSalesOrder)
             .where(
@@ -287,9 +353,21 @@ class Module1LogisticsGateService:
                     phone=self.default_phone,
                 )
                 state = classify_logistics_trace(events)
-                self._count_decision(result, order, state)
+                business_open = self.business_hours.is_open(now)
+                self._count_decision(
+                    result,
+                    order,
+                    state,
+                    business_open=business_open,
+                )
                 if not dry_run:
-                    self._apply(order, state, events[0].context)
+                    self._apply(
+                        order,
+                        state,
+                        events[0].context,
+                        checked_at=now,
+                        business_open=business_open,
+                    )
                     self.session.commit()
             except Exception as exc:
                 self.session.rollback()
@@ -297,7 +375,7 @@ class Module1LogisticsGateService:
                     record_logistics_query_failure(
                         order,
                         error=exc,
-                        checked_at=_utcnow_naive(),
+                        checked_at=now,
                         policy=self.polling_policy,
                     )
                     self._cancel_pending_refund(order.after_sales_sn)
@@ -322,6 +400,8 @@ class Module1LogisticsGateService:
         result: LogisticsGateRunResult,
         order: AfterSalesOrder,
         state: LogisticsState,
+        *,
+        business_open: bool,
     ) -> None:
         platform_refunded = self._platform_refund_completed(order) or (
             WorkflowStatus(order.workflow_status)
@@ -335,7 +415,10 @@ class Module1LogisticsGateService:
             if state is LogisticsState.RETURNED and platform_refunded:
                 result.waiting_erp_match += 1
             elif not platform_refunded:
-                result.allowed_refunds += 1
+                if business_open:
+                    result.allowed_refunds += 1
+                else:
+                    result.held_outside_business_hours += 1
             else:
                 result.blocked_delivery += 1
         elif (
@@ -343,7 +426,10 @@ class Module1LogisticsGateService:
             and not platform_refunded
             and not waiting_return_latched
         ):
-            result.allowed_refunds += 1
+            if business_open:
+                result.allowed_refunds += 1
+            else:
+                result.held_outside_business_hours += 1
         else:
             result.blocked_delivery += 1
 
@@ -352,13 +438,15 @@ class Module1LogisticsGateService:
         order: AfterSalesOrder,
         state: LogisticsState,
         latest_context: str,
+        *,
+        checked_at: datetime,
+        business_open: bool,
     ) -> None:
-        now = _utcnow_naive()
         record_logistics_query_success(
             order,
             state=state,
             latest_context=latest_context,
-            checked_at=now,
+            checked_at=checked_at,
             policy=self.polling_policy,
         )
         platform_refunded = self._platform_refund_completed(order) or (
@@ -368,8 +456,32 @@ class Module1LogisticsGateService:
         waiting_return_latched = (
             WorkflowStatus(order.workflow_status) is WorkflowStatus.INTERCEPT_WAITING_RETURN
         )
+        if (
+            not platform_refunded
+            and not business_open
+            and state
+            in (
+                LogisticsState.IN_TRANSIT,
+                LogisticsState.RETURNING,
+                LogisticsState.RETURNED,
+            )
+        ):
+            if state in (LogisticsState.RETURNING, LogisticsState.RETURNED):
+                order.logistics_return_detected_at = checked_at
+            if not waiting_return_latched:
+                order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+            order.logistics_next_check_at = self.business_hours.next_open_utc_naive(
+                checked_at
+            )
+            self._cancel_pending_refund(
+                order.after_sales_sn,
+                reason=(
+                    "非快递拦截客服工作时间，自动退款延迟到下一个工作时段复查"
+                ),
+            )
+            return
         if state is LogisticsState.RETURNING:
-            order.logistics_return_detected_at = now
+            order.logistics_return_detected_at = checked_at
             if platform_refunded:
                 order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
             else:
@@ -381,7 +493,7 @@ class Module1LogisticsGateService:
                 )
             return
         if state is LogisticsState.RETURNED:
-            order.logistics_return_detected_at = now
+            order.logistics_return_detected_at = checked_at
             if platform_refunded:
                 order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
                 self._enqueue(
@@ -449,7 +561,12 @@ class Module1LogisticsGateService:
         )
         return True
 
-    def _cancel_pending_refund(self, after_sales_sn: str) -> bool:
+    def _cancel_pending_refund(
+        self,
+        after_sales_sn: str,
+        *,
+        reason: str = "物流退款闸门已冻结自动退款",
+    ) -> bool:
         task = self.session.execute(
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == after_sales_sn,
@@ -461,7 +578,7 @@ class Module1LogisticsGateService:
         if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
             return False
         task.action_status = AutomationTaskStatus.CANCELLED
-        task.last_error = "物流退款闸门已冻结自动退款"
+        task.last_error = reason
         return True
 
 

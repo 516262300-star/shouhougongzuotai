@@ -25,6 +25,9 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     SalesOwnerResolver,
     get_erp_sales_owner_resolver,
 )
+from aftersales_workbench.workflows.module1_logistics import (
+    build_refund_business_hours,
+)
 
 WORKFLOW_LABELS = {
     "PENDING_CHECK": "待系统判定",
@@ -176,6 +179,7 @@ class AftersalesRecordService:
         self.session = session
         self.sales_owner_resolver = sales_owner_resolver or get_erp_sales_owner_resolver()
         self.settings = settings or get_settings()
+        self.refund_business_hours = build_refund_business_hours(self.settings)
 
     def list_orders(
         self,
@@ -650,18 +654,21 @@ class AftersalesRecordService:
             "UNKNOWN": ("待发送·物流待确认", "warning"),
         }.get(preflight_state, ("待物流预检", "info"))
 
-    @classmethod
     def _refund_gate_display(
-        cls,
+        self,
         order: AfterSalesOrder,
         notice_task: AftersalesActionTask | None,
         refund_task: AftersalesActionTask | None,
         logistics: str,
     ) -> tuple[str, str]:
-        if cls._platform_refunded(order):
+        if self._platform_refunded(order):
             return "平台已退款", "success"
         if refund_task is not None:
             status = _enum_value(refund_task.action_status)
+            if status == "CANCELLED" and "非快递拦截客服工作时间" in str(
+                refund_task.last_error or ""
+            ):
+                return "夜间待 09:00 复查", "warning"
             return {
                 "PENDING": ("待执行平台退款", "info"),
                 "RUNNING": ("平台退款执行中", "info"),
@@ -673,6 +680,10 @@ class AftersalesRecordService:
             return "禁止自动退款", "danger"
         if logistics == "UNKNOWN":
             return "物流异常冻结", "warning"
+        if logistics in {"IN_TRANSIT", "RETURNING", "RETURNED"} and not (
+            self.refund_business_hours.is_open(datetime.now(UTC))
+        ):
+            return "夜间待 09:00 复查", "warning"
         if logistics in {"RETURNING", "RETURNED"}:
             return "退回轨迹已出现", "info"
         if logistics == "IN_TRANSIT":
