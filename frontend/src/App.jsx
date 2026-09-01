@@ -236,10 +236,10 @@ function EmptyTable({ loading, error, onRetry }) {
 function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
   return (
     <div className="table-wrap">
-      <table>
+      <table className="orders-table">
         <thead>
           <tr>
-            <th>店铺</th><th>售后单号</th><th>归属业务员</th><th>类型</th><th>退款金额</th><th>发货运单</th>
+            <th>店铺</th><th>售后单号</th><th>平台订单号</th><th>归属业务员</th><th>类型</th><th>退款金额</th><th>发货运单</th>
             <th>物流状态</th><th>拦截状态</th><th>平台退款</th><th>最近更新</th><th>操作</th>
           </tr>
         </thead>
@@ -252,6 +252,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
             >
               <td title={item.shop_name}><span className="truncate shop-cell">{item.shop_name}</span></td>
               <td className="mono">{item.after_sales_sn}</td>
+              <td className="mono" title={item.platform_order_sn}>{item.platform_order_sn}</td>
               <td title={item.erp_customer_name}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td>{item.after_sales_type_label}</td>
               <td>{formatCurrency(item.refund_amount)}</td>
@@ -368,7 +369,7 @@ function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) 
       <table className="intercept-table">
         <thead>
           <tr>
-            <th>店铺</th><th>归属业务员</th><th>售后单号</th><th>快递群 / 运单</th><th>拦截通知</th>
+            <th>店铺</th><th>归属业务员</th><th>售后单号</th><th>平台订单号</th><th>快递群 / 运单</th><th>拦截通知</th>
             <th>物流状态</th><th>退款闸门</th><th>当前环节</th><th>最近更新</th><th>操作</th>
           </tr>
         </thead>
@@ -383,6 +384,7 @@ function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) 
               <td title={item.shop_name}><span className="truncate">{item.shop_name}</span></td>
               <td><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td className="mono">{item.after_sales_sn}</td>
+              <td className="mono" title={item.platform_order_sn}>{item.platform_order_sn}</td>
               <td title={`${item.target_group} / ${item.carrier_name} ${item.tracking_number}`}>
                 <span className="stacked-cell"><b>{item.target_group}</b><small>{item.tracking_number}</small></span>
               </td>
@@ -644,9 +646,9 @@ export function App() {
   };
 
   const exportRows = () => {
-    const rows = [["店铺", "售后单号", "归属业务员", "ERP客户", "类型", "退款金额", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
+    const rows = [["店铺", "售后单号", "平台订单号", "归属业务员", "ERP客户", "类型", "退款金额", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
     data.items.forEach((item) => rows.push([
-      item.shop_name, item.after_sales_sn, item.sales_owner, item.erp_customer_name,
+      item.shop_name, item.after_sales_sn, item.platform_order_sn, item.sales_owner, item.erp_customer_name,
       item.after_sales_type_label, item.refund_amount,
       item.tracking_number, item.logistics_label, item.intercept_label, item.platform_refund_label,
       formatDateTime(item.updated_at, true),
