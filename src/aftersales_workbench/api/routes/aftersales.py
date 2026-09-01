@@ -1,5 +1,5 @@
 from datetime import date
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
@@ -40,6 +40,34 @@ def list_orders(
         sales_owner=sales_owner,
         started_on=started_on,
         ended_on=ended_on,
+        keyword=keyword,
+    )
+
+
+@router.get("/intercepts")
+def list_intercepts(
+    service: Annotated[AftersalesRecordService, Depends(get_record_service)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=10, le=100)] = 15,
+    shop_id: int | None = None,
+    sales_owner: Annotated[str | None, Query(max_length=50)] = None,
+    stage: Literal[
+        "WAITING_NOTICE",
+        "NOTICE_SENT",
+        "REFUND_BLOCKED",
+        "WAITING_RETURN",
+        "ERP_MATCH",
+        "MANUAL",
+    ]
+    | None = None,
+    keyword: Annotated[str | None, Query(max_length=100)] = None,
+) -> dict[str, Any]:
+    return service.list_intercepts(
+        page=page,
+        page_size=page_size,
+        shop_id=shop_id,
+        sales_owner=sales_owner,
+        stage=stage,
         keyword=keyword,
     )
 

@@ -39,6 +39,22 @@ class FakeRecordService:
             "timeline": [],
         }
 
+    def list_intercepts(self, **kwargs: Any) -> dict[str, Any]:
+        self.list_kwargs = kwargs
+        return {
+            "summary": {
+                "waiting_notice": 3,
+                "refund_blocked": 2,
+                "waiting_return": 1,
+                "waiting_erp_match": 0,
+            },
+            "shops": [],
+            "sales_owners": [],
+            "items": [],
+            "pagination": {"page": 1, "page_size": 15, "total": 0, "pages": 1},
+            "last_synced_at": "2026-09-01T08:00:00",
+        }
+
 
 def test_list_orders_passes_filters_to_record_service() -> None:
     service = FakeRecordService()
@@ -86,6 +102,49 @@ def test_get_order_returns_record() -> None:
 
     assert response.status_code == 200
     assert response.json()["after_sales_sn"] == "AF-1"
+
+
+def test_list_intercepts_passes_module1_filters() -> None:
+    service = FakeRecordService()
+    app.dependency_overrides[get_record_service] = lambda: service
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/intercepts",
+            params={
+                "page": 2,
+                "page_size": 30,
+                "shop_id": 3,
+                "sales_owner": "张东升",
+                "stage": "REFUND_BLOCKED",
+                "keyword": "JT123",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["waiting_notice"] == 3
+    assert service.list_kwargs == {
+        "page": 2,
+        "page_size": 30,
+        "shop_id": 3,
+        "sales_owner": "张东升",
+        "stage": "REFUND_BLOCKED",
+        "keyword": "JT123",
+    }
+
+
+def test_list_intercepts_rejects_unknown_stage() -> None:
+    app.dependency_overrides[get_record_service] = lambda: FakeRecordService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/intercepts",
+            params={"stage": "UNKNOWN_STAGE"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
 
 
 def test_get_order_returns_404_for_unknown_record() -> None:

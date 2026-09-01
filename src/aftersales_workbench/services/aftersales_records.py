@@ -5,15 +5,18 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, func, or_, select
+from sqlalchemy import Select, and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
+from aftersales_workbench.core.config import Settings, get_settings
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AfterSalesItem,
     AfterSalesOrder,
+    AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    ShippingStatus,
     Shop,
     WorkflowStatus,
 )
@@ -95,6 +98,15 @@ MANUAL_WORKFLOWS = {
     "MANUAL_PROCESSING",
 }
 
+MODULE1_WORKFLOWS = {
+    "INTERCEPT_PUSHED",
+    "INTERCEPT_CONFIRMED",
+    "INTERCEPT_WAITING_RETURN",
+    "INTERCEPT_REFUNDED_WAITING_RETURN",
+    "INTERCEPT_SUCCESS",
+    "INTERCEPT_FAILED",
+    "RETURN_WAITING_ERP_MATCH",
+}
 
 def _enum_value(value: Any) -> str:
     return value.value if hasattr(value, "value") else str(value)
@@ -148,9 +160,11 @@ class AftersalesRecordService:
         self,
         session: Session,
         sales_owner_resolver: SalesOwnerResolver | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.session = session
         self.sales_owner_resolver = sales_owner_resolver or get_erp_sales_owner_resolver()
+        self.settings = settings or get_settings()
 
     def list_orders(
         self,
@@ -243,6 +257,76 @@ class AftersalesRecordService:
             "shops": self._shops(),
             "sales_owners": self._sales_owners(),
             "items": items,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "pages": max(1, (total + page_size - 1) // page_size),
+            },
+            "last_synced_at": self._last_synced_at(),
+        }
+
+    def list_intercepts(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        shop_id: int | None = None,
+        sales_owner: str | None = None,
+        stage: str | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        module1_filter = self._module1_filter()
+        filters: list[Any] = [module1_filter]
+        if shop_id is not None:
+            filters.append(AfterSalesOrder.shop_id == shop_id)
+        clean_sales_owner = (sales_owner or "").strip()
+        if clean_sales_owner:
+            filters.append(AfterSalesOrder.erp_sales_owner == clean_sales_owner)
+        clean_stage = (stage or "").strip().upper()
+        if clean_stage:
+            filters.append(self._intercept_stage_filter(clean_stage))
+        clean_keyword = (keyword or "").strip()
+        if clean_keyword:
+            pattern = f"%{clean_keyword}%"
+            filters.append(
+                or_(
+                    AfterSalesOrder.after_sales_sn.like(pattern),
+                    AfterSalesOrder.platform_order_sn.like(pattern),
+                    AfterSalesOrder.forward_tracking_number.like(pattern),
+                )
+            )
+
+        total = int(
+            self.session.scalar(
+                select(func.count()).select_from(AfterSalesOrder).where(*filters)
+            )
+            or 0
+        )
+        rows = self.session.execute(
+            select(AfterSalesOrder, Shop)
+            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .where(*filters)
+            .order_by(AfterSalesOrder.updated_at.desc(), AfterSalesOrder.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+        after_sales_sns = [row.AfterSalesOrder.after_sales_sn for row in rows]
+        tasks_by_order = self._tasks_by_order(after_sales_sns)
+        owners_by_order = self._owners_for_rows(rows)
+        return {
+            "summary": self._intercept_summary(module1_filter),
+            "shops": self._shops(),
+            "sales_owners": self._sales_owners(module1_filter),
+            "items": [
+                self._serialize_intercept_item(
+                    order,
+                    shop,
+                    tasks_by_order.get(order.after_sales_sn, []),
+                    owners_by_order.get(order.platform_order_sn),
+                )
+                for order, shop in rows
+            ],
             "pagination": {
                 "page": page,
                 "page_size": page_size,
@@ -382,6 +466,162 @@ class AftersalesRecordService:
             "updated_at": _dt(order.updated_at),
         }
 
+    def _serialize_intercept_item(
+        self,
+        order: AfterSalesOrder,
+        shop: Shop,
+        tasks: list[AftersalesActionTask],
+        owner: SalesOwnerLookup | None,
+    ) -> dict[str, Any]:
+        qywx_task = self._latest_task(
+            tasks,
+            AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+        )
+        refund_task = self._latest_task(tasks, AutomationActionType.PDD_AGREE_REFUND)
+        erp_task = self._latest_task(tasks, AutomationActionType.ERP_MATCH_RETURN_ORDER)
+        logistics = order.logistics_state or self._fallback_logistics(order)
+        workflow = _enum_value(order.workflow_status)
+        serialized_owner = self._serialize_owner(
+            owner or SalesOwnerLookup(None, None, "not_found", "ERP 客户档案未匹配")
+        )
+        notice_label, notice_tone = self._notice_display(qywx_task)
+        refund_label, refund_tone = self._refund_gate_display(
+            order,
+            qywx_task,
+            refund_task,
+            logistics,
+        )
+        group_name = self.settings.module1_desktop_group_map.get(
+            str(order.carrier_code or "").strip()
+        )
+        latest_error = next(
+            (
+                str(task.last_error)
+                for task in reversed(tasks)
+                if task.last_error
+            ),
+            None,
+        )
+        return {
+            "shop_id": shop.shop_id,
+            "shop_name": shop.shop_name,
+            "shop_code": shop.shop_code,
+            "after_sales_sn": order.after_sales_sn,
+            "platform_order_sn": order.platform_order_sn,
+            "sales_owner": serialized_owner["sales_owner"],
+            "sales_owner_status": serialized_owner["status"],
+            "sales_owner_tone": serialized_owner["tone"],
+            "tracking_number": order.forward_tracking_number or "—",
+            "carrier_name": self._carrier_name(order.carrier_code),
+            "target_group": group_name or "未配置快递群",
+            "group_tone": "success" if group_name else "warning",
+            "notice_label": notice_label,
+            "notice_tone": notice_tone,
+            "logistics_state": logistics,
+            "logistics_label": LOGISTICS_LABELS.get(logistics, "待更新"),
+            "logistics_tone": _tone_for_logistics(logistics),
+            "logistics_context": order.logistics_latest_context or "尚无物流轨迹",
+            "logistics_checked_at": _utc_naive_dt(order.logistics_checked_at),
+            "refund_gate_label": refund_label,
+            "refund_gate_tone": refund_tone,
+            "workflow_status": workflow,
+            "workflow_label": WORKFLOW_LABELS.get(workflow, workflow),
+            "workflow_tone": _tone_for_workflow(workflow),
+            "erp_match_label": self._erp_match_display(erp_task),
+            "latest_error": latest_error,
+            "updated_at": _dt(order.updated_at),
+        }
+
+    @staticmethod
+    def _latest_task(
+        tasks: list[AftersalesActionTask],
+        action_type: AutomationActionType,
+    ) -> AftersalesActionTask | None:
+        return next(
+            (
+                task
+                for task in reversed(tasks)
+                if _enum_value(task.action_type) == action_type.value
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _notice_display(
+        task: AftersalesActionTask | None,
+    ) -> tuple[str, str]:
+        if task is None:
+            return "待生成拦截任务", "warning"
+        status = _enum_value(task.action_status)
+        if status == "SUCCEEDED":
+            return "拦截消息已发送", "success"
+        if status == "FAILED":
+            return "拦截发送失败", "danger"
+        if status == "CANCELLED":
+            return "无需发送拦截", "neutral"
+        if status == "RUNNING":
+            return "拦截发送中", "info"
+        preflight_state = str((task.payload or {}).get("preflight_state") or "")
+        return {
+            "IN_TRANSIT": ("待发送拦截", "warning"),
+            "OUT_FOR_DELIVERY": ("待发送·派件中", "danger"),
+            "UNKNOWN": ("待发送·物流待确认", "warning"),
+        }.get(preflight_state, ("待物流预检", "info"))
+
+    @classmethod
+    def _refund_gate_display(
+        cls,
+        order: AfterSalesOrder,
+        notice_task: AftersalesActionTask | None,
+        refund_task: AftersalesActionTask | None,
+        logistics: str,
+    ) -> tuple[str, str]:
+        if cls._platform_refunded(order):
+            return "平台已退款", "success"
+        if refund_task is not None:
+            status = _enum_value(refund_task.action_status)
+            return {
+                "PENDING": ("待执行平台退款", "info"),
+                "RUNNING": ("平台退款执行中", "info"),
+                "SUCCEEDED": ("平台已退款", "success"),
+                "FAILED": ("平台退款失败", "danger"),
+                "CANCELLED": ("自动退款已冻结", "danger"),
+            }.get(status, ("等待退款判断", "neutral"))
+        if logistics in {"OUT_FOR_DELIVERY", "DELIVERED"}:
+            return "禁止自动退款", "danger"
+        if logistics == "UNKNOWN":
+            return "物流异常冻结", "warning"
+        if logistics in {"RETURNING", "RETURNED"}:
+            return "退回轨迹已出现", "info"
+        if logistics == "IN_TRANSIT":
+            notice_succeeded = notice_task is not None and (
+                _enum_value(notice_task.action_status) == "SUCCEEDED"
+            )
+            return (
+                ("允许自动退款", "success")
+                if notice_succeeded
+                else ("待发送拦截", "warning")
+            )
+        return "等待物流判断", "neutral"
+
+    @staticmethod
+    def _erp_match_display(task: AftersalesActionTask | None) -> str:
+        if task is None:
+            return "—"
+        return ACTION_STATUS_LABELS.get(
+            _enum_value(task.action_status),
+            _enum_value(task.action_status),
+        )
+
+    @staticmethod
+    def _platform_refunded(order: AfterSalesOrder) -> bool:
+        return (
+            order.platform_after_sales_status == 10
+            or order.platform_order_refund_status == 4
+            or _enum_value(order.workflow_status)
+            == WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN.value
+        )
+
     @staticmethod
     def _serialize_owner(owner: SalesOwnerLookup) -> dict[str, Any]:
         tone = {
@@ -415,6 +655,158 @@ class AftersalesRecordService:
             status=order.erp_sales_owner_status,
             message="已从本地 ERP 归属缓存读取",
         )
+
+    def _owners_for_rows(self, rows: list[Any]) -> dict[str, SalesOwnerLookup]:
+        owners_by_order = {
+            row.AfterSalesOrder.platform_order_sn: cached
+            for row in rows
+            if (cached := self._cached_owner(row.AfterSalesOrder)) is not None
+        }
+        missing_order_sns = [
+            row.AfterSalesOrder.platform_order_sn
+            for row in rows
+            if row.AfterSalesOrder.platform_order_sn not in owners_by_order
+        ]
+        if missing_order_sns:
+            owners_by_order.update(
+                self.sales_owner_resolver.resolve_many(missing_order_sns)
+            )
+        return owners_by_order
+
+    @staticmethod
+    def _task_exists(
+        action_type: AutomationActionType,
+        action_status: AutomationTaskStatus | None = None,
+    ) -> Any:
+        conditions = [
+            AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
+            AftersalesActionTask.action_type == action_type,
+        ]
+        if action_status is not None:
+            conditions.append(AftersalesActionTask.action_status == action_status)
+        return exists().where(*conditions).correlate(AfterSalesOrder)
+
+    @classmethod
+    def _module1_filter(cls) -> Any:
+        candidate = and_(
+            AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+            AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
+            AfterSalesOrder.forward_tracking_number.is_not(None),
+            AfterSalesOrder.forward_tracking_number != "",
+        )
+        return or_(
+            candidate,
+            cls._task_exists(AutomationActionType.QYWX_INTERCEPT_NOTIFY),
+            AfterSalesOrder.workflow_status.in_(tuple(MODULE1_WORKFLOWS)),
+        )
+
+    @staticmethod
+    def _platform_not_refunded_filter() -> Any:
+        return and_(
+            func.coalesce(AfterSalesOrder.platform_after_sales_status, 0) != 10,
+            func.coalesce(AfterSalesOrder.platform_order_refund_status, 0) != 4,
+        )
+
+    @classmethod
+    def _refund_blocked_filter(cls) -> Any:
+        return and_(
+            cls._platform_not_refunded_filter(),
+            or_(
+                AfterSalesOrder.logistics_state.in_(
+                    ("UNKNOWN", "OUT_FOR_DELIVERY", "DELIVERED")
+                ),
+                AfterSalesOrder.workflow_status.in_(
+                    (
+                        WorkflowStatus.INTERCEPT_WAITING_RETURN,
+                        WorkflowStatus.MANUAL_PROCESSING,
+                    )
+                ),
+            ),
+        )
+
+    @classmethod
+    def _intercept_stage_filter(cls, stage: str) -> Any:
+        if stage == "WAITING_NOTICE":
+            return cls._task_exists(
+                AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                AutomationTaskStatus.PENDING,
+            )
+        if stage == "NOTICE_SENT":
+            return cls._task_exists(
+                AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                AutomationTaskStatus.SUCCEEDED,
+            )
+        if stage == "REFUND_BLOCKED":
+            return cls._refund_blocked_filter()
+        if stage == "WAITING_RETURN":
+            return AfterSalesOrder.workflow_status == (
+                WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
+            )
+        if stage == "ERP_MATCH":
+            return AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH
+        if stage == "MANUAL":
+            return AfterSalesOrder.workflow_status.in_(
+                (WorkflowStatus.MANUAL_PROCESSING, WorkflowStatus.INTERCEPT_FAILED)
+            )
+        return AfterSalesOrder.id == -1
+
+    def _intercept_summary(self, module1_filter: Any) -> dict[str, int]:
+        waiting_notice = int(
+            self.session.scalar(
+                select(func.count(func.distinct(AfterSalesOrder.id)))
+                .select_from(AfterSalesOrder)
+                .join(
+                    AftersalesActionTask,
+                    AftersalesActionTask.after_sales_sn
+                    == AfterSalesOrder.after_sales_sn,
+                )
+                .where(
+                    module1_filter,
+                    AftersalesActionTask.action_type
+                    == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                    AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                )
+            )
+            or 0
+        )
+        refund_blocked = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(module1_filter, self._refund_blocked_filter())
+            )
+            or 0
+        )
+        waiting_return = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(
+                    module1_filter,
+                    AfterSalesOrder.workflow_status
+                    == WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,
+                )
+            )
+            or 0
+        )
+        waiting_erp_match = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(
+                    module1_filter,
+                    AfterSalesOrder.workflow_status
+                    == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                )
+            )
+            or 0
+        )
+        return {
+            "waiting_notice": waiting_notice,
+            "refund_blocked": refund_blocked,
+            "waiting_return": waiting_return,
+            "waiting_erp_match": waiting_erp_match,
+        }
 
     def _summary(self) -> dict[str, int]:
         today = datetime.combine(date.today(), time.min)
@@ -475,13 +867,15 @@ class AftersalesRecordService:
             for row in rows
         ]
 
-    def _sales_owners(self) -> list[str]:
+    def _sales_owners(self, base_filter: Any | None = None) -> list[str]:
+        statement = select(AfterSalesOrder.erp_sales_owner).where(
+            AfterSalesOrder.erp_sales_owner.is_not(None)
+        )
+        if base_filter is not None:
+            statement = statement.where(base_filter)
         return list(
             self.session.scalars(
-                select(AfterSalesOrder.erp_sales_owner)
-                .where(AfterSalesOrder.erp_sales_owner.is_not(None))
-                .distinct()
-                .order_by(AfterSalesOrder.erp_sales_owner)
+                statement.distinct().order_by(AfterSalesOrder.erp_sales_owner)
             ).all()
         )
 

@@ -42,6 +42,15 @@ function createInitialFilters() {
   };
 }
 
+function createInterceptFilters() {
+  return {
+    shop_id: "",
+    sales_owner: "",
+    stage: "",
+    keyword: "",
+  };
+}
+
 const formatDateTime = (value, includeYear = false) => {
   if (!value) return "—";
   const date = new Date(value);
@@ -90,20 +99,28 @@ function SummaryStrip({ summary }) {
   );
 }
 
-function Sidebar() {
+function Sidebar({ activeView, onNavigate }) {
   const nav = [
-    { label: "售后订单", icon: ClipboardText, active: true },
-    { label: "在途拦截", icon: Truck },
-    { label: "人工待办", icon: User },
-    { label: "运行监控", icon: ChartBar },
+    { id: "orders", label: "售后订单", icon: ClipboardText, enabled: true },
+    { id: "intercepts", label: "在途拦截", icon: Truck, enabled: true },
+    { id: "manual", label: "人工待办", icon: User, enabled: false },
+    { id: "monitor", label: "运行监控", icon: ChartBar, enabled: false },
   ];
   return (
     <aside className="sidebar">
       <div className="brand">利德仕售后工作台</div>
       <nav aria-label="主导航">
-        {nav.map(({ label, icon: Icon, active }) => (
-          <button key={label} className={`nav-item ${active ? "active" : ""}`} type="button" aria-current={active ? "page" : undefined}>
-            <Icon size={21} weight={active ? "fill" : "regular"} />
+        {nav.map(({ id, label, icon: Icon, enabled }) => (
+          <button
+            key={id}
+            className={`nav-item ${activeView === id ? "active" : ""}`}
+            type="button"
+            aria-current={activeView === id ? "page" : undefined}
+            disabled={!enabled}
+            title={enabled ? label : `${label}将在后续阶段开放`}
+            onClick={() => enabled && onNavigate(id)}
+          >
+            <Icon size={21} weight={activeView === id ? "fill" : "regular"} />
             <span>{label}</span>
           </button>
         ))}
@@ -280,6 +297,197 @@ function Pagination({ pagination, onPage, onPageSize }) {
   );
 }
 
+function InterceptSummaryStrip({ summary }) {
+  const items = [
+    { label: "待发拦截", value: summary.waiting_notice ?? 0, tone: "orange" },
+    { label: "退款冻结", value: summary.refund_blocked ?? 0, tone: "orange" },
+    { label: "已退款待退回", value: summary.waiting_return ?? 0, tone: "blue" },
+    { label: "待匹配ERP退货单", value: summary.waiting_erp_match ?? 0, tone: "green" },
+  ];
+  return (
+    <section className="summary-strip" aria-label="在途拦截摘要">
+      {items.map((item) => (
+        <div className="summary-item" key={item.label}>
+          <span>{item.label}</span>
+          <strong className={`metric-${item.tone}`}>{item.value}</strong>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function InterceptFilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, busy }) {
+  const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
+  return (
+    <form className="filters intercept-filters" onSubmit={onSubmit}>
+      <div className="filter-row filter-row-primary">
+        <label>
+          <span>店铺</span>
+          <select value={draft.shop_id} onChange={update("shop_id")}>
+            <option value="">全部</option>
+            {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.shop_name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>归属业务员</span>
+          <select value={draft.sales_owner} onChange={update("sales_owner")}>
+            <option value="">全部</option>
+            {salesOwners.map((owner) => <option value={owner} key={owner}>{owner}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>当前环节</span>
+          <select value={draft.stage} onChange={update("stage")}>
+            <option value="">全部</option>
+            <option value="WAITING_NOTICE">待发拦截</option>
+            <option value="NOTICE_SENT">拦截已发送</option>
+            <option value="REFUND_BLOCKED">退款冻结</option>
+            <option value="WAITING_RETURN">已退款待退回</option>
+            <option value="ERP_MATCH">待匹配ERP退货单</option>
+            <option value="MANUAL">人工处理</option>
+          </select>
+        </label>
+        <label className="search-field intercept-search">
+          <MagnifyingGlass size={17} />
+          <input value={draft.keyword} onChange={update("keyword")} placeholder="订单号/售后单号/快递单号" />
+        </label>
+        <button type="button" className="button secondary" onClick={onReset}>
+          <ArrowCounterClockwise size={16} />重置
+        </button>
+        <button type="submit" className="button primary" disabled={busy}>
+          <MagnifyingGlass size={16} />查询
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) {
+  return (
+    <div className="table-wrap intercept-table-wrap">
+      <table className="intercept-table">
+        <thead>
+          <tr>
+            <th>店铺</th><th>归属业务员</th><th>售后单号</th><th>快递群 / 运单</th><th>拦截通知</th>
+            <th>物流状态</th><th>退款闸门</th><th>当前环节</th><th>最近更新</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr
+              key={item.after_sales_sn}
+              className={selected === item.after_sales_sn ? "selected" : ""}
+              onClick={() => onSelect(item.after_sales_sn)}
+              title={item.latest_error || item.logistics_context}
+            >
+              <td title={item.shop_name}><span className="truncate">{item.shop_name}</span></td>
+              <td><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
+              <td className="mono">{item.after_sales_sn}</td>
+              <td title={`${item.target_group} / ${item.carrier_name} ${item.tracking_number}`}>
+                <span className="stacked-cell"><b>{item.target_group}</b><small>{item.tracking_number}</small></span>
+              </td>
+              <td><StatusTag tone={item.notice_tone}>{item.notice_label}</StatusTag></td>
+              <td title={item.logistics_context}><StatusTag tone={item.logistics_tone}>{item.logistics_label}</StatusTag></td>
+              <td><StatusTag tone={item.refund_gate_tone}>{item.refund_gate_label}</StatusTag></td>
+              <td><StatusTag tone={item.workflow_tone}>{item.workflow_label}</StatusTag></td>
+              <td>{formatDateTime(item.updated_at)}</td>
+              <td><button type="button" className="link-button" onClick={(event) => { event.stopPropagation(); onSelect(item.after_sales_sn); }}>查看详情</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {!items.length && <EmptyTable loading={loading} error={error} onRetry={onRetry} />}
+      {loading && items.length > 0 && <div className="table-loading"><ArrowsClockwise className="spin" size={18} />刷新中</div>}
+    </div>
+  );
+}
+
+function InterceptWorkspace({ detailOpen, setDetailOpen }) {
+  const [draftFilters, setDraftFilters] = useState(createInterceptFilters);
+  const [filters, setFilters] = useState(createInterceptFilters);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
+  const [data, setData] = useState({ summary: {}, shops: [], sales_owners: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [selected, setSelected] = useState("");
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const loadIntercepts = useCallback(async (signal) => {
+    setLoading(true);
+    setError("");
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    try {
+      const response = await fetch(`/api/v1/aftersales/intercepts?${params}`, { signal });
+      if (!response.ok) throw new Error(`服务返回 ${response.status}`);
+      const payload = await response.json();
+      setData(payload);
+      setSelected((current) => (
+        payload.items.some((item) => item.after_sales_sn === current)
+          ? current
+          : (payload.items[0]?.after_sales_sn ?? "")
+      ));
+    } catch (requestError) {
+      if (requestError.name !== "AbortError") setError("模块1拦截记录暂时无法读取，请检查本地服务。");
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+  }, [filters, page, pageSize, refreshKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadIntercepts(controller.signal);
+    return () => controller.abort();
+  }, [loadIntercepts]);
+
+  useEffect(() => {
+    if (!selected) { setDetail(null); return undefined; }
+    const controller = new AbortController();
+    setDetailLoading(true);
+    fetch(`/api/v1/aftersales/orders/${encodeURIComponent(selected)}`, { signal: controller.signal })
+      .then((response) => { if (!response.ok) throw new Error(String(response.status)); return response.json(); })
+      .then(setDetail)
+      .catch((requestError) => { if (requestError.name !== "AbortError") setDetail(null); })
+      .finally(() => { if (!controller.signal.aborted) setDetailLoading(false); });
+    return () => controller.abort();
+  }, [selected]);
+
+  const chooseOrder = (afterSalesSn) => { setSelected(afterSalesSn); setDetailOpen(true); };
+  const submitFilters = (event) => { event.preventDefault(); setPage(1); setFilters(draftFilters); };
+  const resetFilters = () => { const initial = createInterceptFilters(); setDraftFilters(initial); setFilters(initial); setPage(1); };
+  const copyValue = async (value) => { await navigator.clipboard.writeText(String(value)); setCopied(true); window.setTimeout(() => setCopied(false), 1500); };
+
+  return (
+    <>
+      <main className="workspace">
+        <header className="topbar">
+          <div className="page-title"><Truck size={22} /><h1>在途拦截</h1><span className="read-only-badge">只读监控</span></div>
+          <div className="sync-status"><span />模块1后台运行 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
+        </header>
+        <div className="workspace-body">
+          <InterceptSummaryStrip summary={data.summary} />
+          <InterceptFilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
+          <InterceptTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
+          <div className="workspace-actions">
+            <button type="button" className="button secondary" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}><ArrowsClockwise size={16} />刷新</button>
+            <Pagination
+              pagination={data.pagination}
+              onPage={(nextPage) => { if (nextPage >= 1 && nextPage <= data.pagination.pages) setPage(nextPage); }}
+              onPageSize={(nextSize) => { setPageSize(nextSize); setPage(1); }}
+            />
+          </div>
+        </div>
+      </main>
+      {detailOpen && <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetailOpen(false)} onCopy={copyValue} copied={copied} />}
+      {!detailOpen && selected && <button type="button" className="open-detail" onClick={() => setDetailOpen(true)}>打开售后详情</button>}
+    </>
+  );
+}
+
 function DetailRow({ label, value, copyable = false, onCopy }) {
   return (
     <div className="detail-row">
@@ -352,6 +560,8 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
 }
 
 export function App() {
+  const [activeView, setActiveView] = useState("orders");
+  const [interceptDetailOpen, setInterceptDetailOpen] = useState(true);
   const [draftFilters, setDraftFilters] = useState(createInitialFilters);
   const [filters, setFilters] = useState(createInitialFilters);
   const [page, setPage] = useState(1);
@@ -456,26 +666,32 @@ export function App() {
   };
 
   return (
-    <div className={`app-shell ${detailOpen ? "" : "without-detail"}`}>
-      <Sidebar />
-      <main className="workspace">
-        <header className="topbar">
-          <div className="page-title"><ListBullets size={22} /><h1>售后订单记录</h1></div>
-          <div className="sync-status"><span />后台扫描正常 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
-        </header>
-        <div className="workspace-body">
-          <SummaryStrip summary={data.summary} />
-          <FilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
-          <OrdersTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
-          <div className="workspace-actions">
-            <button type="button" className="button secondary" onClick={exportRows} disabled={!data.items.length}><DownloadSimple size={16} />导出</button>
-            <button type="button" className="button secondary" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}><ArrowsClockwise size={16} />刷新</button>
-            <Pagination pagination={data.pagination} onPage={changePage} onPageSize={changePageSize} />
-          </div>
-        </div>
-      </main>
-      {detailOpen && <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetailOpen(false)} onCopy={copyValue} copied={copied} />}
-      {!detailOpen && selected && <button type="button" className="open-detail" onClick={() => setDetailOpen(true)}>打开售后详情</button>}
+    <div className={`app-shell ${(activeView === "orders" ? detailOpen : interceptDetailOpen) ? "" : "without-detail"}`}>
+      <Sidebar activeView={activeView} onNavigate={setActiveView} />
+      {activeView === "orders" ? (
+        <>
+          <main className="workspace">
+            <header className="topbar">
+              <div className="page-title"><ListBullets size={22} /><h1>售后订单记录</h1></div>
+              <div className="sync-status"><span />后台扫描正常 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
+            </header>
+            <div className="workspace-body">
+              <SummaryStrip summary={data.summary} />
+              <FilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
+              <OrdersTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
+              <div className="workspace-actions">
+                <button type="button" className="button secondary" onClick={exportRows} disabled={!data.items.length}><DownloadSimple size={16} />导出</button>
+                <button type="button" className="button secondary" onClick={() => setRefreshKey((key) => key + 1)} disabled={loading}><ArrowsClockwise size={16} />刷新</button>
+                <Pagination pagination={data.pagination} onPage={changePage} onPageSize={changePageSize} />
+              </div>
+            </div>
+          </main>
+          {detailOpen && <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetailOpen(false)} onCopy={copyValue} copied={copied} />}
+          {!detailOpen && selected && <button type="button" className="open-detail" onClick={() => setDetailOpen(true)}>打开售后详情</button>}
+        </>
+      ) : (
+        <InterceptWorkspace detailOpen={interceptDetailOpen} setDetailOpen={setInterceptDetailOpen} />
+      )}
     </div>
   );
 }
