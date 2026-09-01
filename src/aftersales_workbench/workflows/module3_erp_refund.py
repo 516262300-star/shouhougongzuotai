@@ -37,6 +37,7 @@ class Module3ErpRefundRunResult:
     not_found: int = 0
     blocked: int = 0
     unavailable: int = 0
+    skipped_recent: int = 0
     details: list[dict[str, Any]] | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -78,18 +79,27 @@ class Module3ErpRefundService:
         platform_order_sn: str | None = None,
         dry_run: bool = True,
         include_details: bool = False,
+        refresh_seconds: int = 0,
     ) -> Module3ErpRefundRunResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
+        if refresh_seconds < 0 or refresh_seconds > 86400:
+            raise ValueError("refresh_seconds 必须在 0–86400 之间")
         rows = self._list_candidates(
-            limit=limit,
+            limit=500 if refresh_seconds else limit,
             platform_order_sn=platform_order_sn,
         )
         result = Module3ErpRefundRunResult(
             dry_run=dry_run,
             details=[] if include_details else None,
         )
+        checked_at = datetime.now(UTC)
         for task, order in rows:
+            if result.scanned >= limit:
+                break
+            if self._checked_recently(task, checked_at, refresh_seconds):
+                result.skipped_recent += 1
+                continue
             expected_items = expected_items_from_order(order)
             lookup = self.client.inspect(
                 platform_order_sn=order.platform_order_sn,
@@ -124,6 +134,25 @@ class Module3ErpRefundService:
                 result.details.append(self._safe_detail(task, order, lookup))
             self.session.commit()
         return result
+
+    @staticmethod
+    def _checked_recently(
+        task: AftersalesActionTask,
+        now: datetime,
+        refresh_seconds: int,
+    ) -> bool:
+        if not refresh_seconds:
+            return False
+        raw = str((task.payload or {}).get("erp_refund_checked_at") or "").strip()
+        if not raw:
+            return False
+        try:
+            checked_at = datetime.fromisoformat(raw)
+        except ValueError:
+            return False
+        if checked_at.tzinfo is None:
+            checked_at = checked_at.replace(tzinfo=UTC)
+        return (now - checked_at).total_seconds() < refresh_seconds
 
     def _list_candidates(
         self,
@@ -200,7 +229,11 @@ class Module3ErpRefundService:
         task.last_error = (
             lookup.message[:2000]
             if lookup.status
-            in {ErpUnshippedRefundStatus.BLOCKED, ErpUnshippedRefundStatus.UNAVAILABLE}
+            in {
+                ErpUnshippedRefundStatus.NOT_FOUND,
+                ErpUnshippedRefundStatus.BLOCKED,
+                ErpUnshippedRefundStatus.UNAVAILABLE,
+            }
             else None
         )
 

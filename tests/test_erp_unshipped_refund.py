@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -289,6 +290,20 @@ def test_dry_run_counts_idempotently_completed_remote_refund() -> None:
     assert result.ready == 0
     assert result.details is not None
     assert result.details[0]["lookup"]["reference_sn"] == "SK-TEST-1"
+
+
+def test_background_recheck_respects_refresh_interval() -> None:
+    now = datetime.now(UTC)
+    recent = SimpleNamespace(
+        payload={"erp_refund_checked_at": (now - timedelta(minutes=5)).isoformat()}
+    )
+    stale = SimpleNamespace(
+        payload={"erp_refund_checked_at": (now - timedelta(hours=1)).isoformat()}
+    )
+
+    assert Module3ErpRefundService._checked_recently(recent, now, 1800) is True
+    assert Module3ErpRefundService._checked_recently(stale, now, 1800) is False
+    assert Module3ErpRefundService._checked_recently(recent, now, 0) is False
 
 
 def test_completion_records_three_stage_local_audit_chain() -> None:

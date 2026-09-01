@@ -15,7 +15,7 @@ from aftersales_workbench.workflows.module1_worker import (
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="持续运行模块 1：同步售后、准备拦截、物流闸门和可选退款。"
+        description="持续运行售后后台：模块1拦截退款及模块3未发货 ERP 退款。"
     )
     parser.add_argument(
         "--forever",

@@ -4,10 +4,10 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1 常驻后台运行器、模块 3 未发货 ERP 补开退款单与已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
 - 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
 - ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
-- 所有外部写入默认关闭。只有分别配置并打开 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED` 后，执行命令才会真正发送企微通知或同意退款。
+- 所有外部写入默认关闭。企微、拼多多、ERP 分别受 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED`、`ERP_WRITE_ENABLED` 及对应功能开关保护。
 
 ## 本地启动
 
@@ -81,6 +81,12 @@ alembic downgrade -1
 | `ERP_TODO_PUBLISH_ENABLED` | 将模块 1 人工处理任务真实发布到管理系统待办页 | `false` |
 | `ERP_TODO_MAX_ATTEMPTS` | 待办发布失败后允许安全重新入队的最大尝试次数 | `3` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
+| `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
+| `MODULE3_WORKER_BATCH_LIMIT` | 模块 3 每周期最多新建及处理的订单数；首次上线保持 1 | `1` |
+| `MODULE3_ERP_REFUND_RECHECK_SECONDS` | 同一未闭环 ERP 异常的最短复查间隔 | `1800` |
+| `MODULE3_EXCEPTION_NOTIFICATION_ENABLED` | 模块 3 异常企微通知功能开关；还需 `QYWX_WRITE_ENABLED=true` | `false` |
+| `MODULE3_EXCEPTION_WEBHOOK_URL` | 模块 3 内部异常群独立机器人 Webhook（密钥） | 无 |
+| `MODULE3_EXCEPTION_REPEAT_SECONDS` | 同一异常内容持续存在时的最短重复提醒间隔 | `21600` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -248,23 +254,25 @@ alembic upgrade head
 
 2026-08-31 以1店近72小时真实售后数据完成模块1只读预演：严格按 `ONLY_REFUND` 筛出2笔、均为极兔；快递100判定1笔 `IN_TRANSIT`（退款闸门可放行）、1笔 `DELIVERED` 且没有退回记录（退款闸门冻结），物流查询失败0笔。预演未创建动作任务、未发送企微消息、未调用拼多多退款接口。
 
-### 模块 1 实际后台运行
+### 售后实际后台运行（模块 1 + 模块 3）
 
-后台运行器把现有的一次性命令串成固定周期，执行顺序为：
+后台运行器沿用历史入口名 `aftersales-run-module1` 和脚本名 `module1-worker.ps1`，但现在同时承载模块 1 与模块 3。固定周期顺序为：
 
 1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；
-2. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
-3. 先要求“申请退款金额 = 优惠后实付金额”，再筛出“在途 + 全额仅退款”并幂等生成本地拦截通知任务；部分退款直接排除，金额缺失或异常失败关闭；
-4. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
-5. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
-6. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
-7. 对派件中、已签收无退回、拦截失败和人工处理状态按归属业务员生成幂等的本地管理系统待办任务；
-8. 根据 `ERP_TODO_PUBLISH_ENABLED` 处理管理系统待办；默认关闭，只有再同时开启 `ERP_WRITE_ENABLED` 才真实发布并回填远端待办 ID；
-9. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
+2. `MODULE3_WORKER_ENABLED=true` 时，小批量生成模块 3 幂等待办；同时开启 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 后，严格核验并补开未发货 ERP 退款单；
+3. 对 ERP 未找到、金额/商品不一致或页面不可用的模块 3 任务保留本地异常；配置独立异常群 Webhook 并开启两个通知开关后发送去重企微提醒；
+4. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
+5. 先要求“申请退款金额 = 优惠后实付金额”，再筛出“在途 + 全额仅退款”并幂等生成本地拦截通知任务；部分退款直接排除，金额缺失或异常失败关闭；
+6. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
+7. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
+8. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
+9. 对派件中、已签收无退回、拦截失败和人工处理状态按归属业务员生成幂等的本地管理系统待办任务；
+10. 根据 `ERP_TODO_PUBLISH_ENABLED` 处理管理系统待办；默认关闭，只有再同时开启 `ERP_WRITE_ENABLED` 才真实发布并回填远端待办 ID；
+11. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
 
-因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。以后新增桌面发送适配器只替换第 4 步，不修改前后状态机。
+因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。模块 1 的通知出口变化只替换通知步骤，不修改前后状态机。
 
-先在前台执行一个周期核对输出。该命令会增量写入本地 MySQL 和本地动作队列，但不会发送通知或调用平台退款：
+先在前台执行一个周期核对输出。该命令会增量写入本地 MySQL 和动作队列；如果模块 3 或平台退款的外部写开关已经打开，也会按配置真实执行，因此上线前必须先检查 `.env`：
 
 ```powershell
 .\.venv\Scripts\aftersales-run-module1.exe
@@ -278,7 +286,7 @@ alembic upgrade head
 & .\scripts\module1-worker.ps1 -Action Stop
 ```
 
-本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，启动入口不保存平台 Token、管理系统账号或数据库密码。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时隐藏启动 MySQL，模块 1 未运行时调用上面的幂等启动脚本；已经运行时不会重复启动。
+本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，启动入口不保存平台 Token、管理系统账号或数据库密码。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时隐藏启动 MySQL，售后后台运行器未运行时调用上面的幂等启动脚本；已经运行时不会重复启动。
 
 ```powershell
 & .\scripts\module1-autostart.ps1 -Action Install
@@ -289,7 +297,7 @@ alembic upgrade head
 
 计划任务或用户启动项都使用当前 Windows 用户的交互登录令牌，因此电脑重启后至少需要登录一次；锁屏不影响同步，但休眠、关机和退出登录会停止本地运行。应在 Windows 电源设置中关闭自动休眠。若以后迁移到服务器，应先执行 `Uninstall`，避免两台机器同时处理同一售后。
 
-默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，每周期最多处理 20 条动作任务，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
+默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，模块 1 每周期最多处理 20 条动作任务，模块 3 默认每周期只处理 1 笔，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示模块 1/3 最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
 
 快递 100 不再跟随 60 秒后台周期重复查询同一运单；同一周期内多笔售后共用同一快递公司和运单号时也只查询一次。正常取得轨迹后默认 5 分钟再刷新；失败后按 5、10、20、30 分钟递增，之后保持 30 分钟上限。每次失败会保存快递 100 原始错误、连续失败次数和下次查询时间，同时保留最后一次成功轨迹；连续 6 次失败后，订单和待发送拦截任务会显示“需人工核对”。无论失败次数多少，自动退款均继续冻结。若之后恢复成功，失败次数和错误提示会自动清零。平台退款真正执行前仍强制进行一次不受退避时间限制的实时查询，避免使用缓存轨迹放款。
 
@@ -299,6 +307,8 @@ alembic upgrade head
 - 单票详情返回拼多多 `45001`“订单不属于当前店铺或订单不存在”：隔离并计入 `records_skipped`，其余订单继续处理且窗口游标正常推进；其他平台错误仍按整店失败处理；
 - ERP 归属查询失败：该批记录保留失败状态并在 5 分钟后重试；该独立阶段不会阻断后续拦截安全流程；
 - ERP 人工待办发布关闭：本地任务保留为 `PENDING`；开启双重写开关后下个周期继续。发布失败会使用远端售后标识先查重，再在 `ERP_TODO_MAX_ATTEMPTS` 范围内重新入队；超过次数后保留 `FAILED` 和错误原因供人工检查；
+- 模块 3 ERP 核对不一致或找不到订单：不调用补单动作，原任务保留 `PENDING` 和明确错误；默认 30 分钟后复查。异常内容变化会立即具备提醒资格，同一内容成功提醒后 6 小时内不重复发送；企微未配置时异常仍可在工作台和周期摘要中查看；
+- 模块 3 ERP 请求结果不明：下个复查周期先重新查询远端；若已生成退款单，只补齐本地审计，不重复调用“补开退款单”；需要紧急暂停时设置 `MODULE3_WORKER_ENABLED=false` 并安全重启运行器；
 - 快递 100 返回“查询无结果”或网络异常：保留最后成功轨迹并冻结自动退款，按配置的退避间隔重试；工作台可查看原始错误、失败次数和下次查询时间。连续达到 `KUAIDI100_MANUAL_AFTER_FAILURES` 后人工核对运单号及快递官方轨迹，恢复成功后系统自动清除告警；
 - 拼多多优惠后实付金额缺失：该售后不会进入拦截、人工待办或平台退款动作；先运行 `pdd-backfill-refund-amounts` 只读预演，确认接口能够返回金额后再使用 `--apply`；
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
@@ -428,6 +438,26 @@ alembic upgrade head
 ```
 
 写入后程序必须同时回查：待处理记录已消失、ERP 收款记录存在唯一的负数退款单据、状态表原订单无欠货、客户累计应收归零。回查通过后才将本地订单转为 `UNSHIPPED_AUTO_REFUNDED`，并把 `ERP_CHECK_FULFILLMENT`、`ERP_CANCEL_UNSHIPPED_ORDER`、`ERP_CREATE_REFUND_RECORD` 三段审计动作记录为成功。请求结果不明时不得立即重发；先重跑只读预演，若返回 `completed` 只补记本地结果，不会再次调用 ERP。
+
+单笔真实验收完成后，可接入现有常驻周期。首次上线保持每轮 1 笔：
+
+```dotenv
+MODULE3_WORKER_ENABLED=true
+MODULE3_WORKER_BATCH_LIMIT=1
+MODULE3_ERP_REFUND_RECHECK_SECONDS=1800
+MODULE3_ERP_REFUND_EXECUTION_ENABLED=true
+ERP_WRITE_ENABLED=true
+```
+
+后台先创建本地动作，再进行 ERP 核验和补单。`not_found`、`blocked`、`unavailable` 均不会越级写入 ERP；任务保留待处理，并遵守复查间隔。需要企微异常提醒时，必须使用内部异常群的独立机器人，不复用快递拦截外部群：
+
+```dotenv
+MODULE3_EXCEPTION_NOTIFICATION_ENABLED=true
+MODULE3_EXCEPTION_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=本机密钥
+QYWX_WRITE_ENABLED=true
+```
+
+Webhook 只写入本机 `.env`，不进入仓库、日志或异常载荷。通知成功后在原任务中保存消息指纹和时间；异常内容未变化时按 `MODULE3_EXCEPTION_REPEAT_SECONDS` 去重，发送失败不标记成功，修复 Webhook 后会继续尝试。紧急暂停只需将 `MODULE3_WORKER_ENABLED=false`，再执行 `module1-worker.ps1 Stop` / `Start` 安全重启；已成功补开的退款单不会回滚。
 
 2026-09-01 已使用一笔真实拼多多未发货仅退款完成单笔验收：平台退款与 ERP 商家应收一致，补单后负数退款收款单成功生成，状态表欠货移除、累计应收归零，本地工作流同步闭环。真实订单、客户和登录凭据不写入仓库。
 

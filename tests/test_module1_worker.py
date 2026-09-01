@@ -41,6 +41,20 @@ class FakeRuntime(Module1WorkerRuntime):
             raise RuntimeError("sync failed")
         return WorkerStageResult.completed({"records": 1})
 
+    def _prepare_module3_tasks(self) -> WorkerStageResult:
+        self.calls.append("module3_tasks")
+        return WorkerStageResult.completed(
+            {"scanned": 1, "unshipped": 1, "tasks_created": 1}
+        )
+
+    def _process_module3_erp_refunds(self) -> WorkerStageResult:
+        self.calls.append("module3_erp_refunds")
+        return WorkerStageResult.completed({"scanned": 1, "applied": 1})
+
+    def _notify_module3_exceptions(self) -> WorkerStageResult:
+        self.calls.append("module3_exception_notifications")
+        return WorkerStageResult.completed({"pending": 0, "sent": 0})
+
     def _prepare_intercept_tasks(self) -> WorkerStageResult:
         self.calls.append("intercept_tasks")
         return WorkerStageResult.completed({"tasks_created": 1})
@@ -96,6 +110,9 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert result.ok is True
     assert runtime.calls == [
         "sync",
+        "module3_tasks",
+        "module3_erp_refunds",
+        "module3_exception_notifications",
         "erp_sales_owners",
         "intercept_tasks",
         "notification_preflight",
@@ -112,6 +129,9 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert result.pdd_refund.details["pdd_refunds"] == 0
     summary = result.summary_dict()
     assert summary["sync"]["status"] == "completed"
+    assert summary["module3_tasks"]["tasks_created"] == 1
+    assert summary["module3_erp_refunds"]["applied"] == 1
+    assert summary["module3_exception_notifications"]["pending"] == 0
     assert summary["erp_sales_owners"]["matched"] == 1
     assert summary["erp_return_matches"]["closed_loop"] == 1
     assert summary["erp_todo_tasks"]["tasks_created"] == 1

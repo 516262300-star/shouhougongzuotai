@@ -43,7 +43,7 @@ switch ($Action) {
         New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
         $existing = Get-Module1WorkerProcess
         if ($null -ne $existing) {
-            Write-Output "模块1后台运行器已启动，PID=$($existing.Id)"
+            Write-Output "售后后台运行器（模块1+模块3）已启动，PID=$($existing.Id)"
             exit 0
         }
         if (-not (Test-Path -LiteralPath $workerExe)) {
@@ -62,9 +62,9 @@ switch ($Action) {
         Set-Content -LiteralPath $pidFile -Value $process.Id -Encoding ascii
         Start-Sleep -Seconds 1
         if ($process.HasExited) {
-            throw "模块1后台运行器启动失败，请查看 $stderrLog"
+            throw "售后后台运行器启动失败，请查看 $stderrLog"
         }
-        Write-Output "模块1后台运行器已启动，PID=$($process.Id)"
+        Write-Output "售后后台运行器（模块1+模块3）已启动，PID=$($process.Id)"
         Write-Output "运行日志：$stdoutLog"
         Write-Output "错误日志：$stderrLog"
     }
@@ -73,7 +73,7 @@ switch ($Action) {
         if ($null -eq $existing) {
             Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
-            Write-Output '模块1后台运行器当前未运行'
+            Write-Output '售后后台运行器当前未运行'
             exit 0
         }
         New-Item -ItemType File -Path $stopFile -Force | Out-Null
@@ -83,7 +83,7 @@ switch ($Action) {
             if ($existing.HasExited) {
                 Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
                 Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
-                Write-Output '模块1后台运行器已安全停止'
+                Write-Output '售后后台运行器已安全停止'
                 exit 0
             }
         }
@@ -92,10 +92,10 @@ switch ($Action) {
     'Status' {
         $existing = Get-Module1WorkerProcess
         if ($null -eq $existing) {
-            Write-Output '模块1后台运行器：未运行'
+            Write-Output '售后后台运行器（模块1+模块3）：未运行'
             exit 1
         }
-        Write-Output "模块1后台运行器：运行中，PID=$($existing.Id)"
+        Write-Output "售后后台运行器（模块1+模块3）：运行中，PID=$($existing.Id)"
         Write-Output "运行日志：$stdoutLog"
         Write-Output "错误日志：$stderrLog"
         if (Test-Path -LiteralPath $stdoutLog) {
