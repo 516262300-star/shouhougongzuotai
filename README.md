@@ -258,6 +258,17 @@ alembic upgrade head
 & .\scripts\module1-worker.ps1 -Action Stop
 ```
 
+本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，启动入口不保存平台 Token、管理系统账号或数据库密码。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时隐藏启动 MySQL，模块 1 未运行时调用上面的幂等启动脚本；已经运行时不会重复启动。
+
+```powershell
+& .\scripts\module1-autostart.ps1 -Action Install
+& .\scripts\module1-autostart.ps1 -Action Status
+# 不再需要时再显式卸载
+& .\scripts\module1-autostart.ps1 -Action Uninstall
+```
+
+计划任务或用户启动项都使用当前 Windows 用户的交互登录令牌，因此电脑重启后至少需要登录一次；锁屏不影响同步，但休眠、关机和退出登录会停止本地运行。应在 Windows 电源设置中关闭自动休眠。若以后迁移到服务器，应先执行 `Uninstall`，避免两台机器同时处理同一售后。
+
 默认运行 1、2、3、4、6、7 店，暂时跳过 Token 已失效的 5 店；每店每周期最多追赶两个 30 分钟窗口，每周期最多处理 20 条动作任务，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
 
 后台运行失败时按以下方式恢复：
@@ -269,6 +280,7 @@ alembic upgrade head
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
 - 电脑重启：本地 MySQL 不是 Windows 服务时先启动 MySQL，再重新执行 `Start`；
+- 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；如果 MySQL 或工作区路径发生变化，重新执行 `Install` 刷新本机配置；
 - 重复启动：启停脚本通过 PID 文件阻止第二个后台进程。不要绕过脚本同时启动多个 `--forever` 实例。
 
 如需前台观察持续循环或临时覆盖店铺，可直接执行：
