@@ -27,9 +27,11 @@ def test_desktop_notice_uses_exact_whitelisted_group_and_builds_text() -> None:
     assert plan.target_group == "精确极兔群名"
     assert "【售后快递拦截】" in plan.message
     assert "tracking-123456" in plan.message
+    assert "测试店铺" not in plan.message
     assert "order-123456" not in plan.message
     assert "after-sales-123456" not in plan.message
     assert "M1-12" not in plan.message
+    assert "店铺：" not in plan.message
     assert "平台订单号" not in plan.message
     assert "售后单号" not in plan.message
     assert "任务编号" not in plan.message

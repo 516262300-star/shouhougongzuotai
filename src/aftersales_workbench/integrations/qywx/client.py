@@ -29,7 +29,6 @@ class InterceptNotice:
         return "\n".join(
             (
                 "## <font color=\"warning\">快递拦截指令</font>",
-                f"> 店铺：{html.escape(self.shop_name)}",
                 f"> 快递公司：{carrier}",
                 f"> 发货运单号：<font color=\"warning\">{html.escape(self.tracking_number)}</font>",
                 "> 操作要求：请联系快递拦截；包裹退回并确认入库后，再回填“拦截退回”。",

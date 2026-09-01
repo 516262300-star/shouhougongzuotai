@@ -95,7 +95,6 @@ class DesktopNoticePlanner:
         message = "\n".join(
             (
                 "【售后快递拦截】",
-                f"店铺：{candidate.shop_name}",
                 f"发货运单号：{candidate.tracking_number}",
                 "处理要求：请尽快拦截并退回发件方；如已派件，请先反馈当前状态。",
             )
