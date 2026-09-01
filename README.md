@@ -71,6 +71,10 @@ alembic downgrade -1
 | `ERP_WRITE_ENABLED` | ERP 外部写操作总开关，当前未开放 | `false` |
 | `ERP_READ_DATABASE_URL` | 旧管理系统 MySQL 只读连接串，用于按拼多多订单反查客户档案归属业务员 | 无 |
 | `ERP_READ_CACHE_SECONDS` | 归属业务员查询在工作台内的缓存秒数 | `300` |
+| `ERP_WEB_LOOKUP_ENABLED` | 未配置数据库时，启用管理系统网页登录只读查询 | `false` |
+| `ERP_WEB_BASE_URL` | 管理系统网站根地址 | `https://ldswj.net` |
+| `ERP_WEB_USERNAME` / `ERP_WEB_PASSWORD` | 管理系统员工登录凭据，只允许写入本机 `.env` | 无 |
+| `ERP_WEB_TIMEOUT_SECONDS` | 管理系统网页请求超时秒数 | `15` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -95,7 +99,7 @@ alembic downgrade -1
 
 1–4 店共用 `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET`，5–7 店共用 `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET`。每个店铺仍必须将自己的 Token 填入对应的 `PDD_SHOP_N_ACCESS_TOKEN`，不要将多个 Token 用逗号拼在同一行。单店的 `PDD_CLIENT_ID`、`PDD_CLIENT_SECRET` 和 `PDD_ACCESS_TOKEN` 暂时保留，仅用于旧联调命令回退。
 
-售后订单记录页的“归属业务员”来自旧管理系统客户档案。查询规则与原客户档案一致：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照的归属业务员。请为 `ERP_READ_DATABASE_URL` 单独创建只有 `00sobackup`、`kehu` 查询权限的数据库账号，不要复用可写账号。未配置时页面会显示“待接入 ERP”，不会影响拼多多售后同步。
+售后订单记录页的“归属业务员”来自旧管理系统客户档案。系统优先使用 `ERP_READ_DATABASE_URL`：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照。没有数据库只读账号时，可配置 `ERP_WEB_LOOKUP_ENABLED=true` 以及管理系统员工账号，工作台会登录 `/leedis/index.php/welcome/loginact`，再调用客户档案自动补全接口只读查询。网页查询结果默认缓存 5 分钟，登录失效只自动重登一次，不会访问客户修改接口。登录凭据只能保存在被 Git 忽略的本机 `.env`，严禁写入 README 或提交仓库。
 
 ## 拼多多单店只读联调
 

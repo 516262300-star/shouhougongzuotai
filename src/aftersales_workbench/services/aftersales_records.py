@@ -18,8 +18,8 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.sales_owner import (
-    ErpSalesOwnerResolver,
     SalesOwnerLookup,
+    SalesOwnerResolver,
     get_erp_sales_owner_resolver,
 )
 
@@ -147,7 +147,7 @@ class AftersalesRecordService:
     def __init__(
         self,
         session: Session,
-        sales_owner_resolver: ErpSalesOwnerResolver | None = None,
+        sales_owner_resolver: SalesOwnerResolver | None = None,
     ) -> None:
         self.session = session
         self.sales_owner_resolver = sales_owner_resolver or get_erp_sales_owner_resolver()

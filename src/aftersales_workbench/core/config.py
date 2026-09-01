@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     erp_write_enabled: bool = False
     erp_read_database_url: SecretStr | None = None
     erp_read_cache_seconds: int = Field(default=300, ge=0, le=86400)
+    erp_web_lookup_enabled: bool = False
+    erp_web_base_url: str = "https://ldswj.net"
+    erp_web_username: SecretStr | None = None
+    erp_web_password: SecretStr | None = None
+    erp_web_timeout_seconds: float = Field(default=15, gt=0, le=60)
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)
