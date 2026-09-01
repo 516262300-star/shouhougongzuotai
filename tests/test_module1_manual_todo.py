@@ -83,6 +83,8 @@ def test_manual_todo_payload_contains_remote_idempotency_marker_and_order() -> N
     assert payload["marker"] == "【售后工作台 M1:after-1】"
     assert payload["marker"] in payload["content"]
     assert "平台订单号：order-1" in payload["content"]
+    assert "物流状态：派件中" in payload["content"]
+    assert "正在派件，请保持电话畅通" not in payload["content"]
     assert payload["assignee"] == "金博敏"
     assert candidate.reason_code == "OUT_FOR_DELIVERY"
 

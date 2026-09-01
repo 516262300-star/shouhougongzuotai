@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
@@ -40,6 +40,15 @@ class Module1ManualTodoCandidate:
     tracking_number: str
     carrier_code: str | None
 
+    _LOGISTICS_LABELS: ClassVar[dict[str, str]] = {
+        "OUT_FOR_DELIVERY": "派件中",
+        "DELIVERED": "已签收",
+        "RETURNING": "退回中",
+        "RETURNED": "已退回",
+        "IN_TRANSIT": "运输中",
+        "UNKNOWN": "待核实",
+    }
+
     @property
     def reason_code(self) -> str:
         if self.workflow_status is WorkflowStatus.INTERCEPT_FAILED:
@@ -64,13 +73,16 @@ class Module1ManualTodoCandidate:
 
     def task_payload(self, *, started_at: str) -> dict[str, Any]:
         marker = f"【售后工作台 M1:{self.after_sales_sn}】"
-        logistics_context = self.logistics_latest_context or "暂无最新物流描述"
         carrier = self.carrier_code or "未知"
+        logistics_label = self._LOGISTICS_LABELS.get(
+            str(self.logistics_state or "UNKNOWN"),
+            "待核实",
+        )
         content = (
             f"{marker} 模块1在途售后需人工处理；原因：{self.reason_text}；"
             f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
             f"售后单号：{self.after_sales_sn}；发货运单：{self.tracking_number}"
-            f"（物流代码 {carrier}）；最新物流：{logistics_context}。"
+            f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
         )
         return {
             "origin": "module1",
@@ -196,6 +208,12 @@ class SqlAlchemyModule1ManualTodoRepository:
         ).scalar_one_or_none()
         payload = candidate.task_payload(started_at=started_at)
         if existing is not None:
+            if (
+                AutomationTaskStatus(existing.action_status)
+                is AutomationTaskStatus.PENDING
+            ):
+                existing.payload = payload
+                return ManualTodoEnqueueResult.EXISTING
             if (
                 AutomationTaskStatus(existing.action_status)
                 is AutomationTaskStatus.FAILED
