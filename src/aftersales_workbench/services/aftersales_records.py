@@ -42,6 +42,8 @@ WORKFLOW_LABELS = {
     "INTERCEPT_FAILED": "拦截失败",
     "RETURN_WAITING_ERP_MATCH": "待匹配 ERP 退货单",
     "RETURN_WAITING_SCAN": "待仓库扫码",
+    "RETURN_RECEIVED_STAGED": "已收货待验货（暂存）",
+    "RETURN_RECEIVED_ASSIGNED": "已收货待验货（已归档）",
     "RETURN_INSPECTED_PASS": "验货通过",
     "RETURN_INSPECTED_FAIL": "验货异常",
     "SCRAPPED_REFUNDED": "报废已退款",

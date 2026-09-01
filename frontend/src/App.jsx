@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowCounterClockwise,
   ArrowsClockwise,
+  Barcode,
   CalendarBlank,
   CaretLeft,
   CaretRight,
@@ -13,6 +14,8 @@ import {
   ListBullets,
   MagnifyingGlass,
   Package,
+  Plus,
+  Trash,
   Truck,
   User,
   WarningCircle,
@@ -131,6 +134,7 @@ function Sidebar({ activeView, onNavigate }) {
   const nav = [
     { id: "orders", label: "售后订单", icon: ClipboardText, enabled: true },
     { id: "intercepts", label: "在途拦截", icon: Truck, enabled: true },
+    { id: "warehouse", label: "仓库验货", icon: Package, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: false },
     { id: "monitor", label: "运行监控", icon: ChartBar, enabled: false },
   ];
@@ -595,6 +599,243 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
   );
 }
 
+const inspectionLabels = { PENDING: "待验货", PASS: "验货通过", FAIL: "验货异常" };
+const inspectionTones = { PENDING: "warning", PASS: "success", FAIL: "danger" };
+
+function newReceiptSn() {
+  const now = new Date();
+  const day = inputDate(now).replaceAll("-", "");
+  const time = [now.getHours(), now.getMinutes(), now.getSeconds()].map((value) => String(value).padStart(2, "0")).join("");
+  return `WR-${day}-${time}`;
+}
+
+async function responseError(response) {
+  try {
+    const payload = await response.json();
+    return typeof payload.detail === "string" ? payload.detail : `服务返回 ${response.status}`;
+  } catch {
+    return `服务返回 ${response.status}`;
+  }
+}
+
+function WarehouseWorkspace() {
+  const [rows, setRows] = useState([]);
+  const [selectedReceipt, setSelectedReceipt] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [keyword, setKeyword] = useState("");
+  const [scanNumber, setScanNumber] = useState("");
+  const [scanResult, setScanResult] = useState(null);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [feedback, setFeedback] = useState({ tone: "", text: "" });
+  const [operator, setOperator] = useState(() => window.localStorage.getItem("warehouse.operator") || "");
+  const [receiptForm, setReceiptForm] = useState(null);
+  const [inspectionItems, setInspectionItems] = useState([]);
+  const [inspectionNote, setInspectionNote] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
+
+  const selected = rows.find((row) => row.receipt_sn === selectedReceipt) ?? null;
+
+  const loadRows = useCallback(async (signal) => {
+    setLoading(true);
+    const params = new URLSearchParams({ limit: "200" });
+    if (statusFilter) params.set("inspection_status", statusFilter);
+    if (keyword.trim()) params.set("keyword", keyword.trim());
+    try {
+      const response = await fetch(`/api/v1/warehouse/returns?${params}`, { signal });
+      if (!response.ok) throw new Error(await responseError(response));
+      const payload = await response.json();
+      setRows(payload);
+      setSelectedReceipt((current) => payload.some((row) => row.receipt_sn === current) ? current : (payload[0]?.receipt_sn ?? ""));
+    } catch (error) {
+      if (error.name !== "AbortError") setFeedback({ tone: "danger", text: error.message });
+    } finally {
+      if (!signal.aborted) setLoading(false);
+    }
+  }, [statusFilter, keyword, refreshKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadRows(controller.signal);
+    return () => controller.abort();
+  }, [loadRows]);
+
+  useEffect(() => {
+    setInspectionItems(selected?.items.map((item) => ({ ...item })) ?? []);
+    setInspectionNote(selected?.inspection_note ?? "");
+  }, [selectedReceipt, selected?.inspection_status]);
+
+  const persistOperator = (value) => {
+    setOperator(value);
+    window.localStorage.setItem("warehouse.operator", value);
+  };
+
+  const chooseCandidate = (candidate) => {
+    setReceiptForm({
+      receipt_sn: newReceiptSn(),
+      return_tracking_number: scanResult.return_tracking_number,
+      after_sales_sn: candidate?.after_sales_sn ?? "",
+      destination: "STAGING",
+      items: candidate?.expected_items.map((item) => ({
+        product_code: item.product_code,
+        color: item.color ?? "",
+        quantity: item.applied_quantity,
+        item_status: "NORMAL",
+        remark: "",
+      })) ?? [{ product_code: "", color: "", quantity: 1, item_status: "NORMAL", remark: "" }],
+    });
+  };
+
+  const scan = async (event) => {
+    event.preventDefault();
+    if (!scanNumber.trim()) return;
+    setScanBusy(true);
+    setFeedback({ tone: "", text: "" });
+    try {
+      const response = await fetch("/api/v1/warehouse/scan", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ return_tracking_number: scanNumber.trim() }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const payload = await response.json();
+      setScanResult(payload);
+      if (payload.recorded_receipt_sn) {
+        setSelectedReceipt(payload.recorded_receipt_sn);
+        setReceiptForm(null);
+        setFeedback({ tone: "warning", text: `该运单已登记：${payload.recorded_receipt_sn}` });
+      } else {
+        setReceiptForm({
+          receipt_sn: newReceiptSn(),
+          return_tracking_number: payload.return_tracking_number,
+          after_sales_sn: payload.candidates.length === 1 ? payload.candidates[0].after_sales_sn : "",
+          destination: "STAGING",
+          items: payload.candidates.length === 1
+            ? payload.candidates[0].expected_items.map((item) => ({ product_code: item.product_code, color: item.color ?? "", quantity: item.applied_quantity, item_status: "NORMAL", remark: "" }))
+            : [{ product_code: "", color: "", quantity: 1, item_status: "NORMAL", remark: "" }],
+        });
+      }
+    } catch (error) {
+      setFeedback({ tone: "danger", text: error.message });
+    } finally {
+      setScanBusy(false);
+    }
+  };
+
+  const updateReceiptItem = (index, key, value) => {
+    setReceiptForm((current) => ({ ...current, items: current.items.map((item, itemIndex) => itemIndex === index ? { ...item, [key]: value } : item) }));
+  };
+
+  const submitReceipt = async (event) => {
+    event.preventDefault();
+    if (!operator.trim()) { setFeedback({ tone: "danger", text: "请先填写仓库操作员" }); return; }
+    setActionBusy(true);
+    try {
+      const response = await fetch("/api/v1/warehouse/returns", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...receiptForm, operator: operator.trim(), after_sales_sn: receiptForm.after_sales_sn || null }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      const payload = await response.json();
+      setFeedback({ tone: "success", text: `收货登记成功：${payload.receipt_sn}` });
+      setSelectedReceipt(payload.receipt_sn);
+      setReceiptForm(null);
+      setScanResult(null);
+      setScanNumber("");
+      setRefreshKey((key) => key + 1);
+    } catch (error) {
+      setFeedback({ tone: "danger", text: error.message });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const inspect = async (result) => {
+    if (!selected || !operator.trim()) { setFeedback({ tone: "danger", text: "请填写验货员" }); return; }
+    setActionBusy(true);
+    try {
+      const response = await fetch(`/api/v1/warehouse/returns/${encodeURIComponent(selected.receipt_sn)}/inspection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result, inspected_by: operator.trim(), note: inspectionNote || null, items: inspectionItems }),
+      });
+      if (!response.ok) throw new Error(await responseError(response));
+      setFeedback({ tone: "success", text: result === "PASS" ? "验货已通过" : "验货异常已登记" });
+      setRefreshKey((key) => key + 1);
+    } catch (error) {
+      setFeedback({ tone: "danger", text: error.message });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <main className="workspace warehouse-workspace">
+        <header className="topbar">
+          <div className="page-title"><Package size={22} /><h1>仓库验货</h1><span className="read-only-badge">模块 2</span></div>
+          <div className="sync-status"><span />收货与验货本地留痕 · 不自动退款</div>
+        </header>
+        <div className="workspace-body">
+          <form className="warehouse-toolbar" onSubmit={(event) => { event.preventDefault(); setRefreshKey((key) => key + 1); }}>
+            <label><span>验货状态</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">全部</option><option value="PENDING">待验货</option><option value="PASS">验货通过</option><option value="FAIL">验货异常</option></select></label>
+            <label className="warehouse-keyword"><span>检索</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="收货单 / 退货运单 / 售后单 / 客户" /></label>
+            <button className="button secondary" type="submit"><MagnifyingGlass size={16} />查询</button>
+            <button className="button secondary" type="button" onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise size={16} />刷新</button>
+          </form>
+          <div className="table-wrap warehouse-table-wrap">
+            <table className="warehouse-table">
+              <thead><tr><th>收货单</th><th>退货运单</th><th>售后 / 平台订单</th><th>客户归档</th><th>实收明细</th><th>验货状态</th><th>收货时间</th></tr></thead>
+              <tbody>{rows.map((row) => (
+                <tr key={row.receipt_sn} className={selectedReceipt === row.receipt_sn ? "selected" : ""} onClick={() => setSelectedReceipt(row.receipt_sn)}>
+                  <td className="mono">{row.receipt_sn}</td><td className="mono">{row.return_tracking_number}</td>
+                  <td><div className="stacked-cell"><b>{row.after_sales_sn || "未匹配售后"}</b><small>{row.platform_order_sn || "—"}</small></div></td>
+                  <td>{row.customer_name || (row.destination === "STAGING" ? "退货暂存" : row.customer_reference) || "—"}</td>
+                  <td>{row.items.map((item) => `${item.product_code}${item.color ? `/${item.color}` : ""} ×${item.quantity}`).join("；")}</td>
+                  <td><StatusTag tone={inspectionTones[row.inspection_status]}>{inspectionLabels[row.inspection_status]}</StatusTag></td>
+                  <td>{formatDateTime(row.created_at, true)}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+            {loading && <div className="table-loading"><ArrowsClockwise className="spin" size={14} />读取中</div>}
+            {!loading && !rows.length && <div className="table-state"><Package size={28} />暂无仓库退货记录</div>}
+          </div>
+          <div className="workspace-actions"><span className="table-total">共 <strong>{rows.length}</strong> 笔收货记录</span></div>
+        </div>
+      </main>
+      <aside className="detail-panel warehouse-panel">
+        <div className="detail-heading"><h2>扫码收货 / 验货</h2></div>
+        <div className="warehouse-panel-scroll">
+          {feedback.text && <div className={`warehouse-feedback feedback-${feedback.tone}`}>{feedback.text}</div>}
+          <section className="warehouse-section">
+            <h3><Barcode size={18} />扫描退货运单</h3>
+            <form className="warehouse-scan" onSubmit={scan}><input autoFocus value={scanNumber} onChange={(event) => setScanNumber(event.target.value)} placeholder="扫描或输入买家退货运单号" /><button className="button primary" disabled={scanBusy}>{scanBusy ? "查询中" : "反查"}</button></form>
+            {scanResult && !scanResult.recorded_receipt_sn && <div className="candidate-list">
+              {scanResult.candidates.length ? scanResult.candidates.map((candidate) => <button type="button" key={candidate.after_sales_sn} className={receiptForm?.after_sales_sn === candidate.after_sales_sn ? "selected" : ""} onClick={() => chooseCandidate(candidate)}><strong>{candidate.shop_name}</strong><span>{candidate.after_sales_sn}</span><small>{candidate.expected_items.map((item) => `${item.product_code}/${item.color || "无颜色"} ×${item.applied_quantity}`).join("；")}</small></button>) : <p>未匹配到平台退货退款单，可先按未知包裹暂存。</p>}
+            </div>}
+          </section>
+          {receiptForm && <section className="warehouse-section"><h3>拆包实收登记</h3><form className="warehouse-form" onSubmit={submitReceipt}>
+            <label><span>收货单号</span><input value={receiptForm.receipt_sn} onChange={(event) => setReceiptForm({ ...receiptForm, receipt_sn: event.target.value })} /></label>
+            <label><span>仓库操作员</span><input value={operator} onChange={(event) => persistOperator(event.target.value)} placeholder="必填" /></label>
+            <div className="receipt-items">{receiptForm.items.map((item, index) => <div className="receipt-item" key={`${index}-${item.product_code}`}><input value={item.product_code} onChange={(event) => updateReceiptItem(index, "product_code", event.target.value)} placeholder="型号" /><input value={item.color} onChange={(event) => updateReceiptItem(index, "color", event.target.value)} placeholder="颜色" /><input type="number" min="1" value={item.quantity} onChange={(event) => updateReceiptItem(index, "quantity", Number(event.target.value))} /><button type="button" className="icon-button" onClick={() => setReceiptForm({ ...receiptForm, items: receiptForm.items.filter((_, itemIndex) => itemIndex !== index) })}><Trash size={15} /></button></div>)}</div>
+            <button type="button" className="link-button add-item" onClick={() => setReceiptForm({ ...receiptForm, items: [...receiptForm.items, { product_code: "", color: "", quantity: 1, item_status: "NORMAL", remark: "" }] })}><Plus size={14} />增加实收明细</button>
+            <button className="button primary warehouse-submit" disabled={actionBusy}>确认收货并进入待验货</button>
+          </form></section>}
+          {selected && <section className="warehouse-section inspection-section"><h3>验货结论</h3>
+            <dl><div><dt>收货单</dt><dd>{selected.receipt_sn}</dd></div><div><dt>关联售后</dt><dd>{selected.after_sales_sn || "未匹配"}</dd></div></dl>
+            <label className="operator-field"><span>验货员</span><input value={operator} onChange={(event) => persistOperator(event.target.value)} placeholder="必填" /></label>
+            <div className="inspection-items">{inspectionItems.map((item, index) => <div className="inspection-item" key={`${item.product_code}-${item.color}`}><div><strong>{item.product_code}</strong><span>{item.color || "无颜色"} · ×{item.quantity}</span></div><select value={item.item_status} disabled={selected.inspection_status !== "PENDING"} onChange={(event) => setInspectionItems((current) => current.map((entry, itemIndex) => itemIndex === index ? { ...entry, item_status: event.target.value } : entry))}><option value="NORMAL">正常</option><option value="DEFECTIVE">次品</option><option value="SCRAPPED">报废</option></select></div>)}</div>
+            <label className="inspection-note"><span>异常说明</span><textarea value={inspectionNote} disabled={selected.inspection_status !== "PENDING"} onChange={(event) => setInspectionNote(event.target.value)} placeholder="验货异常时必填；通过可留空" /></label>
+            {selected.inspection_status === "PENDING" ? <div className="inspection-actions"><button className="button secondary danger-button" type="button" disabled={actionBusy} onClick={() => inspect("FAIL")}>登记异常</button><button className="button primary" type="button" disabled={actionBusy} onClick={() => inspect("PASS")}>验货通过</button></div> : <div className={`inspection-final final-${selected.inspection_status.toLowerCase()}`}><CheckCircle size={18} />{inspectionLabels[selected.inspection_status]} · {selected.inspected_by || "—"}</div>}
+          </section>}
+        </div>
+      </aside>
+    </>
+  );
+}
+
 export function App() {
   const [activeView, setActiveView] = useState("orders");
   const [interceptDetailOpen, setInterceptDetailOpen] = useState(true);
@@ -712,7 +953,9 @@ export function App() {
   };
 
   return (
-    <div className={`app-shell ${(activeView === "orders" ? detailOpen : interceptDetailOpen) ? "" : "without-detail"}`}>
+    <div className={`app-shell ${(
+      activeView === "orders" ? detailOpen : activeView === "intercepts" ? interceptDetailOpen : true
+    ) ? "" : "without-detail"}`}>
       <Sidebar activeView={activeView} onNavigate={setActiveView} />
       {activeView === "orders" ? (
         <>
@@ -736,8 +979,10 @@ export function App() {
           {detailOpen && <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetailOpen(false)} onCopy={copyValue} copied={copied} />}
           {!detailOpen && selected && <button type="button" className="open-detail" onClick={() => setDetailOpen(true)}>打开售后详情</button>}
         </>
-      ) : (
+      ) : activeView === "intercepts" ? (
         <InterceptWorkspace detailOpen={interceptDetailOpen} setDetailOpen={setInterceptDetailOpen} />
+      ) : (
+        <WarehouseWorkspace />
       )}
     </div>
   );

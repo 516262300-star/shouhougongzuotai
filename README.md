@@ -1,12 +1,12 @@
 # 利德仕电商自动化售后工作台
 
-面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步，以及模块 1、模块 3 的安全动作流转。
+面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步，以及模块 1、模块 2、模块 3 的核心流程。
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
-- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
-- ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 2 仓库扫码收货与人工验货、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`、`warehouse_return_records`、`warehouse_return_items`。
+- ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 当前只写售后工作台本地库，不点击 ERP、不调用拼多多退款。
 - 所有外部写入默认关闭。企微、拼多多、ERP 分别受 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED`、`ERP_WRITE_ENABLED` 及对应功能开关保护。
 
 ## 本地启动
@@ -437,6 +437,33 @@ ERP 补开退款单使用独立双重写开关，默认只允许手工运行只�
 
 持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。平台退款明确完成后，即使物流仍显示在途、派件或快递 100 暂时查询失败，后台也会先建立 ERP 只读匹配任务。后台运行器仍每 60 秒执行一个周期，但会读取任务中的上次核对时间，同一待匹配售后默认每 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（30 分钟）才访问一次 ERP；服务器不可用时任务保持待匹配，下个间隔自动重试。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待下次周期，也可先用上述 `--force` 命令只读复查。
 
+## 模块 2：仓库扫码收货与验货
+
+模块 2 处理拼多多 `RETURN_AND_REFUND`（退货退款）包裹，仓库页面入口为左侧“仓库验货”。当前流程刻意拆成两个步骤，避免扫描运单后直接误判：
+
+1. 扫描买家退货运单号，只读反查已同步的退货退款售后单、店铺、客户、业务员和平台申请明细；
+2. 拆包后登记实际收到的型号、颜色和数量，生成唯一 `receipt_sn`，进入“待验货”；
+3. 未识别包裹可以先进入工作台本地暂存；匹配多笔售后时必须人工选择，不能猜测；
+4. 验货通过前强制校验实收型号、颜色、数量与平台申请完全一致，并要求所有明细均为正常；
+5. 数量不一致、次品或报废必须登记“验货异常”并填写原因；验货结论一经提交不可覆盖，只允许同内容幂等重试；
+6. 验货通过或异常只更新本地仓库记录、售后明细和工作流状态，不自动同意平台退款，也不写 ERP。
+
+数据库升级：
+
+```powershell
+.\.venv\Scripts\alembic.exe upgrade head
+```
+
+接口：
+
+- `POST /api/v1/warehouse/scan`：按买家退货运单号只读反查；
+- `GET /api/v1/warehouse/returns`：按暂存位置、验货状态和关键词查询最近收货单；
+- `POST /api/v1/warehouse/returns`：登记拆包实收明细，`receipt_sn` 与退货运单均唯一；
+- `POST /api/v1/warehouse/returns/{receipt_sn}/assign-customer`：把暂存包裹认领到客户；
+- `POST /api/v1/warehouse/returns/{receipt_sn}/inspection`：提交通过或异常验货结论。
+
+防重规则：同一 `receipt_sn` 相同内容重复提交返回原记录并标记 `duplicate=true`；同一单号内容不同或同一退货运单被另一收货单使用时返回 HTTP 409。验货异常缺少原因、通过时明细不一致或存在次品/报废时返回 HTTP 422。所有失败都在事务内回滚，不会留下半张收货单。
+
 ## 模块 3：未发货退款与锁包
 
 模块 3 处理的是“拼多多已经极速退款后，ERP 如何停止履约并完成平账”，不再尝试调用 `pdd.refund.agree`。它只扫描 `PENDING_CHECK`、售后类型为 `ONLY_REFUND`、平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED`，并且平台退款状态已经明确成功的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此仍须检查 ERP：
@@ -561,13 +588,13 @@ cd ..
 .\.venv\Scripts\uvicorn.exe aftersales_workbench.main:app --host 127.0.0.1 --port 8000
 ```
 
-构建产物存在时，FastAPI 会在根路径挂载 `frontend/dist/client`，浏览器打开 `http://127.0.0.1:8000/`。只读接口为：
+构建产物存在时，FastAPI 会在根路径挂载 `frontend/dist/client`，浏览器打开 `http://127.0.0.1:8000/`。售后记录只读接口为：
 
 - `GET /api/v1/aftersales/orders`：已同步售后退款记录的汇总、筛选、分页、店铺与归属业务员选项；支持 `record_view=WORKBENCH|RECORD_ONLY|ALL`，默认 `WORKBENCH`，分别对应工作台待处理、仅记录和全部售后；
 - `GET /api/v1/aftersales/intercepts`：仅限全额退款的模块 1 在途拦截汇总、阶段筛选、快递群与退款闸门状态；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 
-两个页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
+售后订单和在途拦截页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。仓库验货页面会写入本地 `warehouse_return_*` 表和对应售后状态，但不会触发任何外部写操作。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
 
 ## 健康检查
 

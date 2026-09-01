@@ -21,7 +21,7 @@ html, body, #root { margin: 0; min-width: 320px; min-height: 100%; height: 100%;
 
 body { min-height: 100vh; -webkit-font-smoothing: antialiased; overflow: hidden; }
 
-button, input, select { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 
 .app-shell {
@@ -187,6 +187,45 @@ th:nth-child(5) { width: 13%; } th:nth-child(6) { width: 9%; } th:nth-child(7) {
 .detail-state { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: #7e8999; font-size: 12px; }
 .copy-toast { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; background: #263142; color: white; border-radius: 4px; padding: 8px 12px; font-size: 12px; box-shadow: 0 6px 18px rgba(18, 30, 49, .2); }
 .open-detail { position: fixed; right: 0; top: 80px; border: 1px solid #bcd5f7; border-right: 0; background: #fff; color: #1768d8; border-radius: 5px 0 0 5px; padding: 9px 12px; cursor: pointer; box-shadow: 0 4px 14px rgba(40, 72, 110, .12); }
+
+.warehouse-toolbar { flex: 0 0 auto; min-height: 68px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px; background: #fff; display: flex; align-items: flex-end; gap: 10px; }
+.warehouse-toolbar label { width: 150px; }
+.warehouse-toolbar label > span, .warehouse-form label > span, .operator-field > span, .inspection-note > span { display: block; margin-bottom: 5px; color: #566276; font-size: 11px; font-weight: 620; }
+.warehouse-toolbar select, .warehouse-toolbar input, .warehouse-form input, .operator-field input, .inspection-note textarea { width: 100%; border: 1px solid #d4dbe5; border-radius: 4px; outline: 0; background: #fff; color: #344053; }
+.warehouse-toolbar select, .warehouse-toolbar input, .warehouse-form input, .operator-field input { height: 32px; padding: 0 9px; font-size: 12px; }
+.warehouse-toolbar select:focus, .warehouse-toolbar input:focus, .warehouse-form input:focus, .operator-field input:focus, .inspection-note textarea:focus { border-color: #5793e6; box-shadow: 0 0 0 2px rgba(45, 124, 232, .1); }
+.warehouse-toolbar .warehouse-keyword { width: min(380px, 38vw); flex: 1 1 auto; }
+.warehouse-table-wrap { border-radius: 6px; }
+.warehouse-table { min-width: 1080px; }
+.warehouse-table th:nth-child(1) { width: 14%; }.warehouse-table th:nth-child(2) { width: 15%; }.warehouse-table th:nth-child(3) { width: 17%; }.warehouse-table th:nth-child(4) { width: 12%; }.warehouse-table th:nth-child(5) { width: 20%; }.warehouse-table th:nth-child(6) { width: 10%; }.warehouse-table th:nth-child(7) { width: 12%; }
+.warehouse-table td:nth-child(5) { white-space: normal; line-height: 1.35; }
+.warehouse-panel-scroll { min-height: 0; overflow-y: auto; }
+.warehouse-feedback { margin: 12px 14px 0; padding: 9px 10px; border-radius: 4px; font-size: 11px; line-height: 1.45; border: 1px solid; }
+.feedback-success { color: #158952; background: #eefaf3; border-color: #bde9ce; }.feedback-danger { color: #d93d3d; background: #fff0f0; border-color: #ffc5c5; }.feedback-warning { color: #d97112; background: #fff6eb; border-color: #ffd5a6; }
+.warehouse-section { padding: 15px 16px; border-bottom: 1px solid var(--line); }
+.warehouse-section h3 { margin: 0 0 12px; color: #263143; font-size: 13px; display: flex; align-items: center; gap: 7px; }
+.warehouse-scan { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.warehouse-scan input { min-width: 0; height: 36px; border: 1px solid #bfc9d6; border-radius: 4px; padding: 0 9px; font-size: 12px; outline: 0; }
+.warehouse-scan input:focus { border-color: #2675df; box-shadow: 0 0 0 2px rgba(38,117,223,.1); }
+.candidate-list { margin-top: 9px; display: grid; gap: 6px; }
+.candidate-list button { width: 100%; padding: 8px 9px; border: 1px solid #d9e0e9; border-radius: 4px; background: #fff; text-align: left; display: grid; gap: 2px; cursor: pointer; }
+.candidate-list button.selected { border-color: #6aa2ea; background: #f0f6ff; }.candidate-list strong { font-size: 11px; }.candidate-list span, .candidate-list small { color: #748094; font-size: 10px; overflow-wrap: anywhere; }.candidate-list p { margin: 0; color: #d97112; font-size: 11px; }
+.warehouse-form { display: grid; gap: 9px; }
+.receipt-items { display: grid; gap: 6px; }
+.receipt-item { display: grid; grid-template-columns: 1.35fr .8fr 54px 26px; gap: 4px; align-items: center; }
+.receipt-item input { min-width: 0; height: 30px; font-size: 10px; padding-inline: 6px; }
+.receipt-item .icon-button { width: 26px; height: 28px; color: #d94a4a; }
+.add-item { justify-self: start; display: inline-flex; align-items: center; gap: 4px; }
+.warehouse-submit { width: 100%; }
+.inspection-section dl { margin: 0 0 11px; padding: 9px; background: #f7f9fc; border-radius: 4px; display: grid; gap: 6px; }
+.inspection-section dl > div { display: grid; grid-template-columns: 58px minmax(0,1fr); gap: 7px; font-size: 10px; }.inspection-section dt { color: #7b8798; }.inspection-section dd { margin: 0; color: #425067; overflow-wrap: anywhere; }
+.operator-field, .inspection-note { display: block; margin-top: 10px; }
+.inspection-items { margin-top: 10px; display: grid; gap: 6px; }
+.inspection-item { min-height: 42px; padding: 6px 8px; border: 1px solid #e0e5ec; border-radius: 4px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.inspection-item > div { min-width: 0; display: grid; }.inspection-item strong { color: #3e4c61; font-size: 11px; }.inspection-item span { color: #7c8798; font-size: 9px; }.inspection-item select { width: 76px; height: 28px; border: 1px solid #d4dbe5; border-radius: 4px; background: #fff; font-size: 10px; }
+.inspection-note textarea { min-height: 62px; resize: vertical; padding: 7px 8px; font-size: 11px; }
+.inspection-actions { margin-top: 10px; display: grid; grid-template-columns: 1fr 1.35fr; gap: 7px; }.danger-button { color: #d84444 !important; border-color: #efb4b4 !important; background: #fff8f8 !important; }
+.inspection-final { margin-top: 11px; min-height: 38px; border-radius: 4px; display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 11px; font-weight: 650; }.final-pass { color: #158952; background: #eefaf3; }.final-fail { color: #d93d3d; background: #fff0f0; }
 
 @media (max-width: 1280px) {
   .app-shell { grid-template-columns: 190px minmax(760px, 1fr); }
