@@ -68,6 +68,7 @@ def test_list_orders_passes_filters_to_record_service() -> None:
             params={
                 "page": 1,
                 "page_size": 15,
+                "record_view": "RECORD_ONLY",
                 "shop_id": 1,
                 "after_sales_type": "ONLY_REFUND",
                 "logistics_state": "IN_TRANSIT",
@@ -85,6 +86,7 @@ def test_list_orders_passes_filters_to_record_service() -> None:
     assert service.list_kwargs == {
         "page": 1,
         "page_size": 15,
+        "record_view": "RECORD_ONLY",
         "shop_id": 1,
         "after_sales_type": "ONLY_REFUND",
         "workflow_status": None,
@@ -94,6 +96,31 @@ def test_list_orders_passes_filters_to_record_service() -> None:
         "ended_on": date(2026, 8, 31),
         "keyword": "JT123",
     }
+
+
+def test_list_orders_defaults_to_workbench_view() -> None:
+    service = FakeRecordService()
+    app.dependency_overrides[get_record_service] = lambda: service
+    try:
+        response = TestClient(app).get("/api/v1/aftersales/orders")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert service.list_kwargs["record_view"] == "WORKBENCH"
+
+
+def test_list_orders_rejects_unknown_record_view() -> None:
+    app.dependency_overrides[get_record_service] = lambda: FakeRecordService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/orders",
+            params={"record_view": "DUPLICATES"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
 
 
 def test_get_order_returns_record() -> None:
@@ -173,3 +200,14 @@ def test_intercept_page_filter_requires_full_refund_even_with_legacy_tasks() -> 
         "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
         in str(statement)
     )
+
+
+def test_record_views_partition_workbench_and_passive_records() -> None:
+    workbench = AftersalesRecordService._record_view_filter("WORKBENCH")
+    record_only = AftersalesRecordService._record_view_filter("RECORD_ONLY")
+
+    assert workbench is not None
+    assert record_only is not None
+    assert "EXISTS" in str(workbench)
+    assert "NOT" in str(record_only)
+    assert AftersalesRecordService._record_view_filter("ALL") is None

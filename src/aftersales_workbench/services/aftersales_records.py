@@ -5,7 +5,7 @@ from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Select, and_, exists, func, or_, select
+from sqlalchemy import Select, and_, exists, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings, get_settings
@@ -89,6 +89,12 @@ COMPLETED_WORKFLOWS = {
     "INTERCEPT_SUCCESS",
     "RETURN_INSPECTED_PASS",
     "SCRAPPED_REFUNDED",
+}
+
+PASSIVE_RECORD_WORKFLOWS = {
+    "PENDING_CHECK",
+    "PARTIAL_REFUND_EXCLUDED",
+    *COMPLETED_WORKFLOWS,
 }
 
 SHANGHAI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
@@ -176,6 +182,7 @@ class AftersalesRecordService:
         *,
         page: int,
         page_size: int,
+        record_view: str = "WORKBENCH",
         shop_id: int | None = None,
         after_sales_type: str | None = None,
         workflow_status: str | None = None,
@@ -185,7 +192,10 @@ class AftersalesRecordService:
         ended_on: date | None = None,
         keyword: str | None = None,
     ) -> dict[str, Any]:
+        view_filter = self._record_view_filter(record_view)
         filters: list[Any] = []
+        if view_filter is not None:
+            filters.append(view_filter)
         if shop_id is not None:
             filters.append(AfterSalesOrder.shop_id == shop_id)
         if after_sales_type:
@@ -258,9 +268,11 @@ class AftersalesRecordService:
             for order, shop in rows
         ]
         return {
-            "summary": self._summary(),
+            "summary": self._summary(view_filter),
+            "view_counts": self._record_view_counts(),
+            "record_view": record_view,
             "shops": self._shops(),
-            "sales_owners": self._sales_owners(),
+            "sales_owners": self._sales_owners(view_filter),
             "items": items,
             "pagination": {
                 "page": page,
@@ -784,6 +796,56 @@ class AftersalesRecordService:
             ),
         )
 
+    @classmethod
+    def _workbench_active_filter(cls) -> Any:
+        active_action = exists().where(
+            AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
+            AftersalesActionTask.action_status.in_(
+                (
+                    AutomationTaskStatus.PENDING,
+                    AutomationTaskStatus.RUNNING,
+                    AutomationTaskStatus.FAILED,
+                )
+            ),
+        ).correlate(AfterSalesOrder)
+        active_workflow = AfterSalesOrder.workflow_status.notin_(
+            tuple(PASSIVE_RECORD_WORKFLOWS)
+        )
+        module1_candidate = and_(
+            cls._module1_filter(),
+            AfterSalesOrder.workflow_status.notin_(tuple(COMPLETED_WORKFLOWS)),
+        )
+        return or_(active_action, active_workflow, module1_candidate)
+
+    @classmethod
+    def _record_view_filter(cls, record_view: str) -> Any | None:
+        normalized = record_view.strip().upper()
+        if normalized == "ALL":
+            return None
+        workbench_filter = cls._workbench_active_filter()
+        if normalized == "RECORD_ONLY":
+            return not_(workbench_filter)
+        return workbench_filter
+
+    def _record_view_counts(self) -> dict[str, int]:
+        workbench_filter = self._workbench_active_filter()
+        total = int(
+            self.session.scalar(select(func.count()).select_from(AfterSalesOrder)) or 0
+        )
+        workbench = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(workbench_filter)
+            )
+            or 0
+        )
+        return {
+            "workbench": workbench,
+            "record_only": max(0, total - workbench),
+            "all": total,
+        }
+
     @staticmethod
     def _full_refund_filter() -> Any:
         return and_(
@@ -899,13 +961,14 @@ class AftersalesRecordService:
             "waiting_erp_match": waiting_erp_match,
         }
 
-    def _summary(self) -> dict[str, int]:
+    def _summary(self, base_filter: Any | None = None) -> dict[str, int]:
         today = datetime.combine(date.today(), time.min)
+        base_filters = [base_filter] if base_filter is not None else []
         today_new = int(
             self.session.scalar(
                 select(func.count())
                 .select_from(AfterSalesOrder)
-                .where(AfterSalesOrder.created_at >= today)
+                .where(*base_filters, AfterSalesOrder.created_at >= today)
             )
             or 0
         )
@@ -918,6 +981,7 @@ class AftersalesRecordService:
                     == AftersalesActionTask.after_sales_sn,
                 )
                 .where(
+                    *base_filters,
                     self._full_refund_filter(),
                     AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                     AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
@@ -929,7 +993,10 @@ class AftersalesRecordService:
             self.session.scalar(
                 select(func.count())
                 .select_from(AfterSalesOrder)
-                .where(AfterSalesOrder.workflow_status.in_(tuple(MANUAL_WORKFLOWS)))
+                .where(
+                    *base_filters,
+                    AfterSalesOrder.workflow_status.in_(tuple(MANUAL_WORKFLOWS)),
+                )
             )
             or 0
         )
@@ -938,6 +1005,7 @@ class AftersalesRecordService:
                 select(func.count())
                 .select_from(AfterSalesOrder)
                 .where(
+                    *base_filters,
                     or_(
                         AfterSalesOrder.workflow_status.in_(tuple(COMPLETED_WORKFLOWS)),
                         AfterSalesOrder.platform_after_sales_status == 10,

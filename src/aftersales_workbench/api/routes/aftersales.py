@@ -21,6 +21,7 @@ def list_orders(
     service: Annotated[AftersalesRecordService, Depends(get_record_service)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=10, le=100)] = 15,
+    record_view: Literal["WORKBENCH", "RECORD_ONLY", "ALL"] = "WORKBENCH",
     shop_id: int | None = None,
     after_sales_type: str | None = None,
     workflow_status: str | None = None,
@@ -33,6 +34,7 @@ def list_orders(
     return service.list_orders(
         page=page,
         page_size=page_size,
+        record_view=record_view,
         shop_id=shop_id,
         after_sales_type=after_sales_type,
         workflow_status=workflow_status,

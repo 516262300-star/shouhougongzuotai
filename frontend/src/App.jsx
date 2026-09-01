@@ -101,6 +101,32 @@ function SummaryStrip({ summary }) {
   );
 }
 
+const RECORD_VIEWS = [
+  { id: "WORKBENCH", label: "工作台待处理", countKey: "workbench" },
+  { id: "RECORD_ONLY", label: "仅记录", countKey: "record_only" },
+  { id: "ALL", label: "全部售后", countKey: "all" },
+];
+
+function RecordViewTabs({ activeView, counts, onChange }) {
+  return (
+    <div className="record-view-tabs" role="tablist" aria-label="售后记录分类">
+      {RECORD_VIEWS.map((view) => (
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeView === view.id}
+          className={activeView === view.id ? "active" : ""}
+          key={view.id}
+          onClick={() => onChange(view.id)}
+        >
+          <span>{view.label}</span>
+          <strong>{counts?.[view.countKey] ?? 0}</strong>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Sidebar({ activeView, onNavigate }) {
   const nav = [
     { id: "orders", label: "售后订单", icon: ClipboardText, enabled: true },
@@ -574,9 +600,10 @@ export function App() {
   const [interceptDetailOpen, setInterceptDetailOpen] = useState(true);
   const [draftFilters, setDraftFilters] = useState(createInitialFilters);
   const [filters, setFilters] = useState(createInitialFilters);
+  const [recordView, setRecordView] = useState("WORKBENCH");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
-  const [data, setData] = useState({ summary: {}, shops: [], sales_owners: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
+  const [data, setData] = useState({ summary: {}, view_counts: {}, shops: [], sales_owners: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -589,7 +616,7 @@ export function App() {
   const loadOrders = useCallback(async (signal) => {
     setLoading(true);
     setError("");
-    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+    const params = new URLSearchParams({ page: String(page), page_size: String(pageSize), record_view: recordView });
     Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
     try {
       const response = await fetch(`/api/v1/aftersales/orders?${params}`, { signal });
@@ -606,7 +633,7 @@ export function App() {
     } finally {
       if (!signal.aborted) setLoading(false);
     }
-  }, [filters, page, pageSize, refreshKey]);
+  }, [filters, page, pageSize, recordView, refreshKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -642,6 +669,13 @@ export function App() {
     setDraftFilters(initial);
     setFilters(initial);
     setPage(1);
+  };
+
+  const changeRecordView = (nextView) => {
+    if (nextView === recordView) return;
+    setRecordView(nextView);
+    setPage(1);
+    setSelected("");
   };
 
   const changePage = (nextPage) => {
@@ -688,6 +722,7 @@ export function App() {
               <div className="sync-status"><span />后台扫描正常 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
             </header>
             <div className="workspace-body">
+              <RecordViewTabs activeView={recordView} counts={data.view_counts} onChange={changeRecordView} />
               <SummaryStrip summary={data.summary} />
               <FilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
               <OrdersTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
