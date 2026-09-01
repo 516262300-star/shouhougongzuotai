@@ -1,9 +1,14 @@
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+
 import httpx
 from sqlalchemy import create_engine, text
 
 from aftersales_workbench.integrations.erp.sales_owner import (
     ErpSalesOwnerResolver,
+    ErpSalesOwnerSyncService,
     ErpWebSalesOwnerResolver,
+    SalesOwnerLookup,
 )
 
 
@@ -172,3 +177,102 @@ def test_web_resolver_relogs_once_when_session_lookup_is_blank() -> None:
     assert result.sales_owner == "李四"
     assert login_attempts == 2
     assert lookup_attempts == 2
+
+
+def test_sales_owner_sync_persists_lookup_for_filtering() -> None:
+    orders = [
+        SimpleNamespace(
+            platform_order_sn="ORDER-1",
+            erp_customer_name=None,
+            erp_sales_owner=None,
+            erp_sales_owner_status=None,
+            erp_sales_owner_synced_at=None,
+        ),
+        SimpleNamespace(
+            platform_order_sn="ORDER-2",
+            erp_customer_name=None,
+            erp_sales_owner=None,
+            erp_sales_owner_status=None,
+            erp_sales_owner_synced_at=None,
+        ),
+    ]
+
+    class ScalarRows:
+        def all(self):
+            return orders
+
+    class FakeSession:
+        committed = False
+
+        def scalar(self, _statement):
+            return len(orders)
+
+        def scalars(self, _statement):
+            return ScalarRows()
+
+        def commit(self):
+            self.committed = True
+
+    class FakeResolver:
+        def resolve_many(self, order_sns):
+            assert list(order_sns) == ["ORDER-1", "ORDER-2"]
+            return {
+                "ORDER-1": SalesOwnerLookup("张三", "客户一", "matched", "ok"),
+                "ORDER-2": SalesOwnerLookup(None, None, "not_found", "missing"),
+            }
+
+    session = FakeSession()
+    result = ErpSalesOwnerSyncService(session, FakeResolver()).sync_stale(
+        limit=20,
+        refresh_seconds=86400,
+    )
+
+    assert session.committed is True
+    assert result.scanned == 2
+    assert result.matched == 1
+    assert result.not_found == 1
+    assert result.remaining == 0
+    assert orders[0].erp_sales_owner == "张三"
+    assert orders[0].erp_customer_name == "客户一"
+    assert orders[1].erp_sales_owner_status == "not_found"
+    assert isinstance(orders[0].erp_sales_owner_synced_at, datetime)
+
+
+def test_sales_owner_sync_retries_unavailable_result_after_five_minutes() -> None:
+    order = SimpleNamespace(
+        platform_order_sn="ORDER-1",
+        erp_customer_name=None,
+        erp_sales_owner=None,
+        erp_sales_owner_status=None,
+        erp_sales_owner_synced_at=None,
+    )
+
+    class ScalarRows:
+        def all(self):
+            return [order]
+
+    class FakeSession:
+        def scalar(self, _statement):
+            return 1
+
+        def scalars(self, _statement):
+            return ScalarRows()
+
+        def commit(self):
+            pass
+
+    class FakeResolver:
+        def resolve_many(self, _order_sns):
+            return {
+                "ORDER-1": SalesOwnerLookup(None, None, "unavailable", "timeout")
+            }
+
+    before = datetime.now()
+    ErpSalesOwnerSyncService(FakeSession(), FakeResolver()).sync_stale(
+        limit=20,
+        refresh_seconds=86400,
+    )
+
+    expected = before - timedelta(seconds=86100)
+    assert order.erp_sales_owner_synced_at >= expected
+    assert order.erp_sales_owner_synced_at < before - timedelta(hours=23)

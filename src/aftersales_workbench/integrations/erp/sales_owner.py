@@ -2,16 +2,19 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from functools import lru_cache
 from threading import Lock, RLock
 from time import monotonic
 from typing import Protocol
 
 import httpx
-from sqlalchemy import Engine, bindparam, create_engine, text
+from sqlalchemy import Engine, bindparam, create_engine, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
+from aftersales_workbench.db.models import AfterSalesOrder
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +23,28 @@ class SalesOwnerLookup:
     customer_name: str | None
     status: str
     message: str
+
+
+@dataclass(frozen=True, slots=True)
+class SalesOwnerSyncResult:
+    scanned: int
+    matched: int
+    conflict: int
+    not_found: int
+    unavailable: int
+    not_configured: int
+    remaining: int
+
+    def safe_dict(self) -> dict[str, int]:
+        return {
+            "scanned": self.scanned,
+            "matched": self.matched,
+            "conflict": self.conflict,
+            "not_found": self.not_found,
+            "unavailable": self.unavailable,
+            "not_configured": self.not_configured,
+            "remaining": self.remaining,
+        }
 
 
 class SalesOwnerResolver(Protocol):
@@ -301,6 +326,87 @@ class ErpWebSalesOwnerResolver:
             owners,
             customers,
             matched_message="已从 ERP 客户档案网页匹配",
+        )
+
+
+class ErpSalesOwnerSyncService:
+    """将 ERP 归属业务员只读查询结果缓存到售后订单，供筛选与待办分配使用。"""
+
+    def __init__(self, session: Session, resolver: SalesOwnerResolver) -> None:
+        self.session = session
+        self.resolver = resolver
+
+    def sync_stale(
+        self,
+        *,
+        limit: int,
+        refresh_seconds: int,
+    ) -> SalesOwnerSyncResult:
+        if limit < 1:
+            raise ValueError("limit 必须大于 0")
+        if refresh_seconds < 300:
+            raise ValueError("refresh_seconds 不能小于 300")
+
+        now = datetime.now()
+        stale_before = now - timedelta(seconds=refresh_seconds)
+        stale_filter = or_(
+            AfterSalesOrder.erp_sales_owner_synced_at.is_(None),
+            AfterSalesOrder.erp_sales_owner_synced_at < stale_before,
+        )
+        stale_total = int(
+            self.session.scalar(
+                select(func.count()).select_from(AfterSalesOrder).where(stale_filter)
+            )
+            or 0
+        )
+        orders = list(
+            self.session.scalars(
+                select(AfterSalesOrder)
+                .where(stale_filter)
+                .order_by(
+                    AfterSalesOrder.erp_sales_owner_synced_at.asc(),
+                    AfterSalesOrder.id.desc(),
+                )
+                .limit(limit)
+            ).all()
+        )
+        lookups = self.resolver.resolve_many(
+            order.platform_order_sn for order in orders
+        )
+        counts = {
+            "matched": 0,
+            "conflict": 0,
+            "not_found": 0,
+            "unavailable": 0,
+            "not_configured": 0,
+        }
+        for order in orders:
+            lookup = lookups.get(order.platform_order_sn)
+            if lookup is None:
+                lookup = SalesOwnerLookup(
+                    None,
+                    None,
+                    "unavailable",
+                    "ERP 归属业务员查询未返回结果",
+                )
+            order.erp_customer_name = lookup.customer_name
+            order.erp_sales_owner = lookup.sales_owner
+            order.erp_sales_owner_status = lookup.status
+            order.erp_sales_owner_synced_at = (
+                now
+                if lookup.status not in {"unavailable", "not_configured"}
+                else now - timedelta(seconds=max(0, refresh_seconds - 300))
+            )
+            counts[lookup.status if lookup.status in counts else "unavailable"] += 1
+        self.session.commit()
+        return SalesOwnerSyncResult(
+            scanned=len(orders),
+            matched=counts["matched"],
+            conflict=counts["conflict"],
+            not_found=counts["not_found"],
+            unavailable=counts["unavailable"],
+            not_configured=counts["not_configured"],
+            remaining=max(0, stale_total - len(orders)),
         )
 
 

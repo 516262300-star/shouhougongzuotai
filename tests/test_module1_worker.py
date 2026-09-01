@@ -45,6 +45,10 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("intercept_tasks")
         return WorkerStageResult.completed({"tasks_created": 1})
 
+    def _sync_sales_owners(self) -> WorkerStageResult:
+        self.calls.append("erp_sales_owners")
+        return WorkerStageResult.completed({"scanned": 1, "matched": 1})
+
     def _process_notifications(self) -> WorkerStageResult:
         self.calls.append("notification")
         if not self._notification_preflight_completed:
@@ -76,6 +80,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert result.ok is True
     assert runtime.calls == [
         "sync",
+        "erp_sales_owners",
         "intercept_tasks",
         "notification_preflight",
         "notification",
@@ -88,6 +93,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert result.pdd_refund.details["pdd_refunds"] == 0
     summary = result.summary_dict()
     assert summary["sync"]["status"] == "completed"
+    assert summary["erp_sales_owners"]["matched"] == 1
     assert summary["notification"]["status"] == "skipped"
 
 

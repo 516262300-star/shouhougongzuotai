@@ -161,6 +161,7 @@ class AftersalesRecordService:
         after_sales_type: str | None = None,
         workflow_status: str | None = None,
         logistics_state: str | None = None,
+        sales_owner: str | None = None,
         started_on: date | None = None,
         ended_on: date | None = None,
         keyword: str | None = None,
@@ -174,6 +175,9 @@ class AftersalesRecordService:
             filters.append(AfterSalesOrder.workflow_status == workflow_status)
         if logistics_state:
             filters.append(AfterSalesOrder.logistics_state == logistics_state)
+        clean_sales_owner = (sales_owner or "").strip()
+        if clean_sales_owner:
+            filters.append(AfterSalesOrder.erp_sales_owner == clean_sales_owner)
         if started_on:
             filters.append(AfterSalesOrder.created_at >= datetime.combine(started_on, time.min))
         if ended_on:
@@ -210,9 +214,20 @@ class AftersalesRecordService:
         rows = self.session.execute(statement).all()
         after_sales_sns = [row.AfterSalesOrder.after_sales_sn for row in rows]
         tasks_by_order = self._tasks_by_order(after_sales_sns)
-        owners_by_order = self.sales_owner_resolver.resolve_many(
-            row.AfterSalesOrder.platform_order_sn for row in rows
-        )
+        owners_by_order = {
+            row.AfterSalesOrder.platform_order_sn: cached
+            for row in rows
+            if (cached := self._cached_owner(row.AfterSalesOrder)) is not None
+        }
+        missing_order_sns = [
+            row.AfterSalesOrder.platform_order_sn
+            for row in rows
+            if row.AfterSalesOrder.platform_order_sn not in owners_by_order
+        ]
+        if missing_order_sns:
+            owners_by_order.update(
+                self.sales_owner_resolver.resolve_many(missing_order_sns)
+            )
 
         items = [
             self._serialize_list_item(
@@ -226,6 +241,7 @@ class AftersalesRecordService:
         return {
             "summary": self._summary(),
             "shops": self._shops(),
+            "sales_owners": self._sales_owners(),
             "items": items,
             "pagination": {
                 "page": page,
@@ -262,7 +278,10 @@ class AftersalesRecordService:
             or "平台未返回商品明细"
         )
         decision_note = order.logistics_latest_context or self._decision_note(workflow, logistics)
-        owner = self.sales_owner_resolver.resolve(order.platform_order_sn)
+        owner = self._cached_owner(order) or self.sales_owner_resolver.resolve(
+            order.platform_order_sn
+        )
+        serialized_owner = self._serialize_owner(owner)
         return {
             "after_sales_sn": order.after_sales_sn,
             "shop_name": shop.shop_name,
@@ -277,12 +296,16 @@ class AftersalesRecordService:
             "buyer_name": "平台未返回",
             "buyer_reason": order.buyer_reason_raw or "—",
             "buyer_memo": order.buyer_memo or "—",
-            "erp_customer": self._serialize_owner(owner),
+            "erp_customer": serialized_owner,
             "decision": {
                 "strategy": "极速拦截（智能）" if order.forward_tracking_number else "人工规则判定",
                 "status": WORKFLOW_LABELS.get(workflow, workflow),
                 "status_tone": _tone_for_workflow(workflow),
-                "handler": "系统自动" if workflow not in MANUAL_WORKFLOWS else "待人工接管",
+                "handler": (
+                    "系统自动"
+                    if workflow not in MANUAL_WORKFLOWS
+                    else serialized_owner["sales_owner"]
+                ),
                 "handled_at": _dt(order.updated_at),
                 "note": decision_note,
             },
@@ -382,6 +405,17 @@ class AftersalesRecordService:
             "source": "ERP 客户档案",
         }
 
+    @staticmethod
+    def _cached_owner(order: AfterSalesOrder) -> SalesOwnerLookup | None:
+        if not order.erp_sales_owner_status:
+            return None
+        return SalesOwnerLookup(
+            sales_owner=order.erp_sales_owner,
+            customer_name=order.erp_customer_name,
+            status=order.erp_sales_owner_status,
+            message="已从本地 ERP 归属缓存读取",
+        )
+
     def _summary(self) -> dict[str, int]:
         today = datetime.combine(date.today(), time.min)
         today_new = int(
@@ -440,6 +474,16 @@ class AftersalesRecordService:
             {"shop_id": row.shop_id, "shop_name": row.shop_name, "shop_code": row.shop_code}
             for row in rows
         ]
+
+    def _sales_owners(self) -> list[str]:
+        return list(
+            self.session.scalars(
+                select(AfterSalesOrder.erp_sales_owner)
+                .where(AfterSalesOrder.erp_sales_owner.is_not(None))
+                .distinct()
+                .order_by(AfterSalesOrder.erp_sales_owner)
+            ).all()
+        )
 
     def _last_synced_at(self) -> str | None:
         value = self.session.scalar(select(func.max(AfterSalesOrder.updated_at)))

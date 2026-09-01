@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 from aftersales_workbench.core.config import Settings
-from aftersales_workbench.integrations.pdd.client import PddClient
+from aftersales_workbench.integrations.pdd.client import PddApiError, PddClient
 from aftersales_workbench.integrations.pdd.mapper import (
     normalize_refund,
     unwrap_order_information,
@@ -62,6 +62,7 @@ class ShopSyncResult:
     records_seen: int = 0
     records_created: int = 0
     records_updated: int = 0
+    records_skipped: int = 0
     error: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -225,14 +226,22 @@ class PddRefundSyncService:
                 after_sales_id = list_record.get("id")
                 if not order_sn or after_sales_id is None:
                     raise ValueError("售后列表记录缺少 order_sn 或 id")
-                detail = client.get_refund_information(
-                    order_sn=order_sn,
-                    after_sales_id=int(after_sales_id),
-                )
-                order = unwrap_order_information(client.get_order_information(order_sn=order_sn))
+                result.records_seen += 1
+                try:
+                    detail = client.get_refund_information(
+                        order_sn=order_sn,
+                        after_sales_id=int(after_sales_id),
+                    )
+                    order = unwrap_order_information(
+                        client.get_order_information(order_sn=order_sn)
+                    )
+                except PddApiError as exc:
+                    if exc.sub_code == "45001":
+                        result.records_skipped += 1
+                        continue
+                    raise
                 refund = normalize_refund(list_record, detail, order)
                 created = self.repository.upsert_refund(shop_id, refund)
-                result.records_seen += 1
                 if created:
                     result.records_created += 1
                 else:

@@ -32,6 +32,7 @@ function createInitialFilters() {
   start.setDate(end.getDate() - 7);
   return {
     shop_id: "",
+    sales_owner: "",
     after_sales_type: "",
     workflow_status: "",
     logistics_state: "",
@@ -115,7 +116,7 @@ function Sidebar() {
   );
 }
 
-function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, busy }) {
+function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, busy }) {
   const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
   return (
     <form className="filters" onSubmit={onSubmit}>
@@ -125,6 +126,13 @@ function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, busy }) {
           <select value={draft.shop_id} onChange={update("shop_id")}>
             <option value="">全部</option>
             {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.shop_name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>归属业务员</span>
+          <select value={draft.sales_owner} onChange={update("sales_owner")}>
+            <option value="">全部</option>
+            {salesOwners.map((owner) => <option value={owner} key={owner}>{owner}</option>)}
           </select>
         </label>
         <label>
@@ -348,7 +356,7 @@ export function App() {
   const [filters, setFilters] = useState(createInitialFilters);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
-  const [data, setData] = useState({ summary: {}, shops: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
+  const [data, setData] = useState({ summary: {}, shops: [], sales_owners: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -457,7 +465,7 @@ export function App() {
         </header>
         <div className="workspace-body">
           <SummaryStrip summary={data.summary} />
-          <FilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} busy={loading} />
+          <FilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
           <OrdersTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
           <div className="workspace-actions">
             <button type="button" className="button secondary" onClick={exportRows} disabled={!data.items.length}><DownloadSimple size={16} />导出</button>

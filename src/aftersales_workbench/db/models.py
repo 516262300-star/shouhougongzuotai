@@ -147,6 +147,10 @@ class AfterSalesOrder(Base):
     logistics_return_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
     platform_after_sales_status: Mapped[int | None] = mapped_column(SmallInteger)
     platform_order_refund_status: Mapped[int | None] = mapped_column(SmallInteger)
+    erp_customer_name: Mapped[str | None] = mapped_column(String(255))
+    erp_sales_owner: Mapped[str | None] = mapped_column(String(50))
+    erp_sales_owner_status: Mapped[str | None] = mapped_column(String(20))
+    erp_sales_owner_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
     is_speed_refund: Mapped[int] = mapped_column(
         SmallInteger, default=0, server_default=text("0")
     )

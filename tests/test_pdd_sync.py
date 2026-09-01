@@ -5,6 +5,7 @@ from typing import Any
 from pydantic import SecretStr
 
 from aftersales_workbench.core.config import Settings
+from aftersales_workbench.integrations.pdd.client import PddApiError
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
 from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService, build_time_windows
 
@@ -98,6 +99,17 @@ class CapturingStatusClient(FakeClient):
         }
 
 
+class ForeignOrderClient(FakeClient):
+    def get_refund_information(
+        self, *, order_sn: str, after_sales_id: int | None
+    ) -> dict[str, Any]:
+        raise PddApiError(
+            error_code=50001,
+            message="订单不属于当前店铺或订单不存在",
+            sub_code="45001",
+        )
+
+
 def _shop() -> ConfiguredPddShop:
     return ConfiguredPddShop(
         shop_number=1,
@@ -154,3 +166,21 @@ def test_default_sync_includes_refund_success_status() -> None:
 
     assert result.ok is True
     assert client.statuses == [2, 3, 10]
+
+
+def test_sync_skips_single_foreign_order_and_advances_window() -> None:
+    repository = FakeRepository()
+    service = PddRefundSyncService(
+        repository,
+        Settings(_env_file=None, pdd_sync_initial_lookback_hours=1),
+        client_factory=lambda _shop_config: ForeignOrderClient(),
+        now=lambda: 3600,
+    )
+
+    result = service.sync_all([_shop()], statuses=(3,), max_windows=1)[0]
+
+    assert result.ok is True
+    assert result.records_seen == 1
+    assert result.records_skipped == 1
+    assert result.records_created == 0
+    assert repository.cursor_end == 1800

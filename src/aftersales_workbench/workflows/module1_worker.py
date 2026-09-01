@@ -7,6 +7,10 @@ from typing import Any
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AutomationActionType
 from aftersales_workbench.db.session import SessionLocal
+from aftersales_workbench.integrations.erp.sales_owner import (
+    ErpSalesOwnerSyncService,
+    get_erp_sales_owner_resolver,
+)
 from aftersales_workbench.integrations.pdd.client import PddConfigurationError
 from aftersales_workbench.integrations.pdd.repository import (
     SqlAlchemyPddSyncRepository,
@@ -78,6 +82,7 @@ class Module1WorkerCycleResult:
     finished_at: str | None = None
     ok: bool = True
     sync: WorkerStageResult | None = None
+    erp_sales_owners: WorkerStageResult | None = None
     intercept_tasks: WorkerStageResult | None = None
     notification_preflight: WorkerStageResult | None = None
     notification: WorkerStageResult | None = None
@@ -103,8 +108,22 @@ class Module1WorkerCycleResult:
                 "records_created": sum(
                     int(shop.get("records_created") or 0) for shop in sync_shops
                 ),
+                "records_skipped": sum(
+                    int(shop.get("records_skipped") or 0) for shop in sync_shops
+                ),
                 "error": self.sync.error if self.sync else None,
             },
+            "erp_sales_owners": self._stage_counts(
+                self.erp_sales_owners,
+                (
+                    "scanned",
+                    "matched",
+                    "conflict",
+                    "not_found",
+                    "unavailable",
+                    "remaining",
+                ),
+            ),
             "intercept_tasks": self._stage_counts(
                 self.intercept_tasks,
                 ("scanned", "tasks_created", "tasks_existing"),
@@ -166,6 +185,7 @@ class Module1WorkerRuntime:
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
+        result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.intercept_tasks = self._capture(self._prepare_intercept_tasks)
         result.notification_preflight = self._capture(
             self._preflight_notifications
@@ -178,6 +198,7 @@ class Module1WorkerRuntime:
         result.pdd_refund = self._capture(self._process_pdd_refunds)
         stages = (
             result.sync,
+            result.erp_sales_owners,
             result.intercept_tasks,
             result.notification_preflight,
             result.notification,
@@ -230,6 +251,27 @@ class Module1WorkerRuntime:
                 error="拼多多同步存在失败店铺: " + "; ".join(failures),
             )
         return WorkerStageResult.completed({"shops": details})
+
+    def _sync_sales_owners(self) -> WorkerStageResult:
+        if not self.settings.erp_sales_owner_sync_enabled:
+            return WorkerStageResult.skipped(
+                "ERP 归属业务员缓存同步未启用",
+                scanned=0,
+                matched=0,
+                conflict=0,
+                not_found=0,
+                unavailable=0,
+                remaining=0,
+            )
+        with SessionLocal() as session:
+            result = ErpSalesOwnerSyncService(
+                session,
+                get_erp_sales_owner_resolver(),
+            ).sync_stale(
+                limit=self.settings.erp_sales_owner_sync_batch_size,
+                refresh_seconds=self.settings.erp_sales_owner_refresh_seconds,
+            )
+        return WorkerStageResult.completed(result.safe_dict())
 
     def _prepare_intercept_tasks(self) -> WorkerStageResult:
         with SessionLocal() as session:

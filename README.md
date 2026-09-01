@@ -75,6 +75,9 @@ alembic downgrade -1
 | `ERP_WEB_BASE_URL` | 管理系统网站根地址 | `https://ldswj.net` |
 | `ERP_WEB_USERNAME` / `ERP_WEB_PASSWORD` | 管理系统员工登录凭据，只允许写入本机 `.env` | 无 |
 | `ERP_WEB_TIMEOUT_SECONDS` | 管理系统网页请求超时秒数 | `15` |
+| `ERP_SALES_OWNER_SYNC_ENABLED` | 模块 1 周期内自动刷新归属业务员缓存 | `false` |
+| `ERP_SALES_OWNER_SYNC_BATCH_SIZE` | 每个模块 1 周期最多刷新多少笔售后订单 | `20` |
+| `ERP_SALES_OWNER_REFRESH_SECONDS` | 已缓存归属业务员的正常刷新间隔 | `86400` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -100,6 +103,8 @@ alembic downgrade -1
 1–4 店共用 `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET`，5–7 店共用 `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET`。每个店铺仍必须将自己的 Token 填入对应的 `PDD_SHOP_N_ACCESS_TOKEN`，不要将多个 Token 用逗号拼在同一行。单店的 `PDD_CLIENT_ID`、`PDD_CLIENT_SECRET` 和 `PDD_ACCESS_TOKEN` 暂时保留，仅用于旧联调命令回退。
 
 售后订单记录页的“归属业务员”来自旧管理系统客户档案。系统优先使用 `ERP_READ_DATABASE_URL`：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照。没有数据库只读账号时，可配置 `ERP_WEB_LOOKUP_ENABLED=true` 以及管理系统员工账号，工作台会登录 `/leedis/index.php/welcome/loginact`，再调用客户档案自动补全接口只读查询。网页查询结果默认缓存 5 分钟，登录失效只自动重登一次，不会访问客户修改接口。登录凭据只能保存在被 Git 忽略的本机 `.env`，严禁写入 README 或提交仓库。
+
+启用 `ERP_SALES_OWNER_SYNC_ENABLED` 后，模块 1 每个周期会在拼多多增量同步后，将一小批客户名字、归属业务员、匹配状态和查询时间缓存到本地 `aftersales_orders`。页面基于本地缓存进行全量业务员筛选，不会在一次页面查询中批量请求旧管理系统。正常结果每天刷新；网页暂时不可用时 5 分钟后重试，归属查询失败不会阻断拦截、物流闸门或退款安全流程。首次接入可分批执行 `aftersales-sync-sales-owners.exe --limit 20`，每批完成即提交，不需要一次等待全部历史订单。
 
 ## 拼多多单店只读联调
 
@@ -211,11 +216,12 @@ alembic upgrade head
 后台运行器把现有的一次性命令串成固定周期，执行顺序为：
 
 1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；
-2. 筛出“在途 + 仅退款”并幂等生成本地拦截通知任务；
-3. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
-4. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
-5. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
-6. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
+2. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
+3. 筛出“在途 + 仅退款”并幂等生成本地拦截通知任务；
+4. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
+5. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
+6. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
+7. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
 
 因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。以后新增桌面发送适配器只替换第 4 步，不修改前后状态机。
 
@@ -238,6 +244,8 @@ alembic upgrade head
 后台运行失败时按以下方式恢复：
 
 - 单店拼多多读取失败：其他店继续完成；修复 Token 或网络后，下个周期从该店最后成功游标重试，不会跳过失败窗口；
+- 单票详情返回拼多多 `45001`“订单不属于当前店铺或订单不存在”：隔离并计入 `records_skipped`，其余订单继续处理且窗口游标正常推进；其他平台错误仍按整店失败处理；
+- ERP 归属查询失败：该批记录保留失败状态并在 5 分钟后重试；该独立阶段不会阻断后续拦截安全流程；
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
 - 电脑重启：本地 MySQL 不是 Windows 服务时先启动 MySQL，再重新执行 `Start`；
@@ -321,7 +329,7 @@ alembic upgrade head
 当前项目已包含独立的 React 网页工作台，并通过只读 API 查询本地 MySQL 中的真实售后订单、店铺、SKU 和自动化任务记录。页面提供：
 
 - 今日新增、待拦截、待人工、已完成汇总；
-- 按店铺、售后类型、处理状态、物流状态、申请时间和单号检索；
+- 按店铺、归属业务员、售后类型、处理状态、物流状态、申请时间和单号检索；
 - 15/30/50 条分页、当前页 CSV 导出和手动刷新；
 - 选中订单后查看基础信息、当前处理决策、物流状态和自动化审计时间线；
 - 1280 像素及以下把详情栏改为覆盖层，避免压缩订单表。
@@ -351,7 +359,7 @@ cd ..
 
 构建产物存在时，FastAPI 会在根路径挂载 `frontend/dist/client`，浏览器打开 `http://127.0.0.1:8000/`。只读接口为：
 
-- `GET /api/v1/aftersales/orders`：汇总、筛选、分页和店铺选项；
+- `GET /api/v1/aftersales/orders`：汇总、筛选、分页、店铺与归属业务员选项；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 
 页面不会直接调用拼多多退款、企微发送或 ERP 写接口。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
