@@ -7,7 +7,10 @@ from fastapi.testclient import TestClient
 
 from aftersales_workbench.api.routes.aftersales import get_record_service
 from aftersales_workbench.main import app
-from aftersales_workbench.services.aftersales_records import _utc_naive_dt
+from aftersales_workbench.services.aftersales_records import (
+    AftersalesRecordService,
+    _utc_naive_dt,
+)
 
 
 class FakeRecordService:
@@ -160,3 +163,13 @@ def test_get_order_returns_404_for_unknown_record() -> None:
 
 def test_logistics_utc_timestamp_is_displayed_in_shanghai_time() -> None:
     assert _utc_naive_dt(datetime(2026, 8, 31, 14, 23, 6)) == "2026-08-31T22:23:06"
+
+
+def test_intercept_page_filter_requires_full_refund_even_with_legacy_tasks() -> None:
+    statement = AftersalesRecordService._module1_filter()
+
+    assert "aftersales_orders.platform_order_amount IS NOT NULL" in str(statement)
+    assert (
+        "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
+        in str(statement)
+    )

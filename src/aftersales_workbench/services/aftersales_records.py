@@ -710,10 +710,20 @@ class AftersalesRecordService:
             AfterSalesOrder.forward_tracking_number.is_not(None),
             AfterSalesOrder.forward_tracking_number != "",
         )
-        return or_(
-            candidate,
-            cls._task_exists(AutomationActionType.QYWX_INTERCEPT_NOTIFY),
-            AfterSalesOrder.workflow_status.in_(tuple(MODULE1_WORKFLOWS)),
+        return and_(
+            cls._full_refund_filter(),
+            or_(
+                candidate,
+                cls._task_exists(AutomationActionType.QYWX_INTERCEPT_NOTIFY),
+                AfterSalesOrder.workflow_status.in_(tuple(MODULE1_WORKFLOWS)),
+            ),
+        )
+
+    @staticmethod
+    def _full_refund_filter() -> Any:
+        return and_(
+            AfterSalesOrder.platform_order_amount.is_not(None),
+            AfterSalesOrder.refund_amount == AfterSalesOrder.platform_order_amount,
         )
 
     @staticmethod
@@ -836,7 +846,14 @@ class AftersalesRecordService:
         )
         pending_intercept = int(
             self.session.scalar(
-                select(func.count(func.distinct(AftersalesActionTask.after_sales_sn))).where(
+                select(func.count(func.distinct(AftersalesActionTask.after_sales_sn)))
+                .join(
+                    AfterSalesOrder,
+                    AfterSalesOrder.after_sales_sn
+                    == AftersalesActionTask.after_sales_sn,
+                )
+                .where(
+                    self._full_refund_filter(),
                     AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                     AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 )
