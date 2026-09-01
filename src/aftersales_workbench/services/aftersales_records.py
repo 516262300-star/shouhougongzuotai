@@ -385,6 +385,27 @@ class AftersalesRecordService:
                 if order.platform_order_amount is not None
                 else None
             ),
+            "platform_goods_amount": (
+                _money(order.platform_goods_amount)
+                if order.platform_goods_amount is not None
+                else None
+            ),
+            "platform_discount_amount": (
+                _money(order.platform_discount_amount)
+                if order.platform_discount_amount is not None
+                else None
+            ),
+            "seller_discount_amount": (
+                _money(order.seller_discount_amount)
+                if order.seller_discount_amount is not None
+                else None
+            ),
+            "merchant_receivable_amount": (
+                _money(order.merchant_receivable_amount)
+                if order.merchant_receivable_amount is not None
+                else None
+            ),
+            "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
             "refund_scope": self._refund_scope(order),
             "product_name": product_name,
             "buyer_name": "平台未返回",
@@ -468,6 +489,27 @@ class AftersalesRecordService:
                 if order.platform_order_amount is not None
                 else None
             ),
+            "platform_goods_amount": (
+                _money(order.platform_goods_amount)
+                if order.platform_goods_amount is not None
+                else None
+            ),
+            "platform_discount_amount": (
+                _money(order.platform_discount_amount)
+                if order.platform_discount_amount is not None
+                else None
+            ),
+            "seller_discount_amount": (
+                _money(order.seller_discount_amount)
+                if order.seller_discount_amount is not None
+                else None
+            ),
+            "merchant_receivable_amount": (
+                _money(order.merchant_receivable_amount)
+                if order.merchant_receivable_amount is not None
+                else None
+            ),
+            "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
             "refund_scope": self._refund_scope(order),
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),

@@ -137,7 +137,12 @@ class AfterSalesOrder(Base):
         ENUM(*[item.value for item in AfterSalesType]), nullable=False
     )
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # 拼多多订单的买家优惠后实付金额；模块 1 以此判断是否为买家全额退款。
     platform_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    platform_goods_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    platform_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    seller_discount_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    merchant_receivable_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     buyer_reason_raw: Mapped[str | None] = mapped_column(String(255))
     reason_category: Mapped[str | None] = mapped_column(String(50))
     buyer_memo: Mapped[str | None] = mapped_column(Text)

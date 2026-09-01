@@ -78,6 +78,10 @@ class SqlAlchemyPddSyncRepository:
                 after_sales_type=refund.after_sales_type,
                 refund_amount=refund.refund_amount,
                 platform_order_amount=refund.platform_order_amount,
+                platform_goods_amount=refund.platform_goods_amount,
+                platform_discount_amount=refund.platform_discount_amount,
+                seller_discount_amount=refund.seller_discount_amount,
+                merchant_receivable_amount=refund.merchant_receivable_amount,
                 order_shipping_status=refund.order_shipping_status,
                 workflow_status=WorkflowStatus.PENDING_CHECK,
             )
@@ -88,6 +92,10 @@ class SqlAlchemyPddSyncRepository:
             order.after_sales_type = refund.after_sales_type
             order.refund_amount = refund.refund_amount
             order.platform_order_amount = refund.platform_order_amount
+            order.platform_goods_amount = refund.platform_goods_amount
+            order.platform_discount_amount = refund.platform_discount_amount
+            order.seller_discount_amount = refund.seller_discount_amount
+            order.merchant_receivable_amount = refund.merchant_receivable_amount
             order.order_shipping_status = refund.order_shipping_status
 
         order.buyer_reason_raw = refund.buyer_reason_raw

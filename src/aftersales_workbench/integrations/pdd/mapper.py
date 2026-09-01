@@ -24,6 +24,10 @@ class NormalizedRefund:
     after_sales_type: AfterSalesType
     refund_amount: Decimal
     platform_order_amount: Decimal | None
+    platform_goods_amount: Decimal | None
+    platform_discount_amount: Decimal | None
+    seller_discount_amount: Decimal | None
+    merchant_receivable_amount: Decimal | None
     buyer_reason_raw: str | None
     buyer_memo: str | None
     forward_tracking_number: str | None
@@ -101,6 +105,53 @@ def platform_order_amount(
         raise PddDataMappingError("pay_amount 不是有效金额") from exc
 
 
+def _optional_order_amount(order: dict[str, Any], field: str) -> Decimal | None:
+    value = order.get(field)
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        amount = Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except InvalidOperation as exc:
+        raise PddDataMappingError(f"{field} 不是有效金额") from exc
+    if amount < 0:
+        raise PddDataMappingError(f"{field} 不能小于 0")
+    return amount
+
+
+@dataclass(frozen=True, slots=True)
+class PddOrderAmountBreakdown:
+    buyer_paid_amount: Decimal | None
+    goods_amount: Decimal | None
+    platform_discount_amount: Decimal | None
+    seller_discount_amount: Decimal | None
+    merchant_receivable_amount: Decimal | None
+
+
+def pdd_order_amount_breakdown(
+    detail: dict[str, Any],
+    order: dict[str, Any],
+) -> PddOrderAmountBreakdown:
+    """拆分买家实付、平台补贴和商家应收，订单接口金额单位均为元。"""
+    buyer_paid = platform_order_amount(detail, order)
+    platform_discount = _optional_order_amount(order, "platform_discount")
+    seller_discount = _optional_order_amount(order, "seller_discount")
+    goods_amount = _optional_order_amount(order, "goods_amount")
+    merchant_receivable = (
+        (buyer_paid + platform_discount).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+        if buyer_paid is not None and platform_discount is not None
+        else None
+    )
+    return PddOrderAmountBreakdown(
+        buyer_paid_amount=buyer_paid,
+        goods_amount=goods_amount,
+        platform_discount_amount=platform_discount,
+        seller_discount_amount=seller_discount,
+        merchant_receivable_amount=merchant_receivable,
+    )
+
+
 def _after_sales_type(list_value: Any, detail_value: Any) -> AfterSalesType:
     list_mapping = {
         2: AfterSalesType.ONLY_REFUND,
@@ -168,6 +219,7 @@ def normalize_refund(
     if not sku_code:
         raise PddDataMappingError("缺少 SKU 标识")
 
+    amounts = pdd_order_amount_breakdown(detail, order)
     return NormalizedRefund(
         after_sales_sn=after_sales_sn,
         platform_order_sn=order_sn,
@@ -175,7 +227,11 @@ def normalize_refund(
             list_record.get("after_sales_type"), detail.get("after_sales_type")
         ),
         refund_amount=_refund_amount(detail, list_record),
-        platform_order_amount=platform_order_amount(detail, order),
+        platform_order_amount=amounts.buyer_paid_amount,
+        platform_goods_amount=amounts.goods_amount,
+        platform_discount_amount=amounts.platform_discount_amount,
+        seller_discount_amount=amounts.seller_discount_amount,
+        merchant_receivable_amount=amounts.merchant_receivable_amount,
         buyer_reason_raw=_nonempty(
             detail.get("after_sales_reason") or list_record.get("after_sale_reason")
         ),

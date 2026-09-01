@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
@@ -16,7 +16,7 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.mapper import (
-    platform_order_amount,
+    pdd_order_amount_breakdown,
     unwrap_order_information,
 )
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
@@ -32,6 +32,7 @@ class RefundAmountBackfillResult:
     scanned: int = 0
     full: int = 0
     partial: int = 0
+    platform_coupon: int = 0
     unknown: int = 0
     invalid: int = 0
     updated: int = 0
@@ -64,7 +65,13 @@ class PddRefundAmountBackfillService:
             .where(
                 Shop.platform == Platform.PDD,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
-                AfterSalesOrder.platform_order_amount.is_(None),
+                or_(
+                    AfterSalesOrder.platform_order_amount.is_(None),
+                    AfterSalesOrder.platform_goods_amount.is_(None),
+                    AfterSalesOrder.platform_discount_amount.is_(None),
+                    AfterSalesOrder.seller_discount_amount.is_(None),
+                    AfterSalesOrder.merchant_receivable_amount.is_(None),
+                ),
                 AfterSalesOrder.order_shipping_status.in_(
                     (ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED)
                 ),
@@ -106,11 +113,20 @@ class PddRefundAmountBackfillService:
                             order_sn=order.platform_order_sn
                         )
                     )
-                    amount = platform_order_amount(detail, platform_order)
-                    scope = classify_refund_scope(order.refund_amount, amount)
+                    amounts = pdd_order_amount_breakdown(detail, platform_order)
+                    scope = classify_refund_scope(
+                        order.refund_amount,
+                        amounts.buyer_paid_amount,
+                    )
                     setattr(result, scope.value.lower(), getattr(result, scope.value.lower()) + 1)
+                    if (amounts.platform_discount_amount or 0) > 0:
+                        result.platform_coupon += 1
                     if not dry_run:
-                        order.platform_order_amount = amount
+                        order.platform_order_amount = amounts.buyer_paid_amount
+                        order.platform_goods_amount = amounts.goods_amount
+                        order.platform_discount_amount = amounts.platform_discount_amount
+                        order.seller_discount_amount = amounts.seller_discount_amount
+                        order.merchant_receivable_amount = amounts.merchant_receivable_amount
                         reconcile_refund_scope(self.session, order)
                         result.updated += 1
                 except Exception as exc:

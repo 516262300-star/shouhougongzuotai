@@ -166,7 +166,9 @@ alembic upgrade head
 
 ## 模块 1：在途拦截与退款
 
-模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号、售后类型严格为 `ONLY_REFUND`，并且“申请退款金额等于拼多多详情中的优惠后实付金额”的全额退款订单。金额统一保存为两位小数后精确比较：申请金额低于实付金额时标记为 `PARTIAL_REFUND_EXCLUDED`，视为补偿款、差价、运费或配件补偿，不拦截快递、不生成业务员待办；实付金额缺失或退款金额异常时失败关闭，冻结自动拦截。退款原因和留言仅用于展示，不能替代金额判断。退货退款留给模块 2，换货单也不会进入自动退款链路。拼多多只负责售后读取和同意退款，物流状态由独立的快递 100 适配器读取，不依赖或修改旧管理系统代码。当前流转为：
+模块 1 只扫描 `PENDING_CHECK`、发货状态为 `IN_TRANSIT`、具有发货运单号、售后类型严格为 `ONLY_REFUND`，并且“申请退款金额等于拼多多详情中的买家优惠后实付金额”的全额退款订单。金额统一保存为两位小数后精确比较：申请金额低于买家实付时标记为 `PARTIAL_REFUND_EXCLUDED`，视为补偿款、差价、运费或配件补偿，不拦截快递、不生成业务员待办；实付金额缺失或退款金额异常时失败关闭，冻结自动拦截。退款原因和留言仅用于展示，不能替代金额判断。退货退款留给模块 2，换货单也不会进入自动退款链路。拼多多只负责售后读取和同意退款，物流状态由独立的快递 100 适配器读取，不依赖或修改旧管理系统代码。
+
+拼多多订单金额必须区分买家和商家两个口径：`platform_order_amount` 保存买家实付，`platform_discount_amount` 保存平台承担的优惠，`seller_discount_amount` 保存商家承担的优惠，`merchant_receivable_amount` 保存商家应收。买家是否全额退款仍按 `refund_amount == platform_order_amount` 判定；平台优惠不能因此被误判为部分退款。ERP 退款单及后续退货单平账按 `merchant_receivable_amount = platform_order_amount + platform_discount_amount` 核对。平台优惠字段缺失时商家应收保持为空，后续 ERP 自动平账必须失败关闭并转人工，不能把商家优惠或总优惠金额猜成平台补贴。当前流转为：
 
 1. 生成幂等的本地 `QYWX_INTERCEPT_NOTIFY` 草稿动作；该动作尚未取得发送资格；
 2. 发送前强制查询快递 100：运输中、派件中和查询无结果的任务保留；已签收任务取消并转 `MANUAL_PROCESSING`；已在退回途中或已经退回的任务取消，禁止重复通知；
@@ -187,7 +189,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-process-module1.exe --shops pdd-shop-01 --limit 100 --apply
 ```
 
-升级全额退款闸门后，先只读回填历史售后的优惠后实付金额，再确认写入。命令只调用拼多多读取接口；`--apply` 才会写本地金额、分类状态并取消部分退款遗留的待发送模块 1 动作：
+升级金额闸门后，先只读回填历史售后的买家实付、商品金额、平台优惠、商家优惠和商家应收，再确认写入。命令只调用拼多多读取接口；`--apply` 才会写本地金额、分类状态并取消部分退款遗留的待发送模块 1 动作。输出中的 `platform_coupon` 表示命中平台优惠的订单数：
 
 ```powershell
 .\.venv\Scripts\pdd-backfill-refund-amounts.exe --limit 100

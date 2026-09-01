@@ -14,7 +14,7 @@ from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shop
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="回填拼多多优惠后实付金额并识别全额/部分退款。"
+        description="回填拼多多买家实付、优惠拆分与商家应收，并识别全额/部分退款。"
     )
     parser.add_argument("--shops", nargs="*", type=int, help="只使用指定店铺序号")
     parser.add_argument("--after-sales-sns", nargs="*", help="只处理指定售后单号")

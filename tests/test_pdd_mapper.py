@@ -38,6 +38,9 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     }
     order = {
         "order_status": 2,
+        "goods_amount": 300.00,
+        "platform_discount": 10.00,
+        "seller_discount": 11.43,
         "tracking_number": "forward-no",
         "shipping_time": "2026-08-25 18:49:12",
         "logistics_id": 384,
@@ -50,6 +53,10 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     assert result.after_sales_type is AfterSalesType.RETURN_AND_REFUND
     assert result.refund_amount == Decimal("278.57")
     assert result.platform_order_amount == Decimal("278.57")
+    assert result.platform_goods_amount == Decimal("300.00")
+    assert result.platform_discount_amount == Decimal("10.00")
+    assert result.seller_discount_amount == Decimal("11.43")
+    assert result.merchant_receivable_amount == Decimal("288.57")
     assert result.order_shipping_status is ShippingStatus.IN_TRANSIT
     assert result.forward_tracking_number == "forward-no"
     assert result.carrier_code == "384"
@@ -106,6 +113,41 @@ def test_platform_order_amount_falls_back_to_order_pay_amount() -> None:
     )
 
     assert result.platform_order_amount == Decimal("2.48")
+    assert result.merchant_receivable_amount is None
+
+
+def test_platform_coupon_is_added_back_to_merchant_receivable() -> None:
+    result = normalize_refund(
+        {
+            "id": 1,
+            "order_sn": "order",
+            "after_sales_type": 2,
+            "refund_amount": "1.88",
+            "goods_number": 1,
+        },
+        {
+            "id": 1,
+            "order_sn": "order",
+            "after_sales_type": 1,
+            "refund_amount": 188,
+            "order_amount": 188,
+            "out_sku_sn": "sku",
+            "goods_number": 1,
+        },
+        {
+            "order_status": 2,
+            "goods_amount": 3.88,
+            "pay_amount": 1.88,
+            "platform_discount": 1.00,
+            "seller_discount": 1.00,
+        },
+    )
+
+    assert result.refund_amount == Decimal("1.88")
+    assert result.platform_order_amount == Decimal("1.88")
+    assert result.platform_discount_amount == Decimal("1.00")
+    assert result.seller_discount_amount == Decimal("1.00")
+    assert result.merchant_receivable_amount == Decimal("2.88")
 
 
 def test_unwrap_order_information_requires_nested_order() -> None:
