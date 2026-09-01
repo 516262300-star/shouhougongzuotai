@@ -84,9 +84,6 @@ alembic downgrade -1
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
 | `MODULE3_WORKER_BATCH_LIMIT` | 模块 3 每周期最多新建及处理的订单数；首次上线保持 1 | `1` |
 | `MODULE3_ERP_REFUND_RECHECK_SECONDS` | 同一未闭环 ERP 异常的最短复查间隔 | `1800` |
-| `MODULE3_EXCEPTION_NOTIFICATION_ENABLED` | 模块 3 异常企微通知功能开关；还需 `QYWX_WRITE_ENABLED=true` | `false` |
-| `MODULE3_EXCEPTION_WEBHOOK_URL` | 模块 3 内部异常群独立机器人 Webhook（密钥） | 无 |
-| `MODULE3_EXCEPTION_REPEAT_SECONDS` | 同一异常内容持续存在时的最短重复提醒间隔 | `21600` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -123,7 +120,7 @@ alembic downgrade -1
 
 启用 `ERP_SALES_OWNER_SYNC_ENABLED` 后，模块 1 每个周期会在拼多多增量同步后，将一小批客户名字、归属业务员、匹配状态和查询时间缓存到本地 `aftersales_orders`。页面基于本地缓存进行全量业务员筛选，不会在一次页面查询中批量请求旧管理系统。正常结果每天刷新；网页暂时不可用时 5 分钟后重试，归属查询失败不会阻断拦截、物流闸门或退款安全流程。首次接入可分批执行 `aftersales-sync-sales-owners.exe --limit 20`，每批完成即提交，不需要一次等待全部历史订单。
 
-管理系统人工待办发布复用同一组 `ERP_WEB_BASE_URL`、`ERP_WEB_USERNAME`、`ERP_WEB_PASSWORD`。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。每条远端事项包含 `【售后工作台 M1:售后单号】` 幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布。归属业务员为空或冲突时不会猜测经办人，也不会发布。
+管理系统人工待办发布复用同一组 `ERP_WEB_BASE_URL`、`ERP_WEB_USERNAME`、`ERP_WEB_PASSWORD`。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。模块 1/3 的远端事项分别包含 `【售后工作台 M1:售后单号】` / `【售后工作台 M3:售后单号】` 幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布。归属业务员为空或冲突时不会猜测经办人，也不会发布。
 
 ## 拼多多单店只读联调
 
@@ -259,9 +256,9 @@ alembic upgrade head
 后台运行器沿用历史入口名 `aftersales-run-module1` 和脚本名 `module1-worker.ps1`，但现在同时承载模块 1 与模块 3。固定周期顺序为：
 
 1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；
-2. `MODULE3_WORKER_ENABLED=true` 时，小批量生成模块 3 幂等待办；同时开启 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 后，严格核验并补开未发货 ERP 退款单；
-3. 对 ERP 未找到、金额/商品不一致或页面不可用的模块 3 任务保留本地异常；配置独立异常群 Webhook 并开启两个通知开关后发送去重企微提醒；
-4. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
+2. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
+3. `MODULE3_WORKER_ENABLED=true` 时，小批量生成模块 3 幂等待办；同时开启 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 后，严格核验并补开未发货 ERP 退款单；
+4. 对 ERP 未找到、金额/商品不一致或页面不可用的模块 3 任务保留本地异常，并按客户档案归属业务员幂等生成 `ERP_CREATE_MANUAL_TODO`；后续复用现有管理系统待办发布器；
 5. 先要求“申请退款金额 = 优惠后实付金额”，再筛出“在途 + 全额仅退款”并幂等生成本地拦截通知任务；部分退款直接排除，金额缺失或异常失败关闭；
 6. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
 7. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
@@ -307,7 +304,7 @@ alembic upgrade head
 - 单票详情返回拼多多 `45001`“订单不属于当前店铺或订单不存在”：隔离并计入 `records_skipped`，其余订单继续处理且窗口游标正常推进；其他平台错误仍按整店失败处理；
 - ERP 归属查询失败：该批记录保留失败状态并在 5 分钟后重试；该独立阶段不会阻断后续拦截安全流程；
 - ERP 人工待办发布关闭：本地任务保留为 `PENDING`；开启双重写开关后下个周期继续。发布失败会使用远端售后标识先查重，再在 `ERP_TODO_MAX_ATTEMPTS` 范围内重新入队；超过次数后保留 `FAILED` 和错误原因供人工检查；
-- 模块 3 ERP 核对不一致或找不到订单：不调用补单动作，原任务保留 `PENDING` 和明确错误；默认 30 分钟后复查。异常内容变化会立即具备提醒资格，同一内容成功提醒后 6 小时内不重复发送；企微未配置时异常仍可在工作台和周期摘要中查看；
+- 模块 3 ERP 核对不一致或找不到订单：不调用补单动作，原任务保留 `PENDING` 和明确错误；默认 30 分钟后复查，并按 ERP 归属业务员生成唯一管理系统待办。归属为空或冲突时不猜测经办人；待办尚未发布前异常若已解除，系统会自动取消本地待办；
 - 模块 3 ERP 请求结果不明：下个复查周期先重新查询远端；若已生成退款单，只补齐本地审计，不重复调用“补开退款单”；需要紧急暂停时设置 `MODULE3_WORKER_ENABLED=false` 并安全重启运行器；
 - 快递 100 返回“查询无结果”或网络异常：保留最后成功轨迹并冻结自动退款，按配置的退避间隔重试；工作台可查看原始错误、失败次数和下次查询时间。连续达到 `KUAIDI100_MANUAL_AFTER_FAILURES` 后人工核对运单号及快递官方轨迹，恢复成功后系统自动清除告警；
 - 拼多多优惠后实付金额缺失：该售后不会进入拦截、人工待办或平台退款动作；先运行 `pdd-backfill-refund-amounts` 只读预演，确认接口能够返回金额后再使用 `--apply`；
@@ -449,15 +446,14 @@ MODULE3_ERP_REFUND_EXECUTION_ENABLED=true
 ERP_WRITE_ENABLED=true
 ```
 
-后台先创建本地动作，再进行 ERP 核验和补单。`not_found`、`blocked`、`unavailable` 均不会越级写入 ERP；任务保留待处理，并遵守复查间隔。需要企微异常提醒时，必须使用内部异常群的独立机器人，不复用快递拦截外部群：
+后台先创建本地动作，再进行 ERP 核验和补单。`not_found`、`blocked`、`unavailable` 均不会越级写入 ERP；任务保留待处理，并遵守复查间隔。异常自动复用管理系统人工待办链路，无需额外企微机器人：
 
 ```dotenv
-MODULE3_EXCEPTION_NOTIFICATION_ENABLED=true
-MODULE3_EXCEPTION_WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=本机密钥
-QYWX_WRITE_ENABLED=true
+ERP_TODO_PUBLISH_ENABLED=true
+ERP_WRITE_ENABLED=true
 ```
 
-Webhook 只写入本机 `.env`，不进入仓库、日志或异常载荷。通知成功后在原任务中保存消息指纹和时间；异常内容未变化时按 `MODULE3_EXCEPTION_REPEAT_SECONDS` 去重，发送失败不标记成功，修复 Webhook 后会继续尝试。紧急暂停只需将 `MODULE3_WORKER_ENABLED=false`，再执行 `module1-worker.ps1 Stop` / `Start` 安全重启；已成功补开的退款单不会回滚。
+待办使用订单已缓存的 ERP 归属业务员作为经办人，内容包含模块 3 幂等标识、店铺、平台订单号、售后单号、ERP 订单号和标准化异常原因。发布前后会按标识查重；失败在 `ERP_TODO_MAX_ATTEMPTS` 范围内安全重试。异常解除且待办尚未发布时自动取消；已经发布的远端待办保留审计，由业务员确认完结。紧急暂停只需将 `MODULE3_WORKER_ENABLED=false`，再执行 `module1-worker.ps1 Stop` / `Start` 安全重启；已成功补开的退款单不会回滚。
 
 2026-09-01 已使用一笔真实拼多多未发货仅退款完成单笔验收：平台退款与 ERP 商家应收一致，补单后负数退款收款单成功生成，状态表欠货移除、累计应收归零，本地工作流同步闭环。真实订单、客户和登录凭据不写入仓库。
 

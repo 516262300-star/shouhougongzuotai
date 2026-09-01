@@ -64,15 +64,13 @@ class QywxWebhookClient:
             self._http_client.close()
 
     def send_intercept_notice(self, notice: InterceptNotice) -> dict[str, Any]:
-        return self.send_markdown(notice.markdown())
-
-    def send_markdown(self, content: str) -> dict[str, Any]:
         if not self.write_enabled:
             raise QywxConfigurationError("QYWX_WRITE_ENABLED=false，已阻止企微外部写入")
         if not self._webhook_url:
-            raise QywxConfigurationError("缺少企微机器人 Webhook URL")
+            raise QywxConfigurationError("缺少 QYWX_INTERCEPT_WEBHOOK_URL")
+        content = notice.markdown()
         if len(content.encode("utf-8")) > 4096:
-            raise QywxError("企微 Markdown 消息超过 4096 字节")
+            raise QywxError("企微拦截消息超过 4096 字节")
         try:
             response = self._http_client.post(
                 self._webhook_url,

@@ -62,9 +62,6 @@ class Settings(BaseSettings):
     module3_worker_enabled: bool = False
     module3_worker_batch_limit: int = Field(default=1, ge=1, le=20)
     module3_erp_refund_recheck_seconds: int = Field(default=1800, ge=60, le=86400)
-    module3_exception_notification_enabled: bool = False
-    module3_exception_webhook_url: SecretStr | None = None
-    module3_exception_repeat_seconds: int = Field(default=21600, ge=300, le=604800)
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)

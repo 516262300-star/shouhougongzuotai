@@ -25,7 +25,6 @@ from aftersales_workbench.integrations.pdd.shops import (
     load_configured_pdd_shops,
 )
 from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService
-from aftersales_workbench.integrations.qywx.client import QywxWebhookClient
 from aftersales_workbench.workflows.actions import ExternalActionExecutor
 from aftersales_workbench.workflows.desktop_notice import (
     DesktopNoticePlanner,
@@ -60,8 +59,9 @@ from aftersales_workbench.workflows.module3_erp_refund import (
     Module3ErpRefundService,
     build_erp_unshipped_refund_client,
 )
-from aftersales_workbench.workflows.module3_exception_notify import (
-    Module3ExceptionNotificationService,
+from aftersales_workbench.workflows.module3_exception_todo import (
+    Module3ExceptionTodoService,
+    SqlAlchemyModule3ExceptionTodoRepository,
 )
 
 
@@ -119,7 +119,7 @@ class Module1WorkerCycleResult:
     sync: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
-    module3_exception_notifications: WorkerStageResult | None = None
+    module3_exception_todos: WorkerStageResult | None = None
     erp_sales_owners: WorkerStageResult | None = None
     intercept_tasks: WorkerStageResult | None = None
     notification_preflight: WorkerStageResult | None = None
@@ -177,9 +177,16 @@ class Module1WorkerCycleResult:
                     "skipped_recent",
                 ),
             ),
-            "module3_exception_notifications": self._stage_counts(
-                self.module3_exception_notifications,
-                ("pending", "ready", "sent", "skipped_duplicate", "failed"),
+            "module3_exception_todos": self._stage_counts(
+                self.module3_exception_todos,
+                (
+                    "scanned",
+                    "tasks_created",
+                    "tasks_existing",
+                    "tasks_requeued",
+                    "tasks_cancelled",
+                    "skipped_missing_owner",
+                ),
             ),
             "erp_sales_owners": self._stage_counts(
                 self.erp_sales_owners,
@@ -283,12 +290,12 @@ class Module1WorkerRuntime:
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
+        result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.module3_tasks = self._capture(self._prepare_module3_tasks)
         result.module3_erp_refunds = self._capture(self._process_module3_erp_refunds)
-        result.module3_exception_notifications = self._capture(
-            self._notify_module3_exceptions
+        result.module3_exception_todos = self._capture(
+            self._prepare_module3_exception_todos
         )
-        result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.intercept_tasks = self._capture(self._prepare_intercept_tasks)
         result.notification_preflight = self._capture(
             self._preflight_notifications
@@ -304,10 +311,10 @@ class Module1WorkerRuntime:
         result.pdd_refund = self._capture(self._process_pdd_refunds)
         stages = (
             result.sync,
+            result.erp_sales_owners,
             result.module3_tasks,
             result.module3_erp_refunds,
-            result.module3_exception_notifications,
-            result.erp_sales_owners,
+            result.module3_exception_todos,
             result.intercept_tasks,
             result.notification_preflight,
             result.notification,
@@ -387,63 +394,26 @@ class Module1WorkerRuntime:
             )
         return WorkerStageResult.completed(details)
 
-    def _notify_module3_exceptions(self) -> WorkerStageResult:
+    def _prepare_module3_exception_todos(self) -> WorkerStageResult:
         if not self.settings.module3_worker_enabled:
             return WorkerStageResult.skipped(
                 "模块3后台运行未启用",
-                pending=0,
-                ready=0,
-                sent=0,
-                skipped_duplicate=0,
-                failed=0,
+                scanned=0,
+                tasks_created=0,
+                tasks_existing=0,
+                tasks_requeued=0,
+                tasks_cancelled=0,
+                skipped_missing_owner=0,
             )
         with SessionLocal() as session:
-            preview_client = QywxWebhookClient(None, write_enabled=False)
-            try:
-                preview = Module3ExceptionNotificationService(
-                    session,
-                    preview_client,
-                ).run(
-                    limit=self.settings.module3_worker_batch_limit,
-                    repeat_seconds=self.settings.module3_exception_repeat_seconds,
-                    dry_run=True,
-                )
-            finally:
-                preview_client.close()
-        preview_details = preview.safe_dict()
-        if not preview.ready:
-            return WorkerStageResult.completed(preview_details)
-        if not self.settings.module3_exception_notification_enabled:
-            return WorkerStageResult.skipped(
-                "模块3异常通知未启用，异常仍保留在本地待办",
-                **preview_details,
+            run = Module3ExceptionTodoService(
+                SqlAlchemyModule3ExceptionTodoRepository(session)
+            ).run(
+                limit=self.settings.module3_worker_batch_limit,
+                max_attempts=self.settings.erp_todo_max_attempts,
+                dry_run=False,
             )
-        if not self.settings.qywx_write_enabled:
-            raise RuntimeError("模块3异常通知已启用，但 QYWX_WRITE_ENABLED=false")
-        if not _secret_configured(self.settings.module3_exception_webhook_url):
-            raise RuntimeError("模块3异常通知已启用，但未配置独立企微 Webhook")
-        client = QywxWebhookClient(
-            self.settings.module3_exception_webhook_url,
-            write_enabled=True,
-            timeout_seconds=self.settings.qywx_timeout_seconds,
-        )
-        try:
-            with SessionLocal() as session:
-                run = Module3ExceptionNotificationService(session, client).run(
-                    limit=self.settings.module3_worker_batch_limit,
-                    repeat_seconds=self.settings.module3_exception_repeat_seconds,
-                    dry_run=False,
-                )
-        finally:
-            client.close()
-        details = run.safe_dict()
-        if run.failed:
-            return WorkerStageResult(
-                status="failed",
-                details=details,
-                error=f"模块3异常通知失败 {run.failed} 笔",
-            )
-        return WorkerStageResult.completed(details)
+        return WorkerStageResult.completed(run.safe_dict())
 
     @staticmethod
     def _capture(stage) -> WorkerStageResult:
