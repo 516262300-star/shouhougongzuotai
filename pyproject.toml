@@ -13,6 +13,7 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   "httpx>=0.28,<1.0",
   "pydantic-settings>=2.7,<3.0",
+  "Pillow>=11.0,<13.0; sys_platform == 'win32'",
   "pymysql>=1.1,<2.0",
   "sqlalchemy>=2.0,<3.0",
   "uvicorn[standard]>=0.34,<1.0",
@@ -27,6 +28,7 @@ aftersales-process-module1 = "aftersales_workbench.workflows.module1_cli:main"
 aftersales-preview-module1 = "aftersales_workbench.workflows.module1_preview_cli:main"
 aftersales-run-module1 = "aftersales_workbench.workflows.module1_worker_cli:main"
 aftersales-preview-desktop-notices = "aftersales_workbench.workflows.desktop_notice_cli:main"
+aftersales-send-desktop-notices = "aftersales_workbench.workflows.desktop_sender_cli:main"
 aftersales-execute-actions = "aftersales_workbench.workflows.action_cli:execute_main"
 aftersales-list-actions = "aftersales_workbench.workflows.action_cli:list_main"
 aftersales-confirm-action = "aftersales_workbench.workflows.action_cli:confirm_main"

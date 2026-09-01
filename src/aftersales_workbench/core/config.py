@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     module1_pdd_refund_execution_enabled: bool = False
     module1_desktop_group_map: dict[str, str] = Field(default_factory=dict)
     module1_desktop_send_enabled: bool = False
+    module1_desktop_process_name: str = "WXWork.exe"
+    module1_desktop_ledger_path: str = ".runtime/desktop-notice-ledger.jsonl"
 
     kuaidi100_api_url: str = "https://poll.kuaidi100.com/poll/query.do"
     kuaidi100_customer: SecretStr | None = None
