@@ -49,8 +49,34 @@ class _KEYBDINPUT(ctypes.Structure):
     )
 
 
+class _MOUSEINPUT(ctypes.Structure):
+    _fields_ = (
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", _ULONG_PTR),
+    )
+
+
+class _HARDWAREINPUT(ctypes.Structure):
+    _fields_ = (
+        ("uMsg", wintypes.DWORD),
+        ("wParamL", wintypes.WORD),
+        ("wParamH", wintypes.WORD),
+    )
+
+
 class _INPUT_UNION(ctypes.Union):
-    _fields_ = (("ki", _KEYBDINPUT),)
+    # INPUT 的联合体尺寸由最大的 MOUSEINPUT 决定。即使这里只发送键盘
+    # 输入，也必须保留完整 ABI；否则 64 位 Windows 会因 cbSize 错误
+    # 让 SendInput 返回 0。
+    _fields_ = (
+        ("mi", _MOUSEINPUT),
+        ("ki", _KEYBDINPUT),
+        ("hi", _HARDWAREINPUT),
+    )
 
 
 class _INPUT(ctypes.Structure):
