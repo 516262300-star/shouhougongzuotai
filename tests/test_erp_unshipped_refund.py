@@ -135,7 +135,7 @@ def _admin_page() -> str:
 
 
 def _client(
-    *, initially_completed: bool = False
+    *, initially_completed: bool = False, shipped: bool = False
 ) -> tuple[ErpWebUnshippedRefundClient, dict[str, bool]]:
     state = {"completed": initially_completed, "write_called": False}
 
@@ -160,7 +160,15 @@ def _client(
         if path.endswith("/customer/stdview"):
             return httpx.Response(200, text=_profile(completed=state["completed"]))
         if path.endswith("/customer/shipment"):
-            return httpx.Response(200, text="<table></table>")
+            shipment = (
+                f"<table><tr><td>{ERP_ORDER_SN}</td></tr></table>"
+                if shipped
+                else "<table></table>"
+            )
+            return httpx.Response(
+                200,
+                text=shipment,
+            )
         if path.endswith("/admin/refunds"):
             return httpx.Response(200, text=_admin_page())
         if path.endswith(f"/1688api/deleteprodlist/{ERP_RECORD_ID}"):
@@ -246,6 +254,45 @@ def test_execute_rechecks_remote_completion() -> None:
     assert state["write_called"] is True
     assert completed.status is ErpUnshippedRefundStatus.COMPLETED
     assert completed.receivable_amount == Decimal("0.00")
+    assert completed.reference_sn == "TK-TEST-1"
+
+
+def test_inspect_shipped_return_requires_exact_receivable_and_shipment() -> None:
+    client, state = _client(shipped=True)
+    try:
+        lookup = client.inspect_shipped_return(
+            platform_order_sn=ORDER_SN,
+            after_sales_sn=AFTER_SALES_SN,
+            expected_amount=Decimal("74.51"),
+            expected_items=_expected(),
+        )
+    finally:
+        client.close()
+
+    assert lookup.status is ErpUnshippedRefundStatus.READY
+    assert lookup.receivable_amount == Decimal("-74.51")
+    assert state["write_called"] is False
+
+
+def test_execute_shipped_return_rechecks_remote_completion() -> None:
+    client, state = _client(shipped=True)
+    try:
+        ready = client.inspect_shipped_return(
+            platform_order_sn=ORDER_SN,
+            after_sales_sn=AFTER_SALES_SN,
+            expected_amount=Decimal("74.51"),
+            expected_items=_expected(),
+        )
+        completed = client.execute_shipped_return(
+            ready,
+            after_sales_sn=AFTER_SALES_SN,
+            expected_amount=Decimal("74.51"),
+        )
+    finally:
+        client.close()
+
+    assert state["write_called"] is True
+    assert completed.status is ErpUnshippedRefundStatus.COMPLETED
     assert completed.reference_sn == "TK-TEST-1"
 
 

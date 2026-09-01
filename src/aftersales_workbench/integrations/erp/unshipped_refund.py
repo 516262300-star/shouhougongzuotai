@@ -416,6 +416,142 @@ class ErpWebUnshippedRefundClient:
             self._logged_in = False
             raise ErpUnshippedRefundError(f"ERP 补开退款单请求失败：{exc}") from exc
 
+    def inspect_shipped_return(
+        self,
+        *,
+        platform_order_sn: str,
+        after_sales_sn: str,
+        expected_amount: Decimal | None,
+        expected_items: Sequence[ErpUnshippedItem],
+    ) -> ErpUnshippedRefundLookup:
+        """核验模块1已发货拦截退回单；退货明细由独立退货匹配器负责。"""
+        order_sn = str(platform_order_sn or "").strip()
+        sales_sn = str(after_sales_sn or "").strip()
+        if not order_sn or not sales_sn:
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "平台订单号或售后单号为空",
+                order_sn,
+            )
+        if expected_amount is None or expected_amount <= 0:
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "缺少有效的商家应收金额，禁止补开 ERP 退款单",
+                order_sn,
+            )
+        normalized_items = tuple(
+            _normalize_item(item.product, item.color, item.quantity)
+            for item in expected_items
+        )
+        if not normalized_items or any(
+            not item.product or not item.color or item.quantity <= 0
+            for item in normalized_items
+        ):
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "售后型号、颜色或数量不完整，禁止补开 ERP 退款单",
+                order_sn,
+            )
+        try:
+            pending_page = self._get(
+                "/leedis2/public/1688api/showlist",
+                params={"platform": "拼多多"},
+            )
+            pending = _find_pending_refund(
+                pending_page,
+                platform_order_sn=order_sn,
+            )
+            if pending is None:
+                return self._inspect_absent_pending(
+                    platform_order_sn=order_sn,
+                    after_sales_sn=sales_sn,
+                    expected_amount=expected_amount,
+                )
+            validation_error = self._validate_pending(
+                pending,
+                after_sales_sn=sales_sn,
+                expected_amount=expected_amount,
+            )
+            if validation_error:
+                return self._lookup(
+                    ErpUnshippedRefundStatus.BLOCKED,
+                    validation_error,
+                    order_sn,
+                    pending=pending,
+                )
+            profile, customer_id = self._load_customer_profile(
+                order_sn,
+                pending.customer_name,
+            )
+            receivable = self._parse_receivable(profile, pending.customer_name)
+            if abs(receivable + expected_amount) > self.amount_tolerance:
+                return self._lookup(
+                    ErpUnshippedRefundStatus.BLOCKED,
+                    "ERP 客户累计应收不等于负的商家应收金额",
+                    order_sn,
+                    pending=pending,
+                    receivable=receivable,
+                )
+            shipment = self._get(
+                "/leedis2/public/customer/shipment",
+                params={"kehuid": customer_id},
+            )
+            if pending.erp_order_sn not in shipment and order_sn not in shipment:
+                return self._lookup(
+                    ErpUnshippedRefundStatus.BLOCKED,
+                    "ERP 发货销售单未找到该订单，不能按拦截退回自动补单",
+                    order_sn,
+                    pending=pending,
+                    receivable=receivable,
+                )
+            return self._lookup(
+                ErpUnshippedRefundStatus.READY,
+                "ERP 待处理退款、商家应收和已发货事实均已核对",
+                order_sn,
+                pending=pending,
+                receivable=receivable,
+            )
+        except (httpx.HTTPError, ValueError, TypeError) as exc:
+            self._logged_in = False
+            return self._lookup(
+                ErpUnshippedRefundStatus.UNAVAILABLE,
+                f"ERP 拦截退回补单查询失败：{exc}",
+                order_sn,
+            )
+
+    def execute_shipped_return(
+        self,
+        lookup: ErpUnshippedRefundLookup,
+        *,
+        after_sales_sn: str,
+        expected_amount: Decimal,
+    ) -> ErpUnshippedRefundLookup:
+        """执行模块1补单，并回查待处理消失、退款收款单和累计应收归零。"""
+        if lookup.status is not ErpUnshippedRefundStatus.READY or not lookup.record_id:
+            raise ErpUnshippedRefundError("只有已通过全部校验的 ERP 拦截退回退款才能执行")
+        try:
+            response = self._get_response(
+                f"/leedis2/public/1688api/deleteprodlist/{lookup.record_id}",
+                params={"actionid": "1"},
+            )
+            reference = next(
+                iter(_SUCCESS_REFERENCE_PATTERN.findall(response.text)),
+                None,
+            )
+            verified = self._inspect_absent_pending(
+                platform_order_sn=lookup.platform_order_sn,
+                after_sales_sn=after_sales_sn,
+                expected_amount=expected_amount,
+            )
+            if verified.status is not ErpUnshippedRefundStatus.COMPLETED:
+                raise ErpUnshippedRefundError(
+                    "ERP 补开请求已发送，但未确认退款收款单和累计应收归零"
+                )
+            return replace(verified, reference_sn=reference or verified.reference_sn)
+        except httpx.HTTPError as exc:
+            self._logged_in = False
+            raise ErpUnshippedRefundError(f"ERP 补开退款单请求失败：{exc}") from exc
+
     def _inspect_absent_pending(
         self,
         *,

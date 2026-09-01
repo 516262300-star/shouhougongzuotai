@@ -80,6 +80,8 @@ alembic downgrade -1
 | `ERP_SALES_OWNER_REFRESH_SECONDS` | 已缓存归属业务员的正常刷新间隔 | `86400` |
 | `ERP_TODO_PUBLISH_ENABLED` | 将模块 1 人工处理任务真实发布到管理系统待办页 | `false` |
 | `ERP_TODO_MAX_ATTEMPTS` | 待办发布失败后允许安全重新入队的最大尝试次数 | `3` |
+| `ERP_RETURN_MATCH_SYNC_ENABLED` | 周期只读核对拦截退回的 ERP 退货单与客户累计应收 | `false` |
+| `MODULE1_ERP_REFUND_EXECUTION_ENABLED` | 模块 1 拦截退回补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
 | `MODULE3_WORKER_BATCH_LIMIT` | 模块 3 每周期最多新建及处理的订单数；首次上线保持 1 | `1` |
@@ -263,9 +265,10 @@ alembic upgrade head
 6. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
 7. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
 8. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
-9. 对派件中、已签收无退回、拦截失败、人工处理状态，以及 ERP 退货闭环中的“暂存待认领、累计应收未归零、退货明细不一致、客户档案冲突”，按归属业务员生成幂等的本地管理系统待办任务；
-10. 根据 `ERP_TODO_PUBLISH_ENABLED` 处理管理系统待办；默认关闭，只有再同时开启 `ERP_WRITE_ENABLED` 才真实发布并回填远端待办 ID；
-11. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
+9. `MODULE1_ERP_REFUND_EXECUTION_ENABLED=true` 时，对“退货明细完全匹配、累计应收恰好等于负的商家应收、ERP 待处理记录完全一致”的订单补开 ERP 退款单，并再次回查收款单、退货明细和累计应收；该开关默认关闭，且仍需 `ERP_WRITE_ENABLED=true`；
+10. 对派件中、已签收无退回、拦截失败、人工处理状态，以及 ERP 退货闭环中的“暂存待认领、累计应收未归零、退货明细不一致、客户档案冲突”，按归属业务员生成幂等的本地管理系统待办任务；
+11. 根据 `ERP_TODO_PUBLISH_ENABLED` 处理管理系统待办；默认关闭，只有再同时开启 `ERP_WRITE_ENABLED` 才真实发布并回填远端待办 ID；
+12. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
 
 因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。模块 1 的通知出口变化只替换通知步骤，不修改前后状态机。
 
@@ -371,6 +374,19 @@ alembic upgrade head
 退货单金额不与拼多多买家退款金额强制相等：平台优惠券可能导致买家退款额小于商家销售实收，ERP 退货价格也可能按历史销售价计算。因此闭环以“运单号 + 型号 + 颜色 + 数量 + 客户累计应收归零”为准。找不到退货单时继续等待，不发送业务员待办；ERP 页面暂时不可用时由系统重试，也不把系统故障误派给业务员。退货单仍在“退货暂存列表”、已经开到客户名下但累计应收未归零、退货明细不一致或客户档案冲突时，系统会保留待匹配并向唯一归属业务员发布一次幂等人工待办。待办包含平台订单号、售后单号、发货运单、ERP 退货单号、累计应收及退货明细摘要；归属为空或冲突时不猜测经办人，也不会误判闭环。
 
 合并发货时允许“同运单多平台订单合计匹配”：只纳入平台已明确退款且模块 1 正在等待 ERP 的仅退款订单；要求每笔订单都已唯一匹配到同一客户档案、都有售后 SKU 明细，并且合计后的型号、颜色、数量与 ERP 同一退货单逐项完全相等。同运单任一任务到达复查时间时，会一起核对该运单下仍在等待的全部任务，避免逐笔处理造成遗漏。匹配成功后，动作任务会记录 `erp_match_mode=combined_tracking_orders` 及参与匹配的售后单号，便于审计。ERP 多退数量、多出无法归属的型号、客户冲突或累计应收未归零时仍保持待人工核对。
+
+ERP 补开退款单使用独立双重写开关，默认只允许手工运行只读预演。预演必须同时满足：平台已明确全额退款、商家应收金额已从拼多多订单口径取得、ERP 退货单型号/颜色/数量完全一致、客户累计应收恰好为负的商家应收、待处理页售后单号/金额/客户/ERP 订单一致、发货销售单确实存在原订单。数量多退、金额混合了其他订单、商家应收缺失、退货暂存、未开退货单或 ERP 页面异常都会失败关闭。真实补单后还必须回查待处理记录消失、唯一退款收款单生成、退货明细仍一致且累计应收归零，才将售后标记闭环：
+
+```powershell
+# 默认只读；当前异常单会返回 0 个可执行候选，不会写 ERP
+.\.venv\Scripts\aftersales-execute-module1-erp-refunds.exe --details
+
+# 单笔验收通过后，先在 .env 开启 MODULE1_ERP_REFUND_EXECUTION_ENABLED=true
+# 并确认 ERP_WRITE_ENABLED=true，再仅对指定订单真实执行
+.\.venv\Scripts\aftersales-execute-module1-erp-refunds.exe --platform-order-sn "平台订单号" --details --apply
+```
+
+后台自动执行同样受这两个开关保护。开关关闭时只继续现有退货匹配和业务员待办，不会点击 ERP；请求结果不明时不盲目重发，后续先从已处理退款、退款收款单和累计应收恢复事实。
 
 指定历史订单进行真实 ERP 只读预演，不会更新本地状态：
 

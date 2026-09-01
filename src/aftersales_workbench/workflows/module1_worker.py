@@ -39,6 +39,9 @@ from aftersales_workbench.workflows.module1 import (
     Module1InterceptService,
     SqlAlchemyModule1Repository,
 )
+from aftersales_workbench.workflows.module1_erp_refund import (
+    Module1ErpRefundService,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -126,6 +129,7 @@ class Module1WorkerCycleResult:
     notification: WorkerStageResult | None = None
     logistics_gate: WorkerStageResult | None = None
     erp_return_matches: WorkerStageResult | None = None
+    module1_erp_refunds: WorkerStageResult | None = None
     erp_todo_tasks: WorkerStageResult | None = None
     erp_todo_publish: WorkerStageResult | None = None
     pdd_refund: WorkerStageResult | None = None
@@ -237,6 +241,19 @@ class Module1WorkerCycleResult:
                     "skipped_recent",
                 ),
             ),
+            "module1_erp_refunds": self._stage_counts(
+                self.module1_erp_refunds,
+                (
+                    "scanned",
+                    "ready",
+                    "applied",
+                    "already_completed",
+                    "not_found",
+                    "blocked",
+                    "unavailable",
+                    "return_not_ready",
+                ),
+            ),
             "erp_todo_tasks": self._stage_counts(
                 self.erp_todo_tasks,
                 (
@@ -307,6 +324,7 @@ class Module1WorkerRuntime:
         result.notification = self._capture(self._process_notifications)
         result.logistics_gate = self._capture(self._process_logistics_gate)
         result.erp_return_matches = self._capture(self._sync_erp_return_matches)
+        result.module1_erp_refunds = self._capture(self._process_module1_erp_refunds)
         result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
         result.erp_todo_publish = self._capture(self._process_erp_todos)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
@@ -321,6 +339,7 @@ class Module1WorkerRuntime:
             result.notification,
             result.logistics_gate,
             result.erp_return_matches,
+            result.module1_erp_refunds,
             result.erp_todo_tasks,
             result.erp_todo_publish,
             result.pdd_refund,
@@ -723,6 +742,48 @@ class Module1WorkerRuntime:
                 dry_run=False,
             )
         return WorkerStageResult.completed(run.safe_dict())
+
+    def _process_module1_erp_refunds(self) -> WorkerStageResult:
+        empty = {
+            "scanned": 0,
+            "ready": 0,
+            "applied": 0,
+            "already_completed": 0,
+            "not_found": 0,
+            "blocked": 0,
+            "unavailable": 0,
+            "return_not_ready": 0,
+        }
+        if not self.settings.module1_erp_refund_execution_enabled:
+            return WorkerStageResult.skipped("模块1 ERP 补单执行总开关关闭", **empty)
+        if not self.settings.erp_write_enabled:
+            raise RuntimeError("模块1后台补单已启用，但 ERP_WRITE_ENABLED=false")
+        matcher = build_erp_return_matcher(self.settings)
+        refund_client = build_erp_unshipped_refund_client(self.settings)
+        try:
+            with SessionLocal() as session:
+                run = Module1ErpRefundService(
+                    session,
+                    matcher,
+                    refund_client,
+                    amount_tolerance=(
+                        self.settings.erp_return_match_receivable_tolerance
+                    ),
+                ).run(
+                    limit=self.settings.erp_return_match_batch_size,
+                    dry_run=False,
+                )
+        finally:
+            refund_client.close()
+            matcher.close()
+        details = run.safe_dict()
+        if run.unavailable:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"模块1 ERP 补单查询失败 {run.unavailable} 笔",
+            )
+        return WorkerStageResult.completed(details)
 
     def _process_erp_todos(self) -> WorkerStageResult:
         apply = self.settings.erp_todo_publish_enabled

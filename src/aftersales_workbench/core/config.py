@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     erp_return_match_receivable_tolerance: Decimal = Field(
         default=Decimal("0.01"), ge=Decimal("0"), le=Decimal("1")
     )
+    module1_erp_refund_execution_enabled: bool = False
     module3_erp_refund_execution_enabled: bool = False
     module3_worker_enabled: bool = False
     module3_worker_batch_limit: int = Field(default=1, ge=1, le=20)
