@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.core.config import Settings
@@ -99,6 +99,8 @@ class ErpReturnMatchLookup:
 @dataclass(slots=True)
 class ErpReturnMatchSyncResult:
     dry_run: bool
+    tasks_created: int = 0
+    tasks_requeued: int = 0
     scanned: int = 0
     closed_loop: int = 0
     staged: int = 0
@@ -465,6 +467,12 @@ class ErpReturnMatchSyncService:
         if refresh_seconds < 0:
             raise ValueError("refresh_seconds 不能小于 0")
         now = datetime.now(UTC)
+        tasks_created, tasks_requeued = self._ensure_waiting_tasks(
+            limit=limit,
+            dry_run=dry_run,
+        )
+        if not dry_run and tasks_created:
+            self.session.flush()
         rows = self.session.execute(
             select(AftersalesActionTask, AfterSalesOrder)
             .join(
@@ -480,7 +488,11 @@ class ErpReturnMatchSyncService:
             .order_by(AftersalesActionTask.id)
             .limit(max(100, limit * 10))
         ).all()
-        result = ErpReturnMatchSyncResult(dry_run=dry_run)
+        result = ErpReturnMatchSyncResult(
+            dry_run=dry_run,
+            tasks_created=tasks_created,
+            tasks_requeued=tasks_requeued,
+        )
         for task, order in rows:
             if result.scanned >= limit:
                 break
@@ -501,6 +513,83 @@ class ErpReturnMatchSyncService:
         if not dry_run:
             self.session.commit()
         return result
+
+    def _ensure_waiting_tasks(
+        self,
+        *,
+        limit: int,
+        dry_run: bool,
+    ) -> tuple[int, int]:
+        """平台退款完成后立即进入 ERP 轮询，不依赖快递轨迹先判定退回。"""
+        match_task = AftersalesActionTask
+        rows = self.session.execute(
+            select(AfterSalesOrder, match_task)
+            .outerjoin(
+                match_task,
+                and_(
+                    match_task.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                    match_task.action_type
+                    == AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                ),
+            )
+            .where(
+                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                AfterSalesOrder.workflow_status.in_(
+                    (
+                        WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,
+                        WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                    )
+                ),
+                or_(
+                    AfterSalesOrder.platform_after_sales_status == 10,
+                    AfterSalesOrder.platform_order_refund_status == 4,
+                ),
+                AfterSalesOrder.forward_tracking_number.is_not(None),
+                AfterSalesOrder.forward_tracking_number != "",
+                or_(
+                    match_task.id.is_(None),
+                    match_task.action_status.in_(
+                        (
+                            AutomationTaskStatus.CANCELLED,
+                            AutomationTaskStatus.FAILED,
+                        )
+                    ),
+                ),
+            )
+            .order_by(AfterSalesOrder.id)
+            .limit(limit)
+        ).all()
+        created = 0
+        requeued = 0
+        for order, task in rows:
+            payload = {
+                "origin": "module1",
+                "tracking_number": order.forward_tracking_number,
+                "queued_reason": "platform_refunded_waiting_warehouse_return",
+            }
+            if task is None:
+                created += 1
+                if not dry_run:
+                    self.session.add(
+                        AftersalesActionTask(
+                            after_sales_sn=order.after_sales_sn,
+                            action_type=AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                            action_status=AutomationTaskStatus.PENDING,
+                            idempotency_key=(
+                                f"workflow:{order.after_sales_sn}:"
+                                f"{AutomationActionType.ERP_MATCH_RETURN_ORDER.value}"
+                            ),
+                            payload=payload,
+                            attempts=0,
+                        )
+                    )
+                continue
+            requeued += 1
+            if not dry_run:
+                task.action_status = AutomationTaskStatus.PENDING
+                task.payload = {**(task.payload or {}), **payload}
+                task.last_error = None
+        return created, requeued
 
     def apply_verified_order(
         self,

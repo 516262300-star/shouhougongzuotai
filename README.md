@@ -186,7 +186,7 @@ alembic upgrade head
 4. 企微发送成功后，订单进入 `INTERCEPT_PUSHED`；快递 100 退款闸门随即再次查询，不需要人工确认“已受理”。普通在途允许生成 `PDD_AGREE_REFUND`；
 5. 命中“派件/派送/投递”时进入 `INTERCEPT_WAITING_RETURN`，不自动退款；查询失败或公司代码未映射时同样不放行；拦截失败则进入 `INTERCEPT_FAILED`；
 6. 出现“退回/退件/拒收/原路返回”等明确退回记录后才解除派件冻结。若平台尚未退款则生成 `PDD_AGREE_REFUND`；若平台已经退款则跳过平台写接口；
-7. 平台退款完成但包裹尚在退回途中时进入 `INTERCEPT_REFUNDED_WAITING_RETURN`。只有物流明确显示退回件已经签收后，才进入 `RETURN_WAITING_ERP_MATCH` 并生成 `ERP_MATCH_RETURN_ORDER` 本地待办；该待办只预留后续“客户档案退货单精确匹配/暂存认领”接口，目前不会直接操作旧管理系统；
+7. 平台退款完成但包裹尚在退回途中时进入 `INTERCEPT_REFUNDED_WAITING_RETURN`，并立即生成 `ERP_MATCH_RETURN_ORDER` 本地只读匹配任务；不再依赖快递 100 必须先返回“退回签收”，避免物流接口失败或轨迹延迟导致 ERP 闭环永远不启动；
 8. 派件中、已签收无退回记录、拦截失败或订单进入 `MANUAL_PROCESSING` 时，按客户档案“归属业务员”幂等生成 `ERP_CREATE_MANUAL_TODO`；事项包含店铺、平台订单号、售后单号、发货运单和标准化物流状态，不复制快递轨迹中的电话、地址等原文；
 9. 后续 ERP 匹配规则以发货运单号、型号、颜色、数量、单价完全一致为自动处理前提；暂存认领流程等收到完整操作步骤后再接入。
 
@@ -397,7 +397,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-sync-erp-returns.exe --force --limit 20 --apply
 ```
 
-持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。后台运行器仍每 60 秒执行一个周期，但会读取任务中的上次核对时间，同一待匹配售后默认每 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（30 分钟）才访问一次 ERP；服务器不可用时任务保持待匹配，下个间隔自动重试。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待下次周期，也可先用上述 `--force` 命令只读复查。
+持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。平台退款明确完成后，即使物流仍显示在途、派件或快递 100 暂时查询失败，后台也会先建立 ERP 只读匹配任务。后台运行器仍每 60 秒执行一个周期，但会读取任务中的上次核对时间，同一待匹配售后默认每 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（30 分钟）才访问一次 ERP；服务器不可用时任务保持待匹配，下个间隔自动重试。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待下次周期，也可先用上述 `--force` 命令只读复查。
 
 ## 模块 3：未发货退款与锁包
 

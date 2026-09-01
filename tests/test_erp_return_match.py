@@ -211,3 +211,75 @@ def test_staged_lookup_remains_pending_for_next_poll() -> None:
     assert task.action_status is AutomationTaskStatus.PENDING
     assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
     assert order.exception_type == "退货单在暂存列表，等待认领"
+
+
+def test_waiting_refunded_order_is_queued_before_logistics_reports_returned() -> None:
+    order = SimpleNamespace(
+        after_sales_sn="AS-1",
+        forward_tracking_number="JT123",
+    )
+
+    class FakeRows:
+        @staticmethod
+        def all() -> list[tuple[SimpleNamespace, None]]:
+            return [(order, None)]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        @staticmethod
+        def execute(_statement: object) -> FakeRows:
+            return FakeRows()
+
+        def add(self, task: object) -> None:
+            self.added.append(task)
+
+    session = FakeSession()
+    service = ErpReturnMatchSyncService(session, _matcher())  # type: ignore[arg-type]
+    try:
+        created, requeued = service._ensure_waiting_tasks(limit=20, dry_run=False)
+    finally:
+        service.matcher.close()
+
+    assert created == 1
+    assert requeued == 0
+    assert len(session.added) == 1
+    task = session.added[0]
+    assert task.after_sales_sn == "AS-1"
+    assert task.action_status is AutomationTaskStatus.PENDING
+    assert task.payload["queued_reason"] == "platform_refunded_waiting_warehouse_return"
+
+
+def test_waiting_refunded_order_dry_run_does_not_create_task() -> None:
+    order = SimpleNamespace(
+        after_sales_sn="AS-1",
+        forward_tracking_number="JT123",
+    )
+
+    class FakeRows:
+        @staticmethod
+        def all() -> list[tuple[SimpleNamespace, None]]:
+            return [(order, None)]
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.added: list[object] = []
+
+        @staticmethod
+        def execute(_statement: object) -> FakeRows:
+            return FakeRows()
+
+        def add(self, task: object) -> None:
+            self.added.append(task)
+
+    session = FakeSession()
+    service = ErpReturnMatchSyncService(session, _matcher())  # type: ignore[arg-type]
+    try:
+        created, requeued = service._ensure_waiting_tasks(limit=20, dry_run=True)
+    finally:
+        service.matcher.close()
+
+    assert created == 1
+    assert requeued == 0
+    assert session.added == []

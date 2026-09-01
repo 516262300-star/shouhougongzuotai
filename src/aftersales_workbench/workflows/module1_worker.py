@@ -216,6 +216,8 @@ class Module1WorkerCycleResult:
             "erp_return_matches": self._stage_counts(
                 self.erp_return_matches,
                 (
+                    "tasks_created",
+                    "tasks_requeued",
                     "scanned",
                     "closed_loop",
                     "staged",
@@ -707,6 +709,8 @@ class Module1WorkerRuntime:
         if not self.settings.erp_return_match_sync_enabled:
             return WorkerStageResult.skipped(
                 "ERP 退货闭环匹配未启用",
+                tasks_created=0,
+                tasks_requeued=0,
                 scanned=0,
                 closed_loop=0,
                 staged=0,
