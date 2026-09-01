@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.todo import ErpTodoClient, ErpTodoRequest
 from aftersales_workbench.integrations.pdd.client import PddClient, PddConfigurationError
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.qywx.client import InterceptNotice, QywxWebhookClient
@@ -64,6 +65,7 @@ class ExternalActionRunResult:
     scanned: int = 0
     qywx_notices: int = 0
     pdd_refunds: int = 0
+    erp_todos: int = 0
     succeeded: int = 0
     failed: int = 0
     skipped: int = 0
@@ -249,7 +251,12 @@ class ActionCoordinator:
             self.session.rollback()
             raise
 
-    def record_external_success(self, task_id: int) -> None:
+    def record_external_success(
+        self,
+        task_id: int,
+        *,
+        result_payload: dict[str, Any] | None = None,
+    ) -> None:
         try:
             task = self._get_task(task_id)
             if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.RUNNING:
@@ -285,6 +292,17 @@ class ActionCoordinator:
                         AutomationActionType.ERP_CREATE_REFUND_RECORD,
                         {"origin": origin},
                     )
+            elif action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                external_todo_id = str(
+                    (result_payload or {}).get("external_todo_id") or ""
+                ).strip()
+                if not external_todo_id:
+                    raise WorkflowTransitionError("ERP 待办成功结果缺少待办 ID")
+                task.payload = {
+                    **(task.payload or {}),
+                    **(result_payload or {}),
+                    "published_at": datetime.now(UTC).isoformat(),
+                }
             else:
                 raise WorkflowTransitionError("该任务不是可执行的外部动作")
             self.session.commit()
@@ -386,6 +404,7 @@ class ExternalActionExecutor:
     _EXTERNAL_TYPES = (
         AutomationActionType.QYWX_INTERCEPT_NOTIFY,
         AutomationActionType.PDD_AGREE_REFUND,
+        AutomationActionType.ERP_CREATE_MANUAL_TODO,
     )
 
     def __init__(self, session: Session, settings: Settings) -> None:
@@ -404,7 +423,7 @@ class ExternalActionExecutor:
         selected = action_types or self._EXTERNAL_TYPES
         invalid = set(selected).difference(self._EXTERNAL_TYPES)
         if invalid:
-            raise ValueError("只允许执行企微通知和拼多多退款动作")
+            raise ValueError("只允许执行企微通知、拼多多退款和 ERP 人工待办动作")
         listed_tasks = self._list_pending(selected, limit)
         tasks, preflight_blocked = self._filter_notification_preflight(listed_tasks)
         result = ExternalActionRunResult(
@@ -417,6 +436,10 @@ class ExternalActionExecutor:
         )
         result.pdd_refunds = sum(
             task.action_type is AutomationActionType.PDD_AGREE_REFUND for task in tasks
+        )
+        result.erp_todos = sum(
+            task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO
+            for task in tasks
         )
         if dry_run:
             return result
@@ -443,6 +466,10 @@ class ExternalActionExecutor:
                 task.action_type is AutomationActionType.PDD_AGREE_REFUND
                 for task in tasks
             )
+            result.erp_todos = sum(
+                task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO
+                for task in tasks
+            )
         present_types = tuple({task.action_type for task in tasks})
         self._validate_write_gates(present_types)
 
@@ -458,7 +485,10 @@ class ExternalActionExecutor:
             timeout_seconds=self.settings.qywx_timeout_seconds,
         )
         pdd_clients: dict[str, PddClient] = {}
+        erp_todo_client = None
         try:
+            if AutomationActionType.ERP_CREATE_MANUAL_TODO in present_types:
+                erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if not self._claim(task.id):
                     result.skipped += 1
@@ -466,7 +496,8 @@ class ExternalActionExecutor:
                 try:
                     if task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
                         self._send_qywx(qywx_client, task)
-                    else:
+                        result_payload = None
+                    elif task.action_type is AutomationActionType.PDD_AGREE_REFUND:
                         shop = configured_shops.get(task.shop_code)
                         if shop is None:
                             raise PddConfigurationError(
@@ -483,7 +514,19 @@ class ExternalActionExecutor:
                             )
                             pdd_clients[task.shop_code] = client
                         self._agree_pdd(client, task)
-                    ActionCoordinator(self.session).record_external_success(task.id)
+                        result_payload = None
+                    else:
+                        if erp_todo_client is None:
+                            raise WorkflowTransitionError("ERP 待办客户端未初始化")
+                        receipt = self._create_erp_todo(erp_todo_client, task)
+                        result_payload = {
+                            "external_todo_id": receipt.todo_id,
+                            "external_todo_created": receipt.created,
+                        }
+                    ActionCoordinator(self.session).record_external_success(
+                        task.id,
+                        result_payload=result_payload,
+                    )
                     result.succeeded += 1
                 except Exception as exc:
                     ActionCoordinator(self.session).record_external_failure(task.id, str(exc))
@@ -493,6 +536,8 @@ class ExternalActionExecutor:
             qywx_client.close()
             for client in pdd_clients.values():
                 client.close()
+            if erp_todo_client is not None:
+                erp_todo_client.close()
 
     @staticmethod
     def _filter_notification_preflight(
@@ -600,6 +645,15 @@ class ExternalActionExecutor:
             and not self.settings.pdd_write_enabled
         ):
             raise WorkflowTransitionError("PDD_WRITE_ENABLED=false，不能执行平台退款")
+        if AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types:
+            if not self.settings.erp_todo_publish_enabled:
+                raise WorkflowTransitionError(
+                    "ERP_TODO_PUBLISH_ENABLED=false，不能发布管理系统待办"
+                )
+            if not self.settings.erp_write_enabled:
+                raise WorkflowTransitionError(
+                    "ERP_WRITE_ENABLED=false，不能发布管理系统待办"
+                )
 
     @staticmethod
     def _send_qywx(client: QywxWebhookClient, task: ExternalTaskSnapshot) -> None:
@@ -626,4 +680,39 @@ class ExternalActionExecutor:
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),
             order_sn=task.platform_order_sn,
+        )
+
+    def _build_erp_todo_client(self) -> ErpTodoClient:
+        username = (
+            self.settings.erp_web_username.get_secret_value()
+            if self.settings.erp_web_username
+            else ""
+        )
+        password = (
+            self.settings.erp_web_password.get_secret_value()
+            if self.settings.erp_web_password
+            else ""
+        )
+        return ErpTodoClient(
+            base_url=self.settings.erp_web_base_url,
+            username=username,
+            password=password,
+            timeout_seconds=self.settings.erp_web_timeout_seconds,
+        )
+
+    @staticmethod
+    def _create_erp_todo(client: ErpTodoClient, task: ExternalTaskSnapshot):
+        payload = task.payload
+        required = ("assignee", "started_at", "content", "marker")
+        if any(not str(payload.get(key) or "").strip() for key in required):
+            raise WorkflowTransitionError(
+                "ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识"
+            )
+        return client.create_todo(
+            ErpTodoRequest(
+                assignee=str(payload["assignee"]),
+                started_at=str(payload["started_at"]),
+                content=str(payload["content"]),
+                marker=str(payload["marker"]),
+            )
         )

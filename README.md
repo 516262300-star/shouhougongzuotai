@@ -68,7 +68,7 @@ alembic downgrade -1
 | `PDD_SYNC_INITIAL_LOOKBACK_HOURS` | 新店铺无游标时的首次回溯小时数 | `72` |
 | `PDD_SYNC_OVERLAP_SECONDS` | 续传时向前重叠秒数，用于防止边界漏单 | `300` |
 | `PDD_SYNC_PAGE_SIZE` | 售后增量单页数量 | `100` |
-| `ERP_WRITE_ENABLED` | ERP 外部写操作总开关，当前未开放 | `false` |
+| `ERP_WRITE_ENABLED` | ERP 外部写操作总开关；管理系统待办发布还需功能开关同时开启 | `false` |
 | `ERP_READ_DATABASE_URL` | 旧管理系统 MySQL 只读连接串，用于按拼多多订单反查客户档案归属业务员 | 无 |
 | `ERP_READ_CACHE_SECONDS` | 归属业务员查询在工作台内的缓存秒数 | `300` |
 | `ERP_WEB_LOOKUP_ENABLED` | 未配置数据库时，启用管理系统网页登录只读查询 | `false` |
@@ -78,6 +78,8 @@ alembic downgrade -1
 | `ERP_SALES_OWNER_SYNC_ENABLED` | 模块 1 周期内自动刷新归属业务员缓存 | `false` |
 | `ERP_SALES_OWNER_SYNC_BATCH_SIZE` | 每个模块 1 周期最多刷新多少笔售后订单 | `20` |
 | `ERP_SALES_OWNER_REFRESH_SECONDS` | 已缓存归属业务员的正常刷新间隔 | `86400` |
+| `ERP_TODO_PUBLISH_ENABLED` | 将模块 1 人工处理任务真实发布到管理系统待办页 | `false` |
+| `ERP_TODO_MAX_ATTEMPTS` | 待办发布失败后允许安全重新入队的最大尝试次数 | `3` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -105,6 +107,8 @@ alembic downgrade -1
 售后订单记录页的“归属业务员”来自旧管理系统客户档案。系统优先使用 `ERP_READ_DATABASE_URL`：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照。没有数据库只读账号时，可配置 `ERP_WEB_LOOKUP_ENABLED=true` 以及管理系统员工账号，工作台会登录 `/leedis/index.php/welcome/loginact`，再调用客户档案自动补全接口只读查询。网页查询结果默认缓存 5 分钟，登录失效只自动重登一次，不会访问客户修改接口。登录凭据只能保存在被 Git 忽略的本机 `.env`，严禁写入 README 或提交仓库。
 
 启用 `ERP_SALES_OWNER_SYNC_ENABLED` 后，模块 1 每个周期会在拼多多增量同步后，将一小批客户名字、归属业务员、匹配状态和查询时间缓存到本地 `aftersales_orders`。页面基于本地缓存进行全量业务员筛选，不会在一次页面查询中批量请求旧管理系统。正常结果每天刷新；网页暂时不可用时 5 分钟后重试，归属查询失败不会阻断拦截、物流闸门或退款安全流程。首次接入可分批执行 `aftersales-sync-sales-owners.exe --limit 20`，每批完成即提交，不需要一次等待全部历史订单。
+
+管理系统人工待办发布复用同一组 `ERP_WEB_BASE_URL`、`ERP_WEB_USERNAME`、`ERP_WEB_PASSWORD`。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。每条远端事项包含 `【售后工作台 M1:售后单号】` 幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布。归属业务员为空或冲突时不会猜测经办人，也不会发布。
 
 ## 拼多多单店只读联调
 
@@ -166,7 +170,8 @@ alembic upgrade head
 5. 命中“派件/派送/投递”时进入 `INTERCEPT_WAITING_RETURN`，不自动退款；查询失败或公司代码未映射时同样不放行；拦截失败则进入 `INTERCEPT_FAILED`；
 6. 出现“退回/退件/拒收/原路返回”等明确退回记录后才解除派件冻结。若平台尚未退款则生成 `PDD_AGREE_REFUND`；若平台已经退款则跳过平台写接口；
 7. 平台退款完成但包裹尚在退回途中时进入 `INTERCEPT_REFUNDED_WAITING_RETURN`。只有物流明确显示退回件已经签收后，才进入 `RETURN_WAITING_ERP_MATCH` 并生成 `ERP_MATCH_RETURN_ORDER` 本地待办；该待办只预留后续“客户档案退货单精确匹配/暂存认领”接口，目前不会直接操作旧管理系统；
-8. 后续 ERP 匹配规则以发货运单号、型号、颜色、数量、单价完全一致为自动处理前提；暂存认领流程等收到完整操作步骤后再接入。
+8. 派件中、已签收无退回记录、拦截失败或订单进入 `MANUAL_PROCESSING` 时，按客户档案“归属业务员”幂等生成 `ERP_CREATE_MANUAL_TODO`；事项包含店铺、平台订单号、售后单号、发货运单和最新物流；
+9. 后续 ERP 匹配规则以发货运单号、型号、颜色、数量、单价完全一致为自动处理前提；暂存认领流程等收到完整操作步骤后再接入。
 
 先预览候选数量，再写入本地队列：
 
@@ -209,6 +214,16 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-execute-actions.exe --types PDD_AGREE_REFUND --apply
 ```
 
+管理系统人工待办先预览本地待发布数量，再开启双重写开关并执行。预览不会登录或写入管理系统；真实发布会先查经办人现有列表，远端已经存在相同售后标识时只回填原待办 ID：
+
+```powershell
+.\.venv\Scripts\aftersales-execute-actions.exe --types ERP_CREATE_MANUAL_TODO
+# 确认 .env 中 ERP_TODO_PUBLISH_ENABLED=true 且 ERP_WRITE_ENABLED=true 后
+.\.venv\Scripts\aftersales-execute-actions.exe --types ERP_CREATE_MANUAL_TODO --apply
+```
+
+2026-09-01 已通过真实管理系统页面完成一次人工待办发布与经办人列表回查测试，确认“经办人、发起时间、具体事项”和远端待办 ID 均可正确写入。测试账号、密码和业务订单数据未写入仓库。
+
 2026-08-31 以1店近72小时真实售后数据完成模块1只读预演：严格按 `ONLY_REFUND` 筛出2笔、均为极兔；快递100判定1笔 `IN_TRANSIT`（退款闸门可放行）、1笔 `DELIVERED` 且没有退回记录（退款闸门冻结），物流查询失败0笔。预演未创建动作任务、未发送企微消息、未调用拼多多退款接口。
 
 ### 模块 1 实际后台运行
@@ -221,7 +236,9 @@ alembic upgrade head
 4. 对所有待发送任务执行快递 100 前置预检；已签收、退回中、已退回任务会保留审计记录但改为 `CANCELLED`，不会进入通知出口；
 5. 根据 `MODULE1_NOTIFICATION_TRANSPORT` 处理通过预检的通知；默认 `disabled`，任务只保留在待发送队列；
 6. 对已经成功发出拦截通知的订单再次查询快递 100，并按派件/签收/退回轨迹更新本地退款闸门；
-7. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
+7. 对派件中、已签收无退回、拦截失败和人工处理状态按归属业务员生成幂等的本地管理系统待办任务；
+8. 根据 `ERP_TODO_PUBLISH_ENABLED` 处理管理系统待办；默认关闭，只有再同时开启 `ERP_WRITE_ENABLED` 才真实发布并回填远端待办 ID；
+9. 预览已经放行的拼多多退款任务。只有 `MODULE1_PDD_REFUND_EXECUTION_ENABLED=true` 与 `PDD_WRITE_ENABLED=true` 同时满足时，后台进程才会真实调用平台退款。
 
 因此，在企微机器人和桌面自动发送之间尚未确定时，后台运行器仍可持续同步订单并准备拦截任务，但会停在“待发送”，不会越过通知步骤自动退款。以后新增桌面发送适配器只替换第 4 步，不修改前后状态机。
 
@@ -246,6 +263,7 @@ alembic upgrade head
 - 单店拼多多读取失败：其他店继续完成；修复 Token 或网络后，下个周期从该店最后成功游标重试，不会跳过失败窗口；
 - 单票详情返回拼多多 `45001`“订单不属于当前店铺或订单不存在”：隔离并计入 `records_skipped`，其余订单继续处理且窗口游标正常推进；其他平台错误仍按整店失败处理；
 - ERP 归属查询失败：该批记录保留失败状态并在 5 分钟后重试；该独立阶段不会阻断后续拦截安全流程；
+- ERP 人工待办发布关闭：本地任务保留为 `PENDING`；开启双重写开关后下个周期继续。发布失败会使用远端售后标识先查重，再在 `ERP_TODO_MAX_ATTEMPTS` 范围内重新入队；超过次数后保留 `FAILED` 和错误原因供人工检查；
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
 - 电脑重启：本地 MySQL 不是 Windows 服务时先启动 MySQL，再重新执行 `Start`；

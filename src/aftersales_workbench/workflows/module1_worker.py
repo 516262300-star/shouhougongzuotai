@@ -29,6 +29,10 @@ from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
 )
+from aftersales_workbench.workflows.module1_manual_todo import (
+    Module1ManualTodoService,
+    SqlAlchemyModule1ManualTodoRepository,
+)
 from aftersales_workbench.workflows.module1_preflight import (
     Module1NotificationPreflightService,
 )
@@ -87,6 +91,8 @@ class Module1WorkerCycleResult:
     notification_preflight: WorkerStageResult | None = None
     notification: WorkerStageResult | None = None
     logistics_gate: WorkerStageResult | None = None
+    erp_todo_tasks: WorkerStageResult | None = None
+    erp_todo_publish: WorkerStageResult | None = None
     pdd_refund: WorkerStageResult | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -145,6 +151,20 @@ class Module1WorkerCycleResult:
                 self.logistics_gate,
                 ("scanned", "allowed_refunds", "blocked_delivery", "failed"),
             ),
+            "erp_todo_tasks": self._stage_counts(
+                self.erp_todo_tasks,
+                (
+                    "scanned",
+                    "tasks_created",
+                    "tasks_existing",
+                    "tasks_requeued",
+                    "skipped_missing_owner",
+                ),
+            ),
+            "erp_todo_publish": self._stage_counts(
+                self.erp_todo_publish,
+                ("scanned", "erp_todos", "succeeded", "failed"),
+            ),
             "pdd_refund": self._stage_counts(
                 self.pdd_refund,
                 ("scanned", "succeeded", "failed"),
@@ -195,6 +215,8 @@ class Module1WorkerRuntime:
         )
         result.notification = self._capture(self._process_notifications)
         result.logistics_gate = self._capture(self._process_logistics_gate)
+        result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
+        result.erp_todo_publish = self._capture(self._process_erp_todos)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
         stages = (
             result.sync,
@@ -203,6 +225,8 @@ class Module1WorkerRuntime:
             result.notification_preflight,
             result.notification,
             result.logistics_gate,
+            result.erp_todo_tasks,
+            result.erp_todo_publish,
             result.pdd_refund,
         )
         result.ok = all(stage is not None and stage.status != "failed" for stage in stages)
@@ -398,5 +422,43 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"拼多多退款执行失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _prepare_erp_todo_tasks(self) -> WorkerStageResult:
+        with SessionLocal() as session:
+            run = Module1ManualTodoService(
+                SqlAlchemyModule1ManualTodoRepository(session)
+            ).run(
+                shop_codes=self.shop_codes,
+                limit=self.options.task_limit,
+                max_attempts=self.settings.erp_todo_max_attempts,
+                dry_run=False,
+            )
+        return WorkerStageResult.completed(run.safe_dict())
+
+    def _process_erp_todos(self) -> WorkerStageResult:
+        apply = self.settings.erp_todo_publish_enabled
+        if apply and not self.settings.erp_write_enabled:
+            raise RuntimeError(
+                "ERP 待办发布已启用，但 ERP_WRITE_ENABLED=false"
+            )
+        with SessionLocal() as session:
+            run = ExternalActionExecutor(session, self.settings).run(
+                action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,),
+                limit=self.options.task_limit,
+                dry_run=not apply,
+            )
+        details = run.safe_dict()
+        if not apply:
+            return WorkerStageResult.skipped(
+                "管理系统待办发布总开关关闭，仅保留本地待办队列",
+                **details,
+            )
+        if run.failed:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"管理系统待办发布失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)

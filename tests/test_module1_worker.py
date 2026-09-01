@@ -67,6 +67,18 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("logistics_gate")
         return WorkerStageResult.completed({"scanned": 0})
 
+    def _prepare_erp_todo_tasks(self) -> WorkerStageResult:
+        self.calls.append("erp_todo_tasks")
+        return WorkerStageResult.completed(
+            {"scanned": 1, "tasks_created": 1, "skipped_missing_owner": 0}
+        )
+
+    def _process_erp_todos(self) -> WorkerStageResult:
+        self.calls.append("erp_todo_publish")
+        return WorkerStageResult.skipped(
+            "disabled", scanned=1, erp_todos=1, succeeded=0, failed=0
+        )
+
     def _process_pdd_refunds(self) -> WorkerStageResult:
         self.calls.append("pdd_refund")
         return WorkerStageResult.skipped("disabled", pdd_refunds=0)
@@ -85,6 +97,8 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
         "notification_preflight",
         "notification",
         "logistics_gate",
+        "erp_todo_tasks",
+        "erp_todo_publish",
         "pdd_refund",
     ]
     assert result.notification is not None
@@ -94,6 +108,8 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     summary = result.summary_dict()
     assert summary["sync"]["status"] == "completed"
     assert summary["erp_sales_owners"]["matched"] == 1
+    assert summary["erp_todo_tasks"]["tasks_created"] == 1
+    assert summary["erp_todo_publish"]["erp_todos"] == 1
     assert summary["notification"]["status"] == "skipped"
 
 

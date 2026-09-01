@@ -60,6 +60,7 @@ ACTION_LABELS = {
     "ERP_LOCK_PACKING": "ERP 锁包",
     "ERP_CREATE_REFUND_RECORD": "ERP 退款平账",
     "ERP_MATCH_RETURN_ORDER": "ERP 退货单匹配",
+    "ERP_CREATE_MANUAL_TODO": "管理系统人工待办",
     "PDD_AGREE_REFUND": "拼多多同意退款",
 }
 
@@ -927,6 +928,19 @@ class AftersalesRecordService:
             action = _enum_value(task.action_type)
             status = _enum_value(task.action_status)
             description = ACTION_STATUS_LABELS.get(status, status)
+            if action == AutomationActionType.ERP_CREATE_MANUAL_TODO.value:
+                payload = task.payload or {}
+                assignee = str(payload.get("assignee") or "").strip()
+                external_todo_id = str(
+                    payload.get("external_todo_id") or ""
+                ).strip()
+                details = []
+                if assignee:
+                    details.append(f"经办人 {assignee}")
+                if external_todo_id:
+                    details.append(f"待办 ID {external_todo_id}")
+                if details:
+                    description = f"{description}：{'；'.join(details)}"
             if task.last_error:
                 description = f"{description}：{task.last_error}"
             events.append(

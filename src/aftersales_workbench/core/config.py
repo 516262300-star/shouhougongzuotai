@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     erp_sales_owner_sync_enabled: bool = False
     erp_sales_owner_sync_batch_size: int = Field(default=20, ge=1, le=500)
     erp_sales_owner_refresh_seconds: int = Field(default=86400, ge=300, le=2592000)
+    erp_todo_publish_enabled: bool = False
+    erp_todo_max_attempts: int = Field(default=3, ge=1, le=10)
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)

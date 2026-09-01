@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import pytest
+
+from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AutomationActionType
 from aftersales_workbench.workflows.actions import (
     ExternalActionExecutor,
     ExternalTaskSnapshot,
+    WorkflowTransitionError,
 )
 
 
@@ -40,3 +44,29 @@ def test_external_executor_accepts_notice_with_valid_preflight_credential() -> N
 
     assert ready == [task]
     assert blocked == 0
+
+
+def test_external_executor_requires_both_erp_todo_write_gates() -> None:
+    executor = ExternalActionExecutor(  # type: ignore[arg-type]
+        None,
+        Settings(
+            _env_file=None,
+            erp_write_enabled=True,
+            erp_todo_publish_enabled=False,
+        ),
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="ERP_TODO_PUBLISH_ENABLED"):
+        executor._validate_write_gates(
+            (AutomationActionType.ERP_CREATE_MANUAL_TODO,)
+        )
+
+    enabled = ExternalActionExecutor(  # type: ignore[arg-type]
+        None,
+        Settings(
+            _env_file=None,
+            erp_write_enabled=True,
+            erp_todo_publish_enabled=True,
+        ),
+    )
+    enabled._validate_write_gates((AutomationActionType.ERP_CREATE_MANUAL_TODO,))

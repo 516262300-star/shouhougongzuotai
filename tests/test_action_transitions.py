@@ -167,6 +167,29 @@ def test_qywx_success_marks_intercept_pushed() -> None:
     assert coordinator.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
 
 
+def test_erp_manual_todo_success_saves_external_todo_id() -> None:
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.ERP_CREATE_MANUAL_TODO,
+            status=AutomationTaskStatus.RUNNING,
+        ),
+        _order(),
+    )
+    coordinator.task.payload = {"assignee": "金博敏"}
+
+    coordinator.record_external_success(
+        1,
+        result_payload={
+            "external_todo_id": "7791069",
+            "external_todo_created": True,
+        },
+    )
+
+    assert coordinator.task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert coordinator.task.payload["external_todo_id"] == "7791069"
+    assert coordinator.task.payload["assignee"] == "金博敏"
+
+
 def test_module1_failed_cancels_pending_refund() -> None:
     order = _order()
     order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED

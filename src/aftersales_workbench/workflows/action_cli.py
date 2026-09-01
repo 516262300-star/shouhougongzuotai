@@ -29,8 +29,12 @@ def execute_main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--types",
         nargs="*",
-        choices=("QYWX_INTERCEPT_NOTIFY", "PDD_AGREE_REFUND"),
-        help="限定动作类型；默认同时扫描两类",
+        choices=(
+            "QYWX_INTERCEPT_NOTIFY",
+            "PDD_AGREE_REFUND",
+            "ERP_CREATE_MANUAL_TODO",
+        ),
+        help="限定动作类型；默认扫描企微、退款与 ERP 人工待办",
     )
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument(
