@@ -63,5 +63,10 @@ def test_qywx_sends_markdown_card_without_exposing_url() -> None:
 
     assert body["errcode"] == 0
     assert captured["msgtype"] == "markdown"
-    assert "tracking-1" in captured["markdown"]["content"]  # type: ignore[index]
+    content = captured["markdown"]["content"]  # type: ignore[index]
+    assert "tracking-1" in content
+    assert "order-1" not in content
+    assert "after-1" not in content
+    assert "平台订单号" not in content
+    assert "售后单号" not in content
     http_client.close()
