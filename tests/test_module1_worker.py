@@ -67,6 +67,10 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("logistics_gate")
         return WorkerStageResult.completed({"scanned": 0})
 
+    def _sync_erp_return_matches(self) -> WorkerStageResult:
+        self.calls.append("erp_return_matches")
+        return WorkerStageResult.completed({"scanned": 1, "closed_loop": 1})
+
     def _prepare_erp_todo_tasks(self) -> WorkerStageResult:
         self.calls.append("erp_todo_tasks")
         return WorkerStageResult.completed(
@@ -97,6 +101,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
         "notification_preflight",
         "notification",
         "logistics_gate",
+        "erp_return_matches",
         "erp_todo_tasks",
         "erp_todo_publish",
         "pdd_refund",
@@ -108,6 +113,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     summary = result.summary_dict()
     assert summary["sync"]["status"] == "completed"
     assert summary["erp_sales_owners"]["matched"] == 1
+    assert summary["erp_return_matches"]["closed_loop"] == 1
     assert summary["erp_todo_tasks"]["tasks_created"] == 1
     assert summary["erp_todo_publish"]["erp_todos"] == 1
     assert summary["notification"]["status"] == "skipped"

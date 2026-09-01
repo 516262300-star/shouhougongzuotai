@@ -344,6 +344,44 @@ alembic upgrade head
 
 如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。完成单笔真实验收后，才允许同时设置 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true` 并重启后台运行器；后台每个完整周期只处理 `MODULE1_DESKTOP_BATCH_LIMIT` 条，当前安全默认值为 1。任一桌面任务暂停或结果不明时，本周期立即失败停止发送，后续周期只读取账本并继续失败关闭，不会再次按键。
 
+### 拦截退回后的 ERP 闭环匹配
+
+模块 1 的最终完成条件不是“平台退款成功”，而是拦截包裹退回仓库后，ERP 客户档案中已经存在对应退货单且账务平衡。后台只读匹配器按以下顺序核对：
+
+1. 用平台订单号从 ERP 客户自动补全接口唯一确定客户档案和归属业务员；
+2. 用原发货运单号查询该客户的“发货销售单”，只接受编号以 `TH-` 开头的退货单；
+3. 逐项比较退货单与售后申请的型号、颜色和数量；
+4. 读取客户档案“累计应收”，绝对值不超过 `ERP_RETURN_MATCH_RECEIVABLE_TOLERANCE` 才视为归零；
+5. 两项同时满足后，将 `ERP_MATCH_RETURN_ORDER` 标记完成，售后进入 `INTERCEPT_SUCCESS`（页面显示“售后已闭环”）。
+
+退货单金额不与拼多多买家退款金额强制相等：平台优惠券可能导致买家退款额小于商家销售实收，ERP 退货价格也可能按历史销售价计算。因此闭环以“运单号 + 型号 + 颜色 + 数量 + 客户累计应收归零”为准。找不到退货单时继续等待；退货单仍在“退货暂存列表”时显示“暂存待认领”；已经开到客户名下但累计应收未归零、或明细不一致时均保留待匹配，不会误判完成。
+
+指定历史订单进行真实 ERP 只读预演，不会更新本地状态：
+
+```powershell
+.\.venv\Scripts\aftersales-sync-erp-returns.exe --platform-order-sn 260823-686827845971918
+```
+
+历史订单预演确认闭环后，可补记本地工作台状态；程序会再次要求平台退款已完成且 ERP 核对结果为闭环，并取消同一售后遗留的待发送拦截、待退款或人工待办，避免历史动作再次执行：
+
+```powershell
+.\.venv\Scripts\aftersales-sync-erp-returns.exe --platform-order-sn 260823-686827845971918 --apply
+```
+
+预览当前所有待匹配任务：
+
+```powershell
+.\.venv\Scripts\aftersales-sync-erp-returns.exe --force --limit 20
+```
+
+确认结果后，单次写回本地工作台状态：
+
+```powershell
+.\.venv\Scripts\aftersales-sync-erp-returns.exe --force --limit 20 --apply
+```
+
+持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。后台运行器仍每 60 秒执行一个周期，但会读取任务中的上次核对时间，同一待匹配售后默认每 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（30 分钟）才访问一次 ERP；服务器不可用时任务保持待匹配，下个间隔自动重试。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待下次周期，也可先用上述 `--force` 命令只读复查。
+
 ## 模块 3：未发货退款与锁包
 
 模块 3 处理的是“拼多多已经极速退款后，ERP 如何停止履约并完成平账”，不再尝试调用 `pdd.refund.agree`。它只扫描 `PENDING_CHECK`、售后类型为 `ONLY_REFUND`、平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED`，并且平台退款状态已经明确成功的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此仍须检查 ERP：

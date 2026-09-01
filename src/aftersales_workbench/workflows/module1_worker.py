@@ -8,6 +8,10 @@ from typing import Any
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AutomationActionType
 from aftersales_workbench.db.session import SessionLocal
+from aftersales_workbench.integrations.erp.return_match import (
+    ErpReturnMatchSyncService,
+    build_erp_return_matcher,
+)
 from aftersales_workbench.integrations.erp.sales_owner import (
     ErpSalesOwnerSyncService,
     get_erp_sales_owner_resolver,
@@ -105,6 +109,7 @@ class Module1WorkerCycleResult:
     notification_preflight: WorkerStageResult | None = None
     notification: WorkerStageResult | None = None
     logistics_gate: WorkerStageResult | None = None
+    erp_return_matches: WorkerStageResult | None = None
     erp_todo_tasks: WorkerStageResult | None = None
     erp_todo_publish: WorkerStageResult | None = None
     pdd_refund: WorkerStageResult | None = None
@@ -164,6 +169,20 @@ class Module1WorkerCycleResult:
             "logistics_gate": self._stage_counts(
                 self.logistics_gate,
                 ("scanned", "allowed_refunds", "blocked_delivery", "failed"),
+            ),
+            "erp_return_matches": self._stage_counts(
+                self.erp_return_matches,
+                (
+                    "scanned",
+                    "closed_loop",
+                    "staged",
+                    "receivable_open",
+                    "item_mismatch",
+                    "not_found",
+                    "customer_conflict",
+                    "unavailable",
+                    "skipped_recent",
+                ),
             ),
             "erp_todo_tasks": self._stage_counts(
                 self.erp_todo_tasks,
@@ -229,6 +248,7 @@ class Module1WorkerRuntime:
         )
         result.notification = self._capture(self._process_notifications)
         result.logistics_gate = self._capture(self._process_logistics_gate)
+        result.erp_return_matches = self._capture(self._sync_erp_return_matches)
         result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
         result.erp_todo_publish = self._capture(self._process_erp_todos)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
@@ -239,6 +259,7 @@ class Module1WorkerRuntime:
             result.notification_preflight,
             result.notification,
             result.logistics_gate,
+            result.erp_return_matches,
             result.erp_todo_tasks,
             result.erp_todo_publish,
             result.pdd_refund,
@@ -502,6 +523,39 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"拼多多退款执行失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _sync_erp_return_matches(self) -> WorkerStageResult:
+        if not self.settings.erp_return_match_sync_enabled:
+            return WorkerStageResult.skipped(
+                "ERP 退货闭环匹配未启用",
+                scanned=0,
+                closed_loop=0,
+                staged=0,
+                receivable_open=0,
+                item_mismatch=0,
+                not_found=0,
+                customer_conflict=0,
+                unavailable=0,
+                skipped_recent=0,
+            )
+        matcher = build_erp_return_matcher(self.settings)
+        try:
+            with SessionLocal() as session:
+                run = ErpReturnMatchSyncService(session, matcher).run(
+                    limit=self.settings.erp_return_match_batch_size,
+                    refresh_seconds=self.settings.erp_return_match_refresh_seconds,
+                    dry_run=False,
+                )
+        finally:
+            matcher.close()
+        details = run.safe_dict()
+        if run.unavailable:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"ERP 退货闭环查询失败 {run.unavailable} 笔",
             )
         return WorkerStageResult.completed(details)
 

@@ -35,6 +35,7 @@ aftersales-confirm-action = "aftersales_workbench.workflows.action_cli:confirm_m
 aftersales-confirm-intercept = "aftersales_workbench.workflows.action_cli:intercept_main"
 aftersales-check-intercept-logistics = "aftersales_workbench.workflows.module1_logistics_cli:main"
 aftersales-sync-sales-owners = "aftersales_workbench.integrations.erp.sales_owner_cli:main"
+aftersales-sync-erp-returns = "aftersales_workbench.integrations.erp.return_match_cli:main"
 
 [project.optional-dependencies]
 dev = [

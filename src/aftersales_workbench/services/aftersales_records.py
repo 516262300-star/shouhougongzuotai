@@ -35,7 +35,7 @@ WORKFLOW_LABELS = {
     "INTERCEPT_CONFIRMED": "已拦截待退款",
     "INTERCEPT_WAITING_RETURN": "已签收转人工",
     "INTERCEPT_REFUNDED_WAITING_RETURN": "已退款待退回",
-    "INTERCEPT_SUCCESS": "拦截成功",
+    "INTERCEPT_SUCCESS": "售后已闭环",
     "INTERCEPT_FAILED": "拦截失败",
     "RETURN_WAITING_ERP_MATCH": "待匹配 ERP 退货单",
     "RETURN_WAITING_SCAN": "待仓库扫码",
@@ -86,6 +86,7 @@ CARRIER_LABELS = {
 
 COMPLETED_WORKFLOWS = {
     "UNSHIPPED_AUTO_REFUNDED",
+    "INTERCEPT_SUCCESS",
     "RETURN_INSPECTED_PASS",
     "SCRAPPED_REFUNDED",
 }
@@ -666,6 +667,17 @@ class AftersalesRecordService:
     def _erp_match_display(task: AftersalesActionTask | None) -> str:
         if task is None:
             return "—"
+        match_status = str((task.payload or {}).get("erp_match_status") or "")
+        if match_status:
+            return {
+                "closed_loop": "已匹配·应收归零",
+                "staged": "暂存待认领",
+                "receivable_open": "已开退货单·待平账",
+                "item_mismatch": "退货明细不一致",
+                "not_found": "待仓库开退货单",
+                "customer_conflict": "客户档案待核对",
+                "unavailable": "ERP 查询失败",
+            }.get(match_status, match_status)
         return ACTION_STATUS_LABELS.get(
             _enum_value(task.action_status),
             _enum_value(task.action_status),
