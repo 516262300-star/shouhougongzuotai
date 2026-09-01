@@ -5,6 +5,7 @@ from aftersales_workbench.workflows.module1_manual_todo import (
     ManualTodoEnqueueResult,
     Module1ManualTodoCandidate,
     Module1ManualTodoService,
+    SqlAlchemyModule1ManualTodoRepository,
 )
 
 
@@ -121,3 +122,32 @@ def test_manual_todo_service_never_assigns_conflicting_owner() -> None:
 
     assert result.skipped_missing_owner == 1
     assert repository.enqueued == []
+
+
+class _EmptyRows:
+    def all(self):
+        return []
+
+
+class _CaptureSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_manual_todo_repository_requires_full_refund() -> None:
+    session = _CaptureSession()
+
+    SqlAlchemyModule1ManualTodoRepository(session).list_candidates(
+        shop_codes=None,
+        limit=100,
+    )
+
+    assert session.statement is not None
+    assert (
+        "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
+        in str(session.statement)
+    )

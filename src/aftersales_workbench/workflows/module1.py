@@ -77,6 +77,9 @@ class SqlAlchemyModule1Repository:
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                AfterSalesOrder.platform_order_amount.is_not(None),
+                AfterSalesOrder.refund_amount
+                == AfterSalesOrder.platform_order_amount,
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 ~notice_already_queued,

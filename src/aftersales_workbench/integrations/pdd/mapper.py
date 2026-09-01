@@ -23,6 +23,7 @@ class NormalizedRefund:
     platform_order_sn: str
     after_sales_type: AfterSalesType
     refund_amount: Decimal
+    platform_order_amount: Decimal | None
     buyer_reason_raw: str | None
     buyer_memo: str | None
     forward_tracking_number: str | None
@@ -74,6 +75,30 @@ def _refund_amount(detail: dict[str, Any], list_record: dict[str, Any]) -> Decim
         return Decimal(str(list_record["refund_amount"])).quantize(Decimal("0.01"))
     except (KeyError, InvalidOperation) as exc:
         raise PddDataMappingError("缺少有效 refund_amount") from exc
+
+
+def platform_order_amount(
+    detail: dict[str, Any],
+    order: dict[str, Any],
+) -> Decimal | None:
+    """返回优惠后的应退基准金额；详情按分，订单接口按元。"""
+    detail_value = detail.get("order_amount")
+    if detail_value is not None and str(detail_value).strip() != "":
+        try:
+            amount = Decimal(str(detail_value)) / Decimal("100")
+        except InvalidOperation as exc:
+            raise PddDataMappingError("order_amount 不是有效金额") from exc
+        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    order_value = order.get("pay_amount")
+    if order_value is None or str(order_value).strip() == "":
+        return None
+    try:
+        return Decimal(str(order_value)).quantize(
+            Decimal("0.01"), rounding=ROUND_HALF_UP
+        )
+    except InvalidOperation as exc:
+        raise PddDataMappingError("pay_amount 不是有效金额") from exc
 
 
 def _after_sales_type(list_value: Any, detail_value: Any) -> AfterSalesType:
@@ -150,6 +175,7 @@ def normalize_refund(
             list_record.get("after_sales_type"), detail.get("after_sales_type")
         ),
         refund_amount=_refund_amount(detail, list_record),
+        platform_order_amount=platform_order_amount(detail, order),
         buyer_reason_raw=_nonempty(
             detail.get("after_sales_reason") or list_record.get("after_sale_reason")
         ),

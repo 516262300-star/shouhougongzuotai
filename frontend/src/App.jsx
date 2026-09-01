@@ -61,12 +61,14 @@ const formatDateTime = (value, includeYear = false) => {
   return new Intl.DateTimeFormat("zh-CN", options).format(date).replaceAll("/", "-");
 };
 
-const formatCurrency = (value) =>
-  new Intl.NumberFormat("zh-CN", {
+const formatCurrency = (value) => {
+  if (value === null || value === undefined) return "—";
+  return new Intl.NumberFormat("zh-CN", {
     style: "currency",
     currency: "CNY",
     minimumFractionDigits: 2,
-  }).format(value ?? 0);
+  }).format(value);
+};
 
 function IconButton({ label, children, onClick, className = "" }) {
   return (
@@ -239,7 +241,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
       <table className="orders-table">
         <thead>
           <tr>
-            <th>店铺</th><th>售后单号</th><th>平台订单号</th><th>归属业务员</th><th>类型</th><th>退款金额</th><th>发货运单</th>
+            <th>店铺</th><th>售后单号</th><th>平台订单号</th><th>归属业务员</th><th>类型</th><th>退款金额</th><th>退款范围</th><th>发货运单</th>
             <th>物流状态</th><th>拦截状态</th><th>平台退款</th><th>最近更新</th><th>操作</th>
           </tr>
         </thead>
@@ -256,6 +258,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
               <td title={item.erp_customer_name}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td>{item.after_sales_type_label}</td>
               <td>{formatCurrency(item.refund_amount)}</td>
+              <td title={`优惠后实付 ${formatCurrency(item.platform_order_amount)}`}><StatusTag tone={item.refund_scope === "全额退款" ? "success" : item.refund_scope === "部分退款/补偿" ? "warning" : "neutral"}>{item.refund_scope}</StatusTag></td>
               <td title={`${item.carrier_name} ${item.tracking_number}`}><span className="truncate tracking-cell">{item.tracking_number}</span></td>
               <td><StatusTag tone={item.logistics_tone}>{item.logistics_label}</StatusTag></td>
               <td><StatusTag tone={item.intercept_tone}>{item.intercept_label}</StatusTag></td>
@@ -525,6 +528,8 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="申请时间" value={formatDateTime(detail.created_at, true)} />
               <DetailRow label="售后类型" value={detail.after_sales_type} />
               <DetailRow label="退款金额" value={formatCurrency(detail.refund_amount)} />
+              <DetailRow label="优惠后实付" value={formatCurrency(detail.platform_order_amount)} />
+              <DetailRow label="退款范围" value={detail.refund_scope} />
               <DetailRow label="商品名称" value={detail.product_name} />
               <DetailRow label="买家昵称" value={detail.buyer_name} />
             </dl>
@@ -646,10 +651,10 @@ export function App() {
   };
 
   const exportRows = () => {
-    const rows = [["店铺", "售后单号", "平台订单号", "归属业务员", "ERP客户", "类型", "退款金额", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
+    const rows = [["店铺", "售后单号", "平台订单号", "归属业务员", "ERP客户", "类型", "退款金额", "优惠后实付", "退款范围", "发货运单", "物流状态", "拦截状态", "平台退款", "最近更新"]];
     data.items.forEach((item) => rows.push([
       item.shop_name, item.after_sales_sn, item.platform_order_sn, item.sales_owner, item.erp_customer_name,
-      item.after_sales_type_label, item.refund_amount,
+      item.after_sales_type_label, item.refund_amount, item.platform_order_amount, item.refund_scope,
       item.tracking_number, item.logistics_label, item.intercept_label, item.platform_refund_label,
       formatDateTime(item.updated_at, true),
     ]));

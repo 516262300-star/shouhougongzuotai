@@ -49,6 +49,7 @@ class ShippingStatus(StrEnum):
 
 class WorkflowStatus(StrEnum):
     PENDING_CHECK = "PENDING_CHECK"
+    PARTIAL_REFUND_EXCLUDED = "PARTIAL_REFUND_EXCLUDED"
     UNSHIPPED_AUTO_REFUNDED = "UNSHIPPED_AUTO_REFUNDED"
     PACKING_LOCKED = "PACKING_LOCKED"
     INTERCEPT_PUSHED = "INTERCEPT_PUSHED"
@@ -136,6 +137,7 @@ class AfterSalesOrder(Base):
         ENUM(*[item.value for item in AfterSalesType]), nullable=False
     )
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    platform_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     buyer_reason_raw: Mapped[str | None] = mapped_column(String(255))
     reason_category: Mapped[str | None] = mapped_column(String(50))
     buyer_memo: Mapped[str | None] = mapped_column(Text)

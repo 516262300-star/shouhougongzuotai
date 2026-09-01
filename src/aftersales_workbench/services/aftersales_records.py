@@ -28,6 +28,7 @@ from aftersales_workbench.integrations.erp.sales_owner import (
 
 WORKFLOW_LABELS = {
     "PENDING_CHECK": "待系统判定",
+    "PARTIAL_REFUND_EXCLUDED": "部分退款已排除拦截",
     "UNSHIPPED_AUTO_REFUNDED": "未发货已平账",
     "PACKING_LOCKED": "已锁包待处理",
     "INTERCEPT_PUSHED": "拦截指令已发送",
@@ -139,6 +140,8 @@ def _tone_for_logistics(state: str) -> str:
 
 
 def _tone_for_workflow(status: str) -> str:
+    if status == "PARTIAL_REFUND_EXCLUDED":
+        return "success"
     if status in COMPLETED_WORKFLOWS | {"INTERCEPT_SUCCESS"}:
         return "success"
     if status in MANUAL_WORKFLOWS:
@@ -377,6 +380,12 @@ class AftersalesRecordService:
             "created_at": _dt(order.created_at),
             "after_sales_type": self._type_label(_enum_value(order.after_sales_type)),
             "refund_amount": _money(order.refund_amount),
+            "platform_order_amount": (
+                _money(order.platform_order_amount)
+                if order.platform_order_amount is not None
+                else None
+            ),
+            "refund_scope": self._refund_scope(order),
             "product_name": product_name,
             "buyer_name": "平台未返回",
             "buyer_reason": order.buyer_reason_raw or "—",
@@ -454,6 +463,12 @@ class AftersalesRecordService:
             "after_sales_type": _enum_value(order.after_sales_type),
             "after_sales_type_label": self._type_label(_enum_value(order.after_sales_type)),
             "refund_amount": _money(order.refund_amount),
+            "platform_order_amount": (
+                _money(order.platform_order_amount)
+                if order.platform_order_amount is not None
+                else None
+            ),
+            "refund_scope": self._refund_scope(order),
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
             "logistics_state": logistics,
@@ -979,6 +994,8 @@ class AftersalesRecordService:
 
     @staticmethod
     def _decision_note(workflow: str, logistics: str) -> str:
+        if workflow == "PARTIAL_REFUND_EXCLUDED":
+            return "申请金额低于优惠后实付金额，按部分退款或补偿款排除在途拦截。"
         if workflow == "INTERCEPT_WAITING_RETURN":
             return "快递已进入派件或签收节点，自动退款已冻结，检测到退回轨迹后再执行。"
         if workflow == "INTERCEPT_REFUNDED_WAITING_RETURN":
@@ -986,3 +1003,13 @@ class AftersalesRecordService:
         if logistics == "IN_TRANSIT":
             return "物流仍在运输中，符合极速拦截条件。"
         return "系统将根据售后状态和物流轨迹继续推进。"
+
+    @staticmethod
+    def _refund_scope(order: AfterSalesOrder) -> str:
+        if order.platform_order_amount is None:
+            return "待核实"
+        if order.refund_amount == order.platform_order_amount:
+            return "全额退款"
+        if 0 < order.refund_amount < order.platform_order_amount:
+            return "部分退款/补偿"
+        return "金额异常"

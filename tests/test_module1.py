@@ -87,3 +87,7 @@ def test_module1_repository_only_selects_only_refund() -> None:
     assert session.statement is not None
     assert AfterSalesType.ONLY_REFUND in session.statement.compile().params.values()
     assert AfterSalesType.RETURN_AND_REFUND not in session.statement.compile().params.values()
+    assert (
+        "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
+        in str(session.statement)
+    )

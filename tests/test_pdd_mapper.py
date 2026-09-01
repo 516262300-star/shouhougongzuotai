@@ -28,6 +28,7 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
         "order_sn": "order-1",
         "after_sales_type": 2,
         "refund_amount": 27857,
+        "order_amount": 27857,
         "goods_number": 22,
         "out_sku_sn": "sku-1",
         "after_sales_reason": "reason-detail",
@@ -48,6 +49,7 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     assert result.after_sales_sn == "123"
     assert result.after_sales_type is AfterSalesType.RETURN_AND_REFUND
     assert result.refund_amount == Decimal("278.57")
+    assert result.platform_order_amount == Decimal("278.57")
     assert result.order_shipping_status is ShippingStatus.IN_TRANSIT
     assert result.forward_tracking_number == "forward-no"
     assert result.carrier_code == "384"
@@ -85,6 +87,25 @@ def test_detail_type_is_used_only_when_list_type_is_missing() -> None:
     )
 
     assert result.after_sales_type is AfterSalesType.ONLY_REFUND
+
+
+def test_platform_order_amount_falls_back_to_order_pay_amount() -> None:
+    result = normalize_refund(
+        {
+            "id": 1,
+            "order_sn": "order",
+            "refund_amount": "1.00",
+            "goods_number": 1,
+        },
+        {
+            "after_sales_type": 1,
+            "refund_amount": 100,
+            "out_sku_sn": "sku",
+        },
+        {"order_status": 1, "pay_amount": 2.48},
+    )
+
+    assert result.platform_order_amount == Decimal("2.48")
 
 
 def test_unwrap_order_information_requires_nested_order() -> None:

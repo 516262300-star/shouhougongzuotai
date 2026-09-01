@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.pdd.mapper import NormalizedRefund
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
+from aftersales_workbench.services.refund_scope import reconcile_refund_scope
 
 
 def _utcnow_naive() -> datetime:
@@ -76,6 +77,7 @@ class SqlAlchemyPddSyncRepository:
                 after_sales_sn=refund.after_sales_sn,
                 after_sales_type=refund.after_sales_type,
                 refund_amount=refund.refund_amount,
+                platform_order_amount=refund.platform_order_amount,
                 order_shipping_status=refund.order_shipping_status,
                 workflow_status=WorkflowStatus.PENDING_CHECK,
             )
@@ -85,6 +87,7 @@ class SqlAlchemyPddSyncRepository:
             order.platform_order_sn = refund.platform_order_sn
             order.after_sales_type = refund.after_sales_type
             order.refund_amount = refund.refund_amount
+            order.platform_order_amount = refund.platform_order_amount
             order.order_shipping_status = refund.order_shipping_status
 
         order.buyer_reason_raw = refund.buyer_reason_raw
@@ -95,6 +98,7 @@ class SqlAlchemyPddSyncRepository:
         order.platform_after_sales_status = refund.platform_after_sales_status
         order.platform_order_refund_status = refund.platform_order_refund_status
         order.is_speed_refund = int(refund.is_speed_refund)
+        reconcile_refund_scope(self.session, order)
 
         item = self.session.execute(
             select(AfterSalesItem).where(

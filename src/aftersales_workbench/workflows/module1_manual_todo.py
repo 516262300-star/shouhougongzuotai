@@ -162,6 +162,9 @@ class SqlAlchemyModule1ManualTodoRepository:
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                AfterSalesOrder.platform_order_amount.is_not(None),
+                AfterSalesOrder.refund_amount
+                == AfterSalesOrder.platform_order_amount,
                 AfterSalesOrder.order_shipping_status.in_(
                     (ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED)
                 ),
