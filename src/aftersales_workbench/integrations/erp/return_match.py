@@ -103,6 +103,7 @@ class ErpReturnMatchSyncResult:
     tasks_requeued: int = 0
     scanned: int = 0
     closed_loop: int = 0
+    combined_closed_loop: int = 0
     staged: int = 0
     receivable_open: int = 0
     item_mismatch: int = 0
@@ -485,7 +486,10 @@ class ErpReturnMatchSyncService:
                 == AutomationActionType.ERP_MATCH_RETURN_ORDER,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
             )
-            .order_by(AftersalesActionTask.id)
+            .order_by(
+                AfterSalesOrder.forward_tracking_number,
+                AftersalesActionTask.id,
+            )
             .limit(max(100, limit * 10))
         ).all()
         result = ErpReturnMatchSyncResult(
@@ -493,21 +497,54 @@ class ErpReturnMatchSyncService:
             tasks_created=tasks_created,
             tasks_requeued=tasks_requeued,
         )
+        expectation_cache: dict[
+            str,
+            tuple[tuple[ExpectedReturnItem, ...], tuple[str, ...]],
+        ] = {}
+        due_tracking_numbers = {
+            str(order.forward_tracking_number or "").strip()
+            for task, order in rows
+            if self._due(task.payload or {}, now, refresh_seconds)
+        }
+        processed_tracking_numbers: set[str] = set()
         for task, order in rows:
-            if result.scanned >= limit:
+            tracking_number = str(order.forward_tracking_number or "").strip()
+            if (
+                result.scanned >= limit
+                and tracking_number not in processed_tracking_numbers
+            ):
                 break
-            if not self._due(task.payload or {}, now, refresh_seconds):
+            if tracking_number not in due_tracking_numbers:
                 result.skipped_recent += 1
                 continue
+            processed_tracking_numbers.add(tracking_number)
+            expected_items, grouped_after_sales_sns = self._tracking_expectations(
+                order,
+                expectation_cache,
+            )
             lookup = self.matcher.lookup(
                 platform_order_sn=order.platform_order_sn,
                 tracking_number=order.forward_tracking_number or "",
-                expected_items=expected_items_from_order(order),
+                expected_items=expected_items,
             )
             result.scanned += 1
             setattr(result, lookup.status.value, getattr(result, lookup.status.value) + 1)
+            combined_match = (
+                lookup.status is ErpReturnMatchStatus.CLOSED_LOOP
+                and len(grouped_after_sales_sns) > 1
+            )
+            if combined_match:
+                result.combined_closed_loop += 1
             if not dry_run:
                 self.apply_lookup(task, order, lookup, now)
+                if combined_match:
+                    task.payload = {
+                        **(task.payload or {}),
+                        "erp_match_mode": "combined_tracking_orders",
+                        "erp_match_group_after_sales_sns": list(
+                            grouped_after_sales_sns
+                        ),
+                    }
                 if lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
                     self._cancel_obsolete_actions(order.after_sales_sn)
         if not dry_run:
@@ -590,6 +627,67 @@ class ErpReturnMatchSyncService:
                 task.payload = {**(task.payload or {}), **payload}
                 task.last_error = None
         return created, requeued
+
+    def _tracking_expectations(
+        self,
+        order: AfterSalesOrder,
+        cache: dict[
+            str,
+            tuple[tuple[ExpectedReturnItem, ...], tuple[str, ...]],
+        ],
+    ) -> tuple[tuple[ExpectedReturnItem, ...], tuple[str, ...]]:
+        tracking_number = str(order.forward_tracking_number or "").strip()
+        cached = cache.get(tracking_number)
+        if cached is not None:
+            return cached
+        grouped_orders = self.session.scalars(
+            select(AfterSalesOrder)
+            .options(selectinload(AfterSalesOrder.items))
+            .where(
+                AfterSalesOrder.forward_tracking_number == tracking_number,
+                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                or_(
+                    AfterSalesOrder.platform_after_sales_status == 10,
+                    AfterSalesOrder.platform_order_refund_status == 4,
+                ),
+                AfterSalesOrder.workflow_status.in_(
+                    (
+                        WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,
+                        WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                    )
+                ),
+            )
+            .order_by(AfterSalesOrder.id)
+        ).all()
+        if not grouped_orders:
+            grouped_orders = [order]
+
+        customer_names = tuple(
+            str(item.erp_customer_name or "").strip() for item in grouped_orders
+        )
+        if (
+            any(not customer_name for customer_name in customer_names)
+            or len(set(customer_names)) != 1
+            or any(not item.items for item in grouped_orders)
+        ):
+            result = (
+                expected_items_from_order(order),
+                (order.after_sales_sn,),
+            )
+            cache[tracking_number] = result
+            return result
+
+        expected_items = tuple(
+            expected_item
+            for grouped_order in grouped_orders
+            for expected_item in expected_items_from_order(grouped_order)
+        )
+        after_sales_sns = tuple(
+            grouped_order.after_sales_sn for grouped_order in grouped_orders
+        )
+        result = (expected_items, after_sales_sns)
+        cache[tracking_number] = result
+        return result
 
     def apply_verified_order(
         self,

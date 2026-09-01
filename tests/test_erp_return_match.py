@@ -149,6 +149,22 @@ def test_web_matcher_blocks_item_mismatch() -> None:
     assert result.status is ErpReturnMatchStatus.ITEM_MISMATCH
 
 
+def test_web_matcher_blocks_quantity_subset_match() -> None:
+    matcher = _matcher(
+        shipment_body=RETURN_ROW.replace("<td>-1</td>", "<td>-3</td>")
+    )
+    try:
+        result = matcher.lookup(
+            platform_order_sn="260823-1",
+            tracking_number="JT123",
+            expected_items=_expected(),
+        )
+    finally:
+        matcher.close()
+
+    assert result.status is ErpReturnMatchStatus.ITEM_MISMATCH
+
+
 def test_closed_lookup_marks_task_succeeded_and_order_completed() -> None:
     task = SimpleNamespace(
         payload={"origin": "module1"},
@@ -283,3 +299,108 @@ def test_waiting_refunded_order_dry_run_does_not_create_task() -> None:
     assert created == 1
     assert requeued == 0
     assert session.added == []
+
+
+def test_tracking_expectations_combine_refunded_orders_with_same_tracking() -> None:
+    item_one = SimpleNamespace(
+        sku_code="2711-单孔#玫瑰金",
+        color=None,
+        applied_quantity=2,
+    )
+    item_two = SimpleNamespace(
+        sku_code="2718-单孔#铜拉丝",
+        color=None,
+        applied_quantity=1,
+    )
+    first = SimpleNamespace(
+        after_sales_sn="AS-1",
+        forward_tracking_number="JT123",
+        erp_customer_name="p3-客户",
+        items=[item_one],
+    )
+    second = SimpleNamespace(
+        after_sales_sn="AS-2",
+        forward_tracking_number="JT123",
+        erp_customer_name="p3-客户",
+        items=[item_two],
+    )
+
+    class FakeScalars:
+        @staticmethod
+        def all() -> list[SimpleNamespace]:
+            return [first, second]
+
+    class FakeSession:
+        @staticmethod
+        def scalars(_statement: object) -> FakeScalars:
+            return FakeScalars()
+
+    matcher = _matcher(
+        shipment_body=(
+            RETURN_ROW.replace("6050-单孔", "2711-单孔")
+            .replace("哑镍拉丝", "玫瑰金")
+            .replace("<td>-1</td>", "<td>-2</td>")
+            + RETURN_ROW.replace("6050-单孔", "2718-单孔").replace(
+                "哑镍拉丝", "铜拉丝"
+            )
+        )
+    )
+    service = ErpReturnMatchSyncService(  # type: ignore[arg-type]
+        FakeSession(),
+        matcher,
+    )
+    try:
+        expected, grouped_sns = service._tracking_expectations(first, {})
+        result = matcher.lookup(
+            platform_order_sn="260826-1",
+            tracking_number="JT123",
+            expected_items=expected,
+        )
+    finally:
+        matcher.close()
+
+    assert grouped_sns == ("AS-1", "AS-2")
+    assert result.status is ErpReturnMatchStatus.CLOSED_LOOP
+
+
+def test_tracking_expectations_fall_back_when_customers_conflict() -> None:
+    item = SimpleNamespace(
+        sku_code="2711-单孔#玫瑰金",
+        color=None,
+        applied_quantity=2,
+    )
+    first = SimpleNamespace(
+        after_sales_sn="AS-1",
+        forward_tracking_number="JT123",
+        erp_customer_name="p3-客户甲",
+        items=[item],
+    )
+    second = SimpleNamespace(
+        after_sales_sn="AS-2",
+        forward_tracking_number="JT123",
+        erp_customer_name="p3-客户乙",
+        items=[item],
+    )
+
+    class FakeScalars:
+        @staticmethod
+        def all() -> list[SimpleNamespace]:
+            return [first, second]
+
+    class FakeSession:
+        @staticmethod
+        def scalars(_statement: object) -> FakeScalars:
+            return FakeScalars()
+
+    matcher = _matcher()
+    service = ErpReturnMatchSyncService(  # type: ignore[arg-type]
+        FakeSession(),
+        matcher,
+    )
+    try:
+        expected, grouped_sns = service._tracking_expectations(first, {})
+    finally:
+        matcher.close()
+
+    assert grouped_sns == ("AS-1",)
+    assert len(expected) == 1
