@@ -87,13 +87,15 @@ alembic downgrade -1
 | `MODULE1_WORKER_INTERVAL_SECONDS` | 后台运行器每个完整周期结束后的等待秒数 | `60` |
 | `MODULE1_WORKER_MAX_SYNC_WINDOWS` | 每店每周期最多处理的 30 分钟同步窗口数 | `2` |
 | `MODULE1_WORKER_TASK_LIMIT` | 每周期最多准备、发送或退款的动作任务数 | `20` |
-| `MODULE1_NOTIFICATION_TRANSPORT` | 拦截通知出口；当前支持 `disabled` / `qywx_webhook` | `disabled` |
+| `MODULE1_NOTIFICATION_TRANSPORT` | 拦截通知出口；支持 `disabled` / `qywx_webhook` / `desktop` | `disabled` |
 | `MODULE1_NOTIFICATION_MIN_TASK_ID` | 自动通知上线水位；仅预检和发送任务 ID 大于等于该值的拦截通知，防止历史积压批量补发 | `0` |
 | `MODULE1_PDD_REFUND_EXECUTION_ENABLED` | 后台运行器的平台退款执行总开关 | `false` |
 | `MODULE1_DESKTOP_GROUP_MAP` | 拼多多物流公司 ID 到企业微信外部群完整精确群名的 JSON 白名单 | `{}` |
 | `MODULE1_DESKTOP_SEND_ENABLED` | 企业微信桌面自动发送总开关；当前保持关闭 | `false` |
 | `MODULE1_DESKTOP_PROCESS_NAME` | 允许接收键盘输入的企业微信进程名 | `WXWork.exe` |
 | `MODULE1_DESKTOP_LEDGER_PATH` | 本机防重与恢复账本；只保存任务 ID、状态和消息哈希 | `.runtime/desktop-notice-ledger.jsonl` |
+| `MODULE1_DESKTOP_LOCK_PATH` | 后台与人工桌面发送共享的跨进程单实例锁 | `.runtime/desktop-notice.lock` |
+| `MODULE1_DESKTOP_BATCH_LIMIT` | 后台每周期最多发送的桌面消息数，首次上线保持 1 | `1` |
 | `KUAIDI100_CUSTOMER` / `KUAIDI100_KEY` | 快递 100 实时查询授权（密钥） | 无 |
 | `KUAIDI100_DEFAULT_PHONE` | 需要手机号校验的快递所用默认手机号 | 无 |
 | `KUAIDI100_CARRIER_MAP` | 拼多多物流公司 ID 到快递 100 公司代码的 JSON 映射 | `{"85":"yuantong","131":"debangwuliu","384":"jtexpress"}` |
@@ -302,7 +304,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-run-module1.exe --forever --shops 1 2 3 4 6 7 --interval-seconds 60
 ```
 
-未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`。桌面发送当前通过独立命令做单笔受控执行，尚未接入后台循环，因此 `MODULE1_NOTIFICATION_TRANSPORT` 继续保持 `disabled`。无论选择哪种发送方式，上线前都应将 `MODULE1_NOTIFICATION_MIN_TASK_ID` 设置为当时“最大拦截通知任务 ID + 1”；后台物流预检、通用通知执行器和桌面预览都会应用同一水位，水位之前的历史任务继续留作查询但不会补发，也不会阻塞新任务。
+未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`。桌面发送已经接入后台循环，但在单笔真实验收前，本机仍保持 `MODULE1_NOTIFICATION_TRANSPORT=disabled` 和 `MODULE1_DESKTOP_SEND_ENABLED=false`。无论选择哪种发送方式，上线前都应将 `MODULE1_NOTIFICATION_MIN_TASK_ID` 设置为当时“最大拦截通知任务 ID + 1”；后台物流预检、通知执行器和桌面预览都会应用同一水位，水位之前的历史任务继续留作查询但不会补发，也不会阻塞新任务。
 
 ### 企业微信桌面发送准备
 
@@ -332,13 +334,13 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --limit 1 --apply
 ```
 
-本机账本按 `PasteStarted`、`SendPressed`、`Sent` 逐步追加并同步落盘，不保存群名、平台订单号、售后单号、运单号或完整消息。`Sent` 可用于本地状态对账，避免已经发出但数据库回写失败时重复发送。失败发生在输入消息之前时写入 `PausedBeforePaste`，人工确认确实没有输入后才可恢复：
+本机账本按 `PasteStarted`、`SendPressed`、`Sent` 逐步追加并同步落盘，不保存群名、平台订单号、售后单号、运单号或完整消息。`Sent` 可用于本地状态对账，避免已经发出但数据库回写失败时重复发送。后台运行器与人工命令还会共同竞争 `MODULE1_DESKTOP_LOCK_PATH` 的非阻塞单实例锁；已有进程控制企业微信时，另一进程立即停止，不排队、不抢焦点。失败发生在输入消息之前时写入 `PausedBeforePaste`，人工确认确实没有输入后才可恢复：
 
 ```powershell
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --resume-before-paste 任务ID --limit 1 --apply
 ```
 
-如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。桌面发送接入每分钟后台循环要等单笔真实验收完成后再开启。
+如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。完成单笔真实验收后，才允许同时设置 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true` 并重启后台运行器；后台每个完整周期只处理 `MODULE1_DESKTOP_BATCH_LIMIT` 条，当前安全默认值为 1。任一桌面任务暂停或结果不明时，本周期立即失败停止发送，后续周期只读取账本并继续失败关闭，不会再次按键。
 
 ## 模块 3：未发货退款与锁包
 

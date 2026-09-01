@@ -27,7 +27,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-sync-windows", type=int, help="每店每周期最多同步窗口数")
     parser.add_argument(
         "--notification-transport",
-        choices=("disabled", "qywx_webhook"),
+        choices=("disabled", "qywx_webhook", "desktop"),
         help="覆盖通知发送出口",
     )
     parser.add_argument(

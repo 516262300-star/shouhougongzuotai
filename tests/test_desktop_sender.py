@@ -17,6 +17,8 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendError,
     DesktopNoticeSendService,
+    DesktopSendLockError,
+    DesktopSendProcessLock,
     desktop_notice_plan_hash,
 )
 
@@ -119,6 +121,7 @@ def test_only_before_paste_pause_can_be_resumed(tmp_path) -> None:
     resumed = ledger.resume_before_paste(61)
 
     assert resumed.state is DesktopLedgerState.READY
+    assert ledger.blocking_entry() is None
     ledger.append(
         task_id=62,
         state=DesktopLedgerState.SEND_PRESSED,
@@ -126,6 +129,7 @@ def test_only_before_paste_pause_can_be_resumed(tmp_path) -> None:
     )
     with pytest.raises(DesktopNoticeSendError, match="禁止恢复"):
         ledger.resume_before_paste(62)
+    assert ledger.blocking_entry().task_id == 62  # type: ignore[union-attr]
 
 
 def test_successful_desktop_send_updates_ledger_and_workflow(tmp_path) -> None:
@@ -178,4 +182,17 @@ def test_after_paste_failure_is_ambiguous_and_never_retried(tmp_path) -> None:
     assert second.paused == 1
     assert gateway.calls == 1
     assert session.task.action_status is AutomationTaskStatus.RUNNING
+    assert "禁止自动重试" in session.task.last_error
     assert ledger.latest(61).state is DesktopLedgerState.PASTE_STARTED  # type: ignore[union-attr]
+
+
+def test_desktop_sender_process_lock_is_non_blocking_and_reusable(tmp_path) -> None:
+    lock_path = tmp_path / "desktop-notice.lock"
+
+    with DesktopSendProcessLock(lock_path):
+        with pytest.raises(DesktopSendLockError, match="另一个进程占用"):
+            with DesktopSendProcessLock(lock_path):
+                pass
+
+    with DesktopSendProcessLock(lock_path):
+        assert lock_path.exists()

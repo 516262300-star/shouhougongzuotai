@@ -145,8 +145,8 @@ def test_worker_blocks_notification_when_preflight_fails() -> None:
         (Module1WorkerOptions(shop_numbers=(1, 1)), "不能重复"),
         (Module1WorkerOptions(shop_numbers=(8,)), "1–7"),
         (
-            Module1WorkerOptions(shop_numbers=(1,), notification_transport="desktop"),
-            "disabled 或 qywx_webhook",
+            Module1WorkerOptions(shop_numbers=(1,), notification_transport="smtp"),
+            "disabled、qywx_webhook 或 desktop",
         ),
     ],
 )
@@ -164,3 +164,30 @@ def test_worker_rejects_shop_without_complete_credentials() -> None:
             Settings(_env_file=None),
             Module1WorkerOptions(shop_numbers=(1,)),
         )
+
+
+class DesktopDispatchRuntime(Module1WorkerRuntime):
+    def __init__(self) -> None:
+        self.desktop_calls = 0
+        super().__init__(
+            _settings(module1_desktop_send_enabled=True),
+            Module1WorkerOptions(
+                shop_numbers=(1,),
+                notification_transport="desktop",
+            ),
+        )
+        self._notification_preflight_completed = True
+
+    def _process_desktop_notifications(self) -> WorkerStageResult:
+        self.desktop_calls += 1
+        return WorkerStageResult.completed({"transport": "desktop", "sent": 0})
+
+
+def test_worker_dispatches_desktop_notification_transport() -> None:
+    runtime = DesktopDispatchRuntime()
+
+    result = runtime._process_notifications()
+
+    assert result.status == "completed"
+    assert result.details["transport"] == "desktop"
+    assert runtime.desktop_calls == 1

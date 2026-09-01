@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from aftersales_workbench.core.config import Settings
@@ -21,6 +22,15 @@ from aftersales_workbench.integrations.pdd.shops import (
 )
 from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService
 from aftersales_workbench.workflows.actions import ExternalActionExecutor
+from aftersales_workbench.workflows.desktop_notice import (
+    DesktopNoticePlanner,
+    DesktopNoticePreviewService,
+)
+from aftersales_workbench.workflows.desktop_sender import (
+    DesktopNoticeLedger,
+    DesktopNoticeSendService,
+    DesktopSendProcessLock,
+)
 from aftersales_workbench.workflows.module1 import (
     Module1InterceptService,
     SqlAlchemyModule1Repository,
@@ -55,8 +65,12 @@ class Module1WorkerOptions:
             raise ValueError("后台运行店铺序号必须在 1–7 之间")
         if self.max_sync_windows < 1 or self.max_sync_windows > 48:
             raise ValueError("max_sync_windows 必须在 1–48 之间")
-        if self.notification_transport not in {"disabled", "qywx_webhook"}:
-            raise ValueError("暂只支持 disabled 或 qywx_webhook 通知出口")
+        if self.notification_transport not in {
+            "disabled",
+            "qywx_webhook",
+            "desktop",
+        }:
+            raise ValueError("只支持 disabled、qywx_webhook 或 desktop 通知出口")
         if self.task_limit < 1 or self.task_limit > 500:
             raise ValueError("task_limit 必须在 1–500 之间")
 
@@ -315,6 +329,8 @@ class Module1WorkerRuntime:
                 succeeded=0,
                 failed=0,
             )
+        if self.options.notification_transport == "desktop":
+            return self._process_desktop_notifications()
         apply = self.options.notification_transport == "qywx_webhook"
         if apply and not self.settings.qywx_write_enabled:
             raise RuntimeError(
@@ -338,6 +354,67 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"通知发送失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _process_desktop_notifications(self) -> WorkerStageResult:
+        if not self.settings.module1_desktop_send_enabled:
+            raise RuntimeError(
+                "通知出口为 desktop，但 MODULE1_DESKTOP_SEND_ENABLED=false"
+            )
+        limit = min(
+            self.options.task_limit,
+            self.settings.module1_desktop_batch_limit,
+        )
+        from aftersales_workbench.workflows.windows_wecom import WindowsWeComGateway
+
+        with DesktopSendProcessLock(Path(self.settings.module1_desktop_lock_path)):
+            ledger = DesktopNoticeLedger(
+                Path(self.settings.module1_desktop_ledger_path)
+            )
+            blocking = ledger.blocking_entry()
+            if blocking is not None:
+                return WorkerStageResult(
+                    status="failed",
+                    details={
+                        "transport": "desktop",
+                        "blocking_task_id": blocking.task_id,
+                        "blocking_state": blocking.state.value,
+                    },
+                    error="桌面发送账本存在未核验任务，禁止继续发送",
+                )
+            with SessionLocal() as session:
+                preview = DesktopNoticePreviewService(
+                    session,
+                    DesktopNoticePlanner(self.settings.module1_desktop_group_map),
+                    notification_min_task_id=(
+                        self.settings.module1_notification_min_task_id
+                    ),
+                ).run(limit=limit)
+                details: dict[str, Any] = {
+                    "transport": "desktop",
+                    "batch_limit": limit,
+                    **preview.safe_dict(),
+                }
+                if preview.blocked_preflight or preview.blocked_missing_group:
+                    return WorkerStageResult(
+                        status="failed",
+                        details=details,
+                        error="桌面通知存在未通过物流预检或未映射快递群的任务",
+                    )
+                run = DesktopNoticeSendService(
+                    session,
+                    WindowsWeComGateway(
+                        process_name=self.settings.module1_desktop_process_name
+                    ),
+                    ledger,
+                ).run(preview.plans)
+        details.update(run.safe_dict())
+        if run.paused or run.error:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=run.error or "桌面通知已暂停",
             )
         return WorkerStageResult.completed(details)
 

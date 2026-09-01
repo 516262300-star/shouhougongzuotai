@@ -26,6 +26,10 @@ class DesktopNoticeSendError(RuntimeError):
     """企业微信桌面发送失败。"""
 
 
+class DesktopSendLockError(DesktopNoticeSendError):
+    """另一个后台或人工发送进程已经占用企业微信。"""
+
+
 class DesktopBeforePasteError(DesktopNoticeSendError):
     """尚未向聊天输入框写入消息，可以人工确认后重试。"""
 
@@ -45,6 +49,10 @@ class DesktopLedgerState(StrEnum):
 AMBIGUOUS_LEDGER_STATES = {
     DesktopLedgerState.PASTE_STARTED,
     DesktopLedgerState.SEND_PRESSED,
+}
+BLOCKING_LEDGER_STATES = {
+    *AMBIGUOUS_LEDGER_STATES,
+    DesktopLedgerState.PAUSED_BEFORE_PASTE,
 }
 
 
@@ -109,6 +117,14 @@ class DesktopNoticeLedger:
             raise DesktopNoticeSendError(f"桌面发送账本损坏，已失败关闭：{exc}") from exc
         return latest
 
+    def blocking_entry(self) -> DesktopLedgerEntry | None:
+        entries = (
+            entry
+            for entry in self.latest_entries().values()
+            if entry.state in BLOCKING_LEDGER_STATES
+        )
+        return min(entries, key=lambda entry: entry.task_id, default=None)
+
     def append(
         self,
         *,
@@ -146,6 +162,58 @@ class DesktopNoticeLedger:
             state=DesktopLedgerState.READY,
             plan_hash=latest.plan_hash,
         )
+
+
+class DesktopSendProcessLock:
+    """跨进程非阻塞锁，防止后台运行器与人工命令同时控制企业微信。"""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self._handle = None
+
+    def __enter__(self) -> DesktopSendProcessLock:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self.path.open("a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+            os.fsync(handle.fileno())
+        handle.seek(0)
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError) as exc:
+            handle.close()
+            raise DesktopSendLockError(
+                "企业微信桌面发送器已被另一个进程占用，本次立即停止"
+            ) from exc
+        self._handle = handle
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
 
 
 class DesktopSendHooks(Protocol):
@@ -275,6 +343,8 @@ class DesktopNoticeSendService:
                         plan_hash=plan_hash,
                         error=str(exc),
                     )
+                elif latest.state in AMBIGUOUS_LEDGER_STATES:
+                    self._record_ambiguous_failure(plan.task_id, str(exc))
                 result.paused += 1
                 result.error = str(exc)
                 break
@@ -328,3 +398,14 @@ class DesktopNoticeSendService:
             )
         self._complete(task_id)
         return True
+
+    def _record_ambiguous_failure(self, task_id: int, error: str) -> None:
+        task = self.session.get(AftersalesActionTask, task_id)
+        if task is None:
+            return
+        if AutomationTaskStatus(task.action_status) is AutomationTaskStatus.RUNNING:
+            task.last_error = (
+                "企业微信桌面发送结果不明，禁止自动重试，需人工核对："
+                f"{error}"
+            )[:2000]
+            self.session.commit()

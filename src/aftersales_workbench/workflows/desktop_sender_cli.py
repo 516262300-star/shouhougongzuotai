@@ -15,6 +15,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendError,
     DesktopNoticeSendService,
+    DesktopSendProcessLock,
 )
 
 
@@ -38,23 +39,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     settings = get_settings()
     ledger = DesktopNoticeLedger(Path(settings.module1_desktop_ledger_path))
-
-    if args.resume_before_paste is not None:
-        if not args.apply or not settings.module1_desktop_send_enabled:
-            parser.error("人工恢复需要 --apply 且 MODULE1_DESKTOP_SEND_ENABLED=true")
-        try:
-            ledger.resume_before_paste(args.resume_before_paste)
-        except DesktopNoticeSendError as exc:
-            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
-            return 2
-
-    with SessionLocal() as session:
-        preview = DesktopNoticePreviewService(
-            session,
-            DesktopNoticePlanner(settings.module1_desktop_group_map),
-            notification_min_task_id=settings.module1_notification_min_task_id,
-        ).run(limit=args.limit)
-        if not args.apply:
+    if not args.apply:
+        if args.resume_before_paste is not None:
+            parser.error("人工恢复必须同时提供 --apply")
+        with SessionLocal() as session:
+            preview = DesktopNoticePreviewService(
+                session,
+                DesktopNoticePlanner(settings.module1_desktop_group_map),
+                notification_min_task_id=settings.module1_notification_min_task_id,
+            ).run(limit=args.limit)
             print(json.dumps(preview.safe_dict(), ensure_ascii=False, indent=2))
             return (
                 0
@@ -62,30 +55,54 @@ def main(argv: list[str] | None = None) -> int:
                 and preview.blocked_missing_group == 0
                 else 1
             )
-        if not settings.module1_desktop_send_enabled:
-            parser.error("MODULE1_DESKTOP_SEND_ENABLED=false，禁止真实桌面发送")
-        if preview.blocked_preflight or preview.blocked_missing_group:
-            print(
-                json.dumps(
-                    {
-                        "ok": False,
-                        "error": "存在未通过物流预检或未映射快递群的任务，已失败关闭",
-                        **preview.safe_dict(),
-                    },
-                    ensure_ascii=False,
-                    indent=2,
+    if not settings.module1_desktop_send_enabled:
+        parser.error("MODULE1_DESKTOP_SEND_ENABLED=false，禁止真实桌面发送")
+
+    try:
+        with DesktopSendProcessLock(Path(settings.module1_desktop_lock_path)):
+            if args.resume_before_paste is not None:
+                ledger.resume_before_paste(args.resume_before_paste)
+            blocking = ledger.blocking_entry()
+            if blocking is not None:
+                raise DesktopNoticeSendError(
+                    f"任务 {blocking.task_id} 停在 {blocking.state.value}，"
+                    "必须先人工核验，禁止继续发送"
                 )
-            )
-            return 1
+            with SessionLocal() as session:
+                preview = DesktopNoticePreviewService(
+                    session,
+                    DesktopNoticePlanner(settings.module1_desktop_group_map),
+                    notification_min_task_id=(
+                        settings.module1_notification_min_task_id
+                    ),
+                ).run(limit=args.limit)
+                if preview.blocked_preflight or preview.blocked_missing_group:
+                    print(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "存在未通过物流预检或未映射快递群的任务，已失败关闭",
+                                **preview.safe_dict(),
+                            },
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                    return 1
 
-        from aftersales_workbench.workflows.windows_wecom import WindowsWeComGateway
+                from aftersales_workbench.workflows.windows_wecom import (
+                    WindowsWeComGateway,
+                )
 
-        result = DesktopNoticeSendService(
-            session,
-            WindowsWeComGateway(
-                process_name=settings.module1_desktop_process_name
-            ),
-            ledger,
-        ).run(preview.plans)
+                result = DesktopNoticeSendService(
+                    session,
+                    WindowsWeComGateway(
+                        process_name=settings.module1_desktop_process_name
+                    ),
+                    ledger,
+                ).run(preview.plans)
+    except DesktopNoticeSendError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
     print(json.dumps(result.safe_dict(), ensure_ascii=False, indent=2))
     return 0 if result.paused == 0 and result.error is None else 1

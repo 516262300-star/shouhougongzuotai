@@ -62,13 +62,17 @@ class Settings(BaseSettings):
     module1_worker_interval_seconds: int = Field(default=60, ge=10, le=3600)
     module1_worker_max_sync_windows: int = Field(default=2, ge=1, le=48)
     module1_worker_task_limit: int = Field(default=20, ge=1, le=500)
-    module1_notification_transport: Literal["disabled", "qywx_webhook"] = "disabled"
+    module1_notification_transport: Literal[
+        "disabled", "qywx_webhook", "desktop"
+    ] = "disabled"
     module1_notification_min_task_id: int = Field(default=0, ge=0)
     module1_pdd_refund_execution_enabled: bool = False
     module1_desktop_group_map: dict[str, str] = Field(default_factory=dict)
     module1_desktop_send_enabled: bool = False
     module1_desktop_process_name: str = "WXWork.exe"
     module1_desktop_ledger_path: str = ".runtime/desktop-notice-ledger.jsonl"
+    module1_desktop_lock_path: str = ".runtime/desktop-notice.lock"
+    module1_desktop_batch_limit: int = Field(default=1, ge=1, le=20)
 
     kuaidi100_api_url: str = "https://poll.kuaidi100.com/poll/query.do"
     kuaidi100_customer: SecretStr | None = None
