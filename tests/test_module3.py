@@ -18,9 +18,14 @@ class FakeRepository:
         self.rollbacks = 0
 
     def list_candidates(
-        self, *, shop_codes: tuple[str, ...] | None, limit: int
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        platform_order_sn: str | None,
+        limit: int,
     ) -> list[Module3Candidate]:
         assert shop_codes in (None, ("pdd-shop-01",))
+        assert platform_order_sn in (None, "order-1")
         return self.candidates[:limit]
 
     def enqueue_action(

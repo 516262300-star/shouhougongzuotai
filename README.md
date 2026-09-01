@@ -4,9 +4,9 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1 常驻后台运行器、模块 3 未发货/已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 1 常驻后台运行器、模块 3 未发货 ERP 补开退款单与已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
 - 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`。
-- 暂未直连：真实 ERP API。模块 3 先使用人工回填 CLI 完成 ERP 动作确认，待 ERP 接口规则明确后替换为适配器。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
+- ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 仓库退货流程按当前决定延后，不在本阶段实现。
 - 所有外部写入默认关闭。只有分别配置并打开 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED` 后，执行命令才会真正发送企微通知或同意退款。
 
 ## 本地启动
@@ -80,6 +80,7 @@ alembic downgrade -1
 | `ERP_SALES_OWNER_REFRESH_SECONDS` | 已缓存归属业务员的正常刷新间隔 | `86400` |
 | `ERP_TODO_PUBLISH_ENABLED` | 将模块 1 人工处理任务真实发布到管理系统待办页 | `false` |
 | `ERP_TODO_MAX_ATTEMPTS` | 待办发布失败后允许安全重新入队的最大尝试次数 | `3` |
+| `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
@@ -392,10 +393,10 @@ alembic upgrade head
 
 模块 3 处理的是“拼多多已经极速退款后，ERP 如何停止履约并完成平账”，不再尝试调用 `pdd.refund.agree`。它只扫描 `PENDING_CHECK`、售后类型为 `ONLY_REFUND`、平台发货状态为 `UNSHIPPED` 或 `PACKED_NOT_SHIPPED`，并且平台退款状态已经明确成功的售后单。拼多多的“未发货”不足以证明 ERP 尚未出包，因此仍须检查 ERP：
 
-- `UNSHIPPED`：生成唯一的 `ERP_CHECK_FULFILLMENT` 待办，等待 ERP 返回未打包或已出包；确认未打包后取消排单，再生成 ERP 退款流水；
+- `UNSHIPPED`：生成唯一的 `ERP_CHECK_FULFILLMENT` 待办。网页适配器只在 ERP 待处理页明确显示“有订单编号但未开退款单”时继续，并同时核对售后单号、商家应收、ERP 欠货型号/颜色/数量、客户累计应收和发货销售单；通过后使用 ERP 原有的“补开退款单”动作一次完成取消欠货与退款收款单；
 - `PACKED_NOT_SHIPPED`：生成唯一的 `ERP_LOCK_PACKING` 待办；锁包成功后生成 ERP 退款流水；
 - 在途和已签收订单不属于模块 3，本命令不会处理；
-- ERP 尚未直连时，使用动作结果回填命令推进状态；任何一步失败都会停留在失败任务，不会越级退款。
+- `PACKED_NOT_SHIPPED` 和任何核对不一致的记录仍使用动作结果回填命令处理；自动化不会越级补单。
 
 先执行迁移并进行只读预览：
 
@@ -409,9 +410,26 @@ alembic upgrade head
 ```powershell
 .\.venv\Scripts\aftersales-process-module3.exe --apply
 .\.venv\Scripts\aftersales-process-module3.exe --shops pdd-shop-01 pdd-shop-02 --limit 500 --apply
+.\.venv\Scripts\aftersales-process-module3.exe --platform-order-sn "平台订单号" --apply
 ```
 
 命令输入来自 `aftersales_orders`，输出为不含订单号的汇总 JSON。动作使用唯一幂等键，已有动作不会重复创建。数据库异常时本批次回滚；修复后可直接重跑。
+
+未发货补单必须先只读预演。`refund_amount` 采用 ERP 商家口径，必须等于本地 `merchant_receivable_amount`，不使用买家优惠后实付额替代：
+
+```powershell
+.\.venv\Scripts\aftersales-execute-module3-erp-refunds.exe --platform-order-sn "平台订单号" --details
+```
+
+预演必须是 `ready=1` 且 `blocked=0` / `unavailable=0`。确认后才在本机 `.env` 中同时设置 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 和 `ERP_WRITE_ENABLED=true`，再执行单笔真实补单：
+
+```powershell
+.\.venv\Scripts\aftersales-execute-module3-erp-refunds.exe --platform-order-sn "平台订单号" --details --apply
+```
+
+写入后程序必须同时回查：待处理记录已消失、ERP 收款记录存在唯一的负数退款单据、状态表原订单无欠货、客户累计应收归零。回查通过后才将本地订单转为 `UNSHIPPED_AUTO_REFUNDED`，并把 `ERP_CHECK_FULFILLMENT`、`ERP_CANCEL_UNSHIPPED_ORDER`、`ERP_CREATE_REFUND_RECORD` 三段审计动作记录为成功。请求结果不明时不得立即重发；先重跑只读预演，若返回 `completed` 只补记本地结果，不会再次调用 ERP。
+
+2026-09-01 已使用一笔真实拼多多未发货仅退款完成单笔验收：平台退款与 ERP 商家应收一致，补单后负数退款收款单成功生成，状态表欠货移除、累计应收归零，本地工作流同步闭环。真实订单、客户和登录凭据不写入仓库。
 
 使用下面的命令查看待办 ID，并根据 ERP 的真实操作结果逐步回填：
 
@@ -437,7 +455,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-confirm-action.exe --task-id 127 --success --result-code COMPLETED --reference-sn "ERP退款流水号"
 ```
 
-回填失败使用 `--failed --message "失败原因"`，系统记录错误并停止后续流转。当前不会直接写入旧管理系统源码或复用其登录页面；旧系统仅作为 ERP 业务规则参考。
+回填失败使用 `--failed --message "失败原因"`，系统记录错误并停止后续流转。模块 3 网页适配器不修改旧管理系统源码，只调用其现有的查询与“补开退款单”动作；其他 ERP 动作仍按人工回填流程执行。
 
 ## 售后订单记录中心
 

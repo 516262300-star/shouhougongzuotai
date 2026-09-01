@@ -13,6 +13,7 @@ from aftersales_workbench.workflows.module3 import (
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="判定模块 3 未发货退款并生成 ERP 动作待办。")
     parser.add_argument("--shops", nargs="*", help="只处理指定店铺代号")
+    parser.add_argument("--platform-order-sn", help="只处理指定平台订单号")
     parser.add_argument("--limit", type=int, default=500, help="本次最多扫描的售后单数")
     parser.add_argument(
         "--apply",
@@ -29,6 +30,7 @@ def main(argv: list[str] | None = None) -> int:
         service = Module3UnshippedRefundService(SqlAlchemyModule3Repository(session))
         result = service.run(
             shop_codes=shop_codes,
+            platform_order_sn=args.platform_order_sn,
             limit=args.limit,
             dry_run=not args.apply,
         )

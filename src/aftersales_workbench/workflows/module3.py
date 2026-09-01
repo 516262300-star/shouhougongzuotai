@@ -39,7 +39,11 @@ class Module3RunResult:
 
 class Module3Repository(Protocol):
     def list_candidates(
-        self, *, shop_codes: tuple[str, ...] | None, limit: int
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        platform_order_sn: str | None,
+        limit: int,
     ) -> list[Module3Candidate]: ...
 
     def enqueue_action(
@@ -60,7 +64,11 @@ class SqlAlchemyModule3Repository:
         self.session = session
 
     def list_candidates(
-        self, *, shop_codes: tuple[str, ...] | None, limit: int
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        platform_order_sn: str | None,
+        limit: int,
     ) -> list[Module3Candidate]:
         action_already_queued = exists().where(
             AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
@@ -95,6 +103,10 @@ class SqlAlchemyModule3Repository:
         )
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
+        if platform_order_sn:
+            statement = statement.where(
+                AfterSalesOrder.platform_order_sn == platform_order_sn
+            )
         rows = self.session.execute(statement).all()
         return [
             Module3Candidate(
@@ -146,6 +158,7 @@ class Module3UnshippedRefundService:
         self,
         *,
         shop_codes: tuple[str, ...] | None = None,
+        platform_order_sn: str | None = None,
         limit: int = 500,
         dry_run: bool = True,
     ) -> Module3RunResult:
@@ -153,7 +166,11 @@ class Module3UnshippedRefundService:
             raise ValueError("limit 必须在 1–5000 之间")
         result = Module3RunResult(dry_run=dry_run)
         try:
-            candidates = self.repository.list_candidates(shop_codes=shop_codes, limit=limit)
+            candidates = self.repository.list_candidates(
+                shop_codes=shop_codes,
+                platform_order_sn=platform_order_sn,
+                limit=limit,
+            )
             result.scanned = len(candidates)
             for candidate in candidates:
                 shipping_status = ShippingStatus(candidate.order_shipping_status)

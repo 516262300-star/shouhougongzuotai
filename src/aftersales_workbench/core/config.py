@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     erp_return_match_receivable_tolerance: Decimal = Field(
         default=Decimal("0.01"), ge=Decimal("0"), le=Decimal("1")
     )
+    module3_erp_refund_execution_enabled: bool = False
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)
