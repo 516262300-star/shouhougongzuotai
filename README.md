@@ -83,7 +83,7 @@ alembic downgrade -1
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |
 | `QYWX_TIMEOUT_SECONDS` | 企微请求超时秒数 | `10` |
 | `QYWX_WRITE_ENABLED` | 企微机器人发送开关 | `false` |
-| `MODULE1_WORKER_SHOP_NUMBERS` | 模块 1 后台运行店铺序号 JSON 数组；5 店 Token 失效期间默认排除 | `[1,2,3,4,6,7]` |
+| `MODULE1_WORKER_SHOP_NUMBERS` | 模块 1 后台运行店铺序号 JSON 数组 | `[1,2,3,4,5,6,7]` |
 | `MODULE1_WORKER_INTERVAL_SECONDS` | 后台运行器每个完整周期结束后的等待秒数 | `60` |
 | `MODULE1_WORKER_MAX_SYNC_WINDOWS` | 每店每周期最多处理的 30 分钟同步窗口数 | `2` |
 | `MODULE1_WORKER_TASK_LIMIT` | 每周期最多准备、发送或退款的动作任务数 | `20` |
@@ -285,7 +285,7 @@ alembic upgrade head
 
 计划任务或用户启动项都使用当前 Windows 用户的交互登录令牌，因此电脑重启后至少需要登录一次；锁屏不影响同步，但休眠、关机和退出登录会停止本地运行。应在 Windows 电源设置中关闭自动休眠。若以后迁移到服务器，应先执行 `Uninstall`，避免两台机器同时处理同一售后。
 
-默认运行 1、2、3、4、6、7 店，暂时跳过 Token 已失效的 5 店；每店每周期最多追赶两个 30 分钟窗口，每周期最多处理 20 条动作任务，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
+默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，每周期最多处理 20 条动作任务，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
 
 后台运行失败时按以下方式恢复：
 

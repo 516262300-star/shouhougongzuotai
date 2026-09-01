@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     qywx_write_enabled: bool = False
 
     module1_worker_shop_numbers: list[int] = Field(
-        default_factory=lambda: [1, 2, 3, 4, 6, 7]
+        default_factory=lambda: [1, 2, 3, 4, 5, 6, 7]
     )
     module1_worker_interval_seconds: int = Field(default=60, ge=10, le=3600)
     module1_worker_max_sync_windows: int = Field(default=2, ge=1, le=48)
