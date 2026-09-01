@@ -163,6 +163,20 @@ class DesktopNoticeLedger:
             plan_hash=latest.plan_hash,
         )
 
+    def confirm_sent(self, task_id: int) -> DesktopLedgerEntry:
+        """操作员在目标群确认消息已出现后，解除结果不明阻塞。"""
+
+        latest = self.latest(task_id)
+        if latest is None or latest.state not in AMBIGUOUS_LEDGER_STATES:
+            raise DesktopNoticeSendError(
+                "只有 PasteStarted 或 SendPressed 状态可以人工确认已发送"
+            )
+        return self.append(
+            task_id=task_id,
+            state=DesktopLedgerState.SENT,
+            plan_hash=latest.plan_hash,
+        )
+
 
 class DesktopSendProcessLock:
     """跨进程非阻塞锁，防止后台运行器与人工命令同时控制企业微信。"""
@@ -281,7 +295,7 @@ class DesktopNoticeSendService:
     def __init__(
         self,
         session: Session,
-        gateway: DesktopWeComGateway,
+        gateway: DesktopWeComGateway | None,
         ledger: DesktopNoticeLedger,
     ) -> None:
         self.session = session
@@ -322,6 +336,8 @@ class DesktopNoticeSendService:
 
             hooks = _LedgerHooks(self, plan, plan_hash)
             try:
+                if self.gateway is None:
+                    raise DesktopBeforePasteError("未配置企业微信桌面发送网关")
                 self.gateway.send(plan, hooks)
                 result.sent += 1
             except DesktopBeforePasteError as exc:
@@ -380,6 +396,14 @@ class DesktopNoticeSendService:
         task.last_error = None
         order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
         self.session.commit()
+
+    def reconcile_confirmed_sent(self, task_id: int) -> bool:
+        """将已经由操作员在企微群确认发送成功的任务回写数据库。"""
+
+        latest = self.ledger.latest(task_id)
+        if latest is None or latest.state is not DesktopLedgerState.SENT:
+            raise DesktopNoticeSendError("桌面账本尚未确认 Sent，禁止回写数据库")
+        return self._reconcile_sent(task_id)
 
     def _reconcile_sent(self, task_id: int) -> bool:
         task = self.session.get(AftersalesActionTask, task_id)

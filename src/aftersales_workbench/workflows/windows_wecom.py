@@ -88,6 +88,12 @@ class WindowsWeComGateway:
     """只用键盘控制当前登录的企业微信，并以画面变化做失败关闭校验。"""
 
     _SECURITY_TITLE = re.compile(r"安全验证|扫码验证|身份验证|重新登录|登录验证")
+    # 企业微信左侧会话列表和右侧成员栏在输入时通常完全不变。若把它们
+    # 纳入整块截图，三行短消息的变化会被稀释，导致已经写入草稿却误报
+    # “未检测到变化”。这里仅覆盖中间聊天输入框；发送后则连同消息区一起
+    # 检查，从而既能识别文字出现，也能识别输入框清空和新消息气泡。
+    _INPUT_CHANGE_REGION = (0.24, 0.68, 0.87, 0.99)
+    _SEND_CHANGE_REGION = (0.24, 0.24, 0.87, 0.99)
 
     def __init__(self, *, process_name: str = "WXWork.exe") -> None:
         if sys.platform != "win32":
@@ -172,13 +178,13 @@ class WindowsWeComGateway:
         self._raise_if_security_window(process_id)
         self._raise_if_escape()
 
-        before_input = self._snapshot(hwnd, region=(0.0, 0.52, 1.0, 1.0))
+        before_input = self._snapshot(hwnd, region=self._INPUT_CHANGE_REGION)
         hooks.paste_started()
         self._type_multiline_message(plan.message)
         self._wait_for_change(
             hwnd,
             before_input,
-            region=(0.0, 0.52, 1.0, 1.0),
+            region=self._INPUT_CHANGE_REGION,
             timeout_ms=4100,
             threshold=0.001,
             error="消息输入后未检测到聊天区域变化，禁止发送",
@@ -190,14 +196,14 @@ class WindowsWeComGateway:
         self._raise_if_security_window(process_id, ambiguous=True)
         self._raise_if_escape(ambiguous=True)
 
-        before_send = self._snapshot(hwnd, region=(0.0, 0.34, 1.0, 1.0))
+        before_send = self._snapshot(hwnd, region=self._SEND_CHANGE_REGION)
         hooks.send_pressed()
         self._tap(VK_RETURN)
         self._sleep_range(2200, 3100, ambiguous=True)
         self._wait_for_change(
             hwnd,
             before_send,
-            region=(0.0, 0.34, 1.0, 1.0),
+            region=self._SEND_CHANGE_REGION,
             timeout_ms=1000,
             threshold=0.001,
             error="按过发送键但未能确认聊天区域变化",

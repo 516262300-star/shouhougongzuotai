@@ -132,6 +132,43 @@ def test_only_before_paste_pause_can_be_resumed(tmp_path) -> None:
     assert ledger.blocking_entry().task_id == 62  # type: ignore[union-attr]
 
 
+def test_ambiguous_task_can_only_be_confirmed_after_manual_send_check(tmp_path) -> None:
+    plan_hash = desktop_notice_plan_hash(_plan())
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PASTE_STARTED,
+        plan_hash=plan_hash,
+    )
+
+    confirmed = ledger.confirm_sent(61)
+
+    assert confirmed.state is DesktopLedgerState.SENT
+    assert ledger.blocking_entry() is None
+    with pytest.raises(DesktopNoticeSendError, match="只有 PasteStarted"):
+        ledger.confirm_sent(61)
+
+
+def test_confirmed_sent_task_reconciles_database(tmp_path) -> None:
+    session = _FakeSession()
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PASTE_STARTED,
+        plan_hash=desktop_notice_plan_hash(_plan()),
+    )
+    ledger.confirm_sent(61)
+    service = DesktopNoticeSendService(
+        session,  # type: ignore[arg-type]
+        _SuccessfulGateway(),
+        ledger,
+    )
+
+    assert service.reconcile_confirmed_sent(61) is True
+    assert session.task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+
+
 def test_successful_desktop_send_updates_ledger_and_workflow(tmp_path) -> None:
     session = _FakeSession()
     gateway = _SuccessfulGateway()

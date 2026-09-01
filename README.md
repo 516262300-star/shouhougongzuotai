@@ -97,7 +97,7 @@ alembic downgrade -1
 | `MODULE1_NOTIFICATION_MIN_TASK_ID` | 自动通知上线水位；仅预检和发送任务 ID 大于等于该值的拦截通知，防止历史积压批量补发 | `0` |
 | `MODULE1_PDD_REFUND_EXECUTION_ENABLED` | 后台运行器的平台退款执行总开关 | `false` |
 | `MODULE1_DESKTOP_GROUP_MAP` | 拼多多物流公司 ID 到企业微信外部群完整精确群名的 JSON 白名单 | `{}` |
-| `MODULE1_DESKTOP_SEND_ENABLED` | 企业微信桌面自动发送总开关；当前保持关闭 | `false` |
+| `MODULE1_DESKTOP_SEND_ENABLED` | 企业微信桌面自动发送总开关；版本库安全默认关闭 | `false` |
 | `MODULE1_DESKTOP_PROCESS_NAME` | 允许接收键盘输入的企业微信进程名 | `WXWork.exe` |
 | `MODULE1_DESKTOP_LEDGER_PATH` | 本机防重与恢复账本；只保存任务 ID、状态和消息哈希 | `.runtime/desktop-notice-ledger.jsonl` |
 | `MODULE1_DESKTOP_LOCK_PATH` | 后台与人工桌面发送共享的跨进程单实例锁 | `.runtime/desktop-notice.lock` |
@@ -323,7 +323,9 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-run-module1.exe --forever --shops 1 2 3 4 6 7 --interval-seconds 60
 ```
 
-未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`。桌面发送已经接入后台循环，但在单笔真实验收前，本机仍保持 `MODULE1_NOTIFICATION_TRANSPORT=disabled` 和 `MODULE1_DESKTOP_SEND_ENABLED=false`。无论选择哪种发送方式，上线前都应将 `MODULE1_NOTIFICATION_MIN_TASK_ID` 设置为当时“最大拦截通知任务 ID + 1”；后台物流预检、通知执行器和桌面预览都会应用同一水位，水位之前的历史任务继续留作查询但不会补发，也不会阻塞新任务。
+未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`。桌面发送已经接入后台循环。无论选择哪种发送方式，常规上线都应将 `MODULE1_NOTIFICATION_MIN_TASK_ID` 设置为当时“最大拦截通知任务 ID + 1”；若明确选中最新一笔作为上线验收单，可以在逐笔预览确认后将水位设为该任务 ID。后台物流预检、通知执行器和桌面预览都会应用同一水位，水位之前的历史任务继续留作查询但不会补发，也不会阻塞新任务。
+
+2026-09-01 当前开发机开始真实运行模块 1：本机 `.env` 已启用 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true`、`MODULE1_PDD_REFUND_EXECUTION_ENABLED=true`、`PDD_WRITE_ENABLED=true`、`MODULE1_ERP_REFUND_EXECUTION_ENABLED=true` 和 `ERP_WRITE_ENABLED=true`；上线水位设为经只读预演确认的最新验收任务 `144`，因此更早的历史通知不会补发，桌面单周期批量上限仍为 `1`。版本库 `.env.example` 继续全部保持安全默认关闭。本机配置已在 `.runtime/env-before-production-automation-20260901.bak` 备份且不得提交仓库。
 
 ### 企业微信桌面发送准备
 
@@ -339,7 +341,7 @@ alembic upgrade head
 
 桌面预览和通用外部动作执行器都会再次校验任务中的物流预检凭证。`blocked_preflight` 与 `blocked_missing_group` 必须同时为 `0`；缺少预检时间、物流状态不允许发送或退款闸门标记不一致时一律失败关闭，不能通过手工执行旧命令绕过物流预检。
 
-桌面文字发送器已实现，但在首次真实单笔验收前保持 `MODULE1_DESKTOP_SEND_ENABLED=false`。它只使用键盘输入，不移动或点击鼠标，也不覆盖系统剪贴板；仅允许前台进程名精确为 `WXWork.exe`。执行流程为：Shift+Alt+S 只唤醒一次、Ctrl+1 回消息页、Ctrl+F 搜索完整群名、检测搜索画面变化、进入群聊、再次检查前台进程与验证窗口、输入消息、记录账本、按 Enter 发送并检测聊天画面变化。底层 `SendInput` 使用 Windows SDK 完整 `INPUT` 联合体尺寸，兼容 32/64 位 Windows；系统拒绝或未完整接收任一组按键时立即在输入消息前暂停。任意阶段按 ESC 都停止；安全验证、登录验证、前台切换或画面未变化都会失败关闭。
+桌面文字发送器只使用键盘输入，不移动或点击鼠标，也不覆盖系统剪贴板；仅允许前台进程名精确为 `WXWork.exe`。执行流程为：Shift+Alt+S 只唤醒一次、Ctrl+1 回消息页、Ctrl+F 搜索完整群名、检测搜索画面变化、进入群聊、再次检查前台进程与验证窗口、输入消息、记录账本、按 Enter 发送并检测聊天画面变化。文字写入检测仅截取中间聊天输入框，避免两侧固定栏把短消息的画面变化稀释；发送后检测覆盖输入框和消息区，用于确认输入框清空及新消息气泡出现。底层 `SendInput` 使用 Windows SDK 完整 `INPUT` 联合体尺寸，兼容 32/64 位 Windows；系统拒绝或未完整接收任一组按键时立即在输入消息前暂停。任意阶段按 ESC 都停止；安全验证、登录验证、前台切换或画面未变化都会失败关闭。
 
 只读检查使用新发送命令也不会碰企业微信：
 
@@ -360,6 +362,12 @@ alembic upgrade head
 ```
 
 如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。完成单笔真实验收后，才允许同时设置 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true` 并重启后台运行器；后台每个完整周期只处理 `MODULE1_DESKTOP_BATCH_LIMIT` 条，当前安全默认值为 1。任一桌面任务暂停或结果不明时，本周期立即失败停止发送，后续周期只读取账本并继续失败关闭，不会再次按键。
+
+若人工核验后明确看到消息已经出现在正确群聊中，可用以下命令将结果不明任务记为 `Sent` 并回写本地任务状态；该命令不会再次控制企业微信，也不会再次发送消息。没有看到已发消息时禁止执行：
+
+```powershell
+.\.venv\Scripts\aftersales-send-desktop-notices.exe --confirm-sent 任务ID --apply
+```
 
 ### 拦截退回后的 ERP 闭环匹配
 
