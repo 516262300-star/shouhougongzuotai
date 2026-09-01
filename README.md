@@ -88,6 +88,7 @@ alembic downgrade -1
 | `MODULE1_WORKER_MAX_SYNC_WINDOWS` | 每店每周期最多处理的 30 分钟同步窗口数 | `2` |
 | `MODULE1_WORKER_TASK_LIMIT` | 每周期最多准备、发送或退款的动作任务数 | `20` |
 | `MODULE1_NOTIFICATION_TRANSPORT` | 拦截通知出口；当前支持 `disabled` / `qywx_webhook` | `disabled` |
+| `MODULE1_NOTIFICATION_MIN_TASK_ID` | 自动通知上线水位；仅预检和发送任务 ID 大于等于该值的拦截通知，防止历史积压批量补发 | `0` |
 | `MODULE1_PDD_REFUND_EXECUTION_ENABLED` | 后台运行器的平台退款执行总开关 | `false` |
 | `MODULE1_DESKTOP_GROUP_MAP` | 拼多多物流公司 ID 到企业微信外部群完整精确群名的 JSON 白名单 | `{}` |
 | `MODULE1_DESKTOP_SEND_ENABLED` | 企业微信桌面自动发送总开关；当前保持关闭 | `false` |
@@ -299,7 +300,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-run-module1.exe --forever --shops 1 2 3 4 6 7 --interval-seconds 60
 ```
 
-未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`；若采用企业微信桌面自动发送，则新增独立适配器和总开关，现阶段不要把通知出口设置为未支持的值。
+未来若确定使用企微 Webhook，需要同时设置 `MODULE1_NOTIFICATION_TRANSPORT=qywx_webhook`、配置 Webhook 并开启 `QYWX_WRITE_ENABLED=true`；若采用企业微信桌面自动发送，则新增独立适配器和总开关，现阶段不要把通知出口设置为未支持的值。无论选择哪种发送方式，上线前都应将 `MODULE1_NOTIFICATION_MIN_TASK_ID` 设置为当时“最大拦截通知任务 ID + 1”；后台物流预检、通用通知执行器和桌面预览都会应用同一水位，水位之前的历史任务继续留作查询但不会补发，也不会阻塞新任务。
 
 ### 企业微信桌面发送准备
 
@@ -311,7 +312,7 @@ alembic upgrade head
 .\.venv\Scripts\aftersales-preview-desktop-notices.exe --limit 20
 ```
 
-该命令只读数据库，只输出脱敏后的售后单号、订单号和运单号，不激活企业微信、不填写草稿、不发送消息。`blocked_missing_group` 必须为 `0` 才能进入桌面自动化。当前 `MODULE1_DESKTOP_SEND_ENABLED=false`，桌面发送适配器完成群标题、输入框和发送结果验证前不得开启。
+该命令只读数据库，只输出脱敏后的售后单号、订单号和运单号，不激活企业微信、不填写草稿、不发送消息。输出中的 `notification_min_task_id` 是当前上线水位；预览不会读取水位以前的历史任务。`blocked_missing_group` 必须为 `0` 才能进入桌面自动化。当前 `MODULE1_DESKTOP_SEND_ENABLED=false`，桌面发送适配器完成群标题、输入框和发送结果验证前不得开启。
 
 桌面预览和通用外部动作执行器都会再次校验任务中的物流预检凭证。`blocked_preflight` 与 `blocked_missing_group` 必须同时为 `0`；缺少预检时间、物流状态不允许发送或退款闸门标记不一致时一律失败关闭，不能通过手工执行旧命令绕过物流预检。
 

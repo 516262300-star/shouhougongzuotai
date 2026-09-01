@@ -6,6 +6,7 @@ from aftersales_workbench.workflows.desktop_notice import (
     DesktopNoticeCandidate,
     DesktopNoticeConfigurationError,
     DesktopNoticePlanner,
+    DesktopNoticePreviewService,
 )
 
 
@@ -42,3 +43,33 @@ def test_desktop_notice_safe_output_masks_order_identifiers() -> None:
     assert "message" not in output
     assert output["tracking_number"].endswith("3456")
     assert "tracking-123456" not in output["tracking_number"]
+
+
+class _EmptyRows:
+    def all(self):
+        return []
+
+
+class _CaptureSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_desktop_preview_applies_go_live_task_watermark() -> None:
+    session = _CaptureSession()
+
+    result = DesktopNoticePreviewService(
+        session,  # type: ignore[arg-type]
+        DesktopNoticePlanner({"384": "精确极兔群名"}),
+        notification_min_task_id=61,
+    ).run(limit=20)
+
+    assert result.notification_min_task_id == 61
+    assert result.pending_tasks == 0
+    assert session.statement is not None
+    assert 61 in session.statement.compile().params.values()
+    assert "aftersales_action_tasks.id >=" in str(session.statement)

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     module1_worker_max_sync_windows: int = Field(default=2, ge=1, le=48)
     module1_worker_task_limit: int = Field(default=20, ge=1, le=500)
     module1_notification_transport: Literal["disabled", "qywx_webhook"] = "disabled"
+    module1_notification_min_task_id: int = Field(default=0, ge=0)
     module1_pdd_refund_execution_enabled: bool = False
     module1_desktop_group_map: dict[str, str] = Field(default_factory=dict)
     module1_desktop_send_enabled: bool = False

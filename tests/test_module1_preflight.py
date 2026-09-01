@@ -39,8 +39,10 @@ class FakeSession:
         self.added = []
         self.commits = 0
         self.rollbacks = 0
+        self.statements = []
 
-    def execute(self, _statement):
+    def execute(self, statement):
+        self.statements.append(statement)
         self.execute_calls += 1
         if self.execute_calls == 1:
             return _RowsResult([(self.task, self.order)])
@@ -204,3 +206,19 @@ def test_notification_preflight_credential_is_fail_closed() -> None:
         )
         is True
     )
+
+
+def test_notification_preflight_applies_go_live_task_watermark() -> None:
+    task = _task()
+    order = _order()
+    session = FakeSession(task, order)
+
+    Module1NotificationPreflightService(
+        session,  # type: ignore[arg-type]
+        FakeQuery("快件运输中"),
+        carrier_map={"384": "jtexpress"},
+        notification_min_task_id=61,
+    ).run(dry_run=True)
+
+    assert 61 in session.statements[0].compile().params.values()
+    assert "aftersales_action_tasks.id >=" in str(session.statements[0])

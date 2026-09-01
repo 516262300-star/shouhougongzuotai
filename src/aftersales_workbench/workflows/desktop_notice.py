@@ -56,6 +56,7 @@ class DesktopNoticePlan:
 @dataclass(slots=True)
 class DesktopNoticePreviewResult:
     read_only: bool
+    notification_min_task_id: int
     pending_tasks: int
     ready: int
     blocked_preflight: int
@@ -65,6 +66,7 @@ class DesktopNoticePreviewResult:
     def safe_dict(self) -> dict[str, Any]:
         return {
             "read_only": self.read_only,
+            "notification_min_task_id": self.notification_min_task_id,
             "pending_tasks": self.pending_tasks,
             "ready": self.ready,
             "blocked_preflight": self.blocked_preflight,
@@ -113,9 +115,18 @@ class DesktopNoticePlanner:
 
 
 class DesktopNoticePreviewService:
-    def __init__(self, session: Session, planner: DesktopNoticePlanner) -> None:
+    def __init__(
+        self,
+        session: Session,
+        planner: DesktopNoticePlanner,
+        *,
+        notification_min_task_id: int = 0,
+    ) -> None:
+        if notification_min_task_id < 0:
+            raise ValueError("notification_min_task_id 不能小于 0")
         self.session = session
         self.planner = planner
+        self.notification_min_task_id = notification_min_task_id
 
     def run(self, *, limit: int = 20) -> DesktopNoticePreviewResult:
         if limit < 1 or limit > 100:
@@ -143,6 +154,10 @@ class DesktopNoticePreviewService:
             .order_by(AftersalesActionTask.id)
             .limit(limit)
         )
+        if self.notification_min_task_id:
+            statement = statement.where(
+                AftersalesActionTask.id >= self.notification_min_task_id
+            )
         rows = self.session.execute(statement).all()
         plans: list[DesktopNoticePlan] = []
         blocked_preflight = 0
@@ -165,6 +180,7 @@ class DesktopNoticePreviewService:
                 blocked += 1
         return DesktopNoticePreviewResult(
             read_only=True,
+            notification_min_task_id=self.notification_min_task_id,
             pending_tasks=len(rows),
             ready=len(plans),
             blocked_preflight=blocked_preflight,

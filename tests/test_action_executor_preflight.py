@@ -70,3 +70,35 @@ def test_external_executor_requires_both_erp_todo_write_gates() -> None:
         ),
     )
     enabled._validate_write_gates((AutomationActionType.ERP_CREATE_MANUAL_TODO,))
+
+
+class _EmptyRows:
+    def all(self):
+        return []
+
+
+class _CaptureSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_external_notice_executor_applies_go_live_task_watermark() -> None:
+    session = _CaptureSession()
+    executor = ExternalActionExecutor(  # type: ignore[arg-type]
+        session,
+        Settings(_env_file=None, module1_notification_min_task_id=61),
+    )
+
+    tasks = executor._list_pending(
+        (AutomationActionType.QYWX_INTERCEPT_NOTIFY,),
+        20,
+    )
+
+    assert tasks == []
+    assert session.statement is not None
+    assert 61 in session.statement.compile().params.values()
+    assert "aftersales_action_tasks.id >=" in str(session.statement)

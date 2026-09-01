@@ -25,6 +25,7 @@ def main(argv: list[str] | None = None) -> int:
         result = DesktopNoticePreviewService(
             session,
             DesktopNoticePlanner(settings.module1_desktop_group_map),
+            notification_min_task_id=settings.module1_notification_min_task_id,
         ).run(limit=args.limit)
     print(json.dumps(result.safe_dict(), ensure_ascii=False, indent=2))
     return (

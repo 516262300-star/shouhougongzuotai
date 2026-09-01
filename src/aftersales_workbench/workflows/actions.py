@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
@@ -604,6 +604,18 @@ class ExternalActionExecutor:
             .order_by(AftersalesActionTask.id)
             .limit(limit)
         )
+        if (
+            self.settings.module1_notification_min_task_id
+            and AutomationActionType.QYWX_INTERCEPT_NOTIFY in action_types
+        ):
+            statement = statement.where(
+                or_(
+                    AftersalesActionTask.action_type
+                    != AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                    AftersalesActionTask.id
+                    >= self.settings.module1_notification_min_task_id,
+                )
+            )
         return [
             ExternalTaskSnapshot(
                 id=row.id,

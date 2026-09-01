@@ -71,11 +71,15 @@ class Module1NotificationPreflightService:
         *,
         carrier_map: dict[str, str] | None = None,
         default_phone: str | None = None,
+        notification_min_task_id: int = 0,
     ) -> None:
+        if notification_min_task_id < 0:
+            raise ValueError("notification_min_task_id 不能小于 0")
         self.session = session
         self.query = query
         self.carrier_map = carrier_map or {}
         self.default_phone = default_phone
+        self.notification_min_task_id = notification_min_task_id
 
     def run(
         self,
@@ -101,6 +105,10 @@ class Module1NotificationPreflightService:
             .order_by(AftersalesActionTask.id)
             .limit(limit)
         )
+        if self.notification_min_task_id:
+            statement = statement.where(
+                AftersalesActionTask.id >= self.notification_min_task_id
+            )
         rows = self.session.execute(statement).all()
         result = NotificationPreflightResult(dry_run=dry_run, scanned=len(rows))
         try:
