@@ -43,6 +43,7 @@ class DesktopLedgerState(StrEnum):
     PASTE_STARTED = "PasteStarted"
     SEND_PRESSED = "SendPressed"
     SENT = "Sent"
+    MANUAL_HANDLED = "ManualHandled"
     PAUSED_BEFORE_PASTE = "PausedBeforePaste"
 
 
@@ -174,6 +175,20 @@ class DesktopNoticeLedger:
         return self.append(
             task_id=task_id,
             state=DesktopLedgerState.SENT,
+            plan_hash=latest.plan_hash,
+        )
+
+    def confirm_manual_handled(self, task_id: int) -> DesktopLedgerEntry:
+        """操作员确认同一运单已由人工发群并得到处理后解除阻塞。"""
+
+        latest = self.latest(task_id)
+        if latest is None or latest.state not in AMBIGUOUS_LEDGER_STATES:
+            raise DesktopNoticeSendError(
+                "只有 PasteStarted 或 SendPressed 状态可以确认人工已处理"
+            )
+        return self.append(
+            task_id=task_id,
+            state=DesktopLedgerState.MANUAL_HANDLED,
             plan_hash=latest.plan_hash,
         )
 
@@ -398,11 +413,16 @@ class DesktopNoticeSendService:
         self.session.commit()
 
     def reconcile_confirmed_sent(self, task_id: int) -> bool:
-        """将已经由操作员在企微群确认发送成功的任务回写数据库。"""
+        """将已发送或已由人工处理的企微拦截任务回写数据库。"""
 
         latest = self.ledger.latest(task_id)
-        if latest is None or latest.state is not DesktopLedgerState.SENT:
-            raise DesktopNoticeSendError("桌面账本尚未确认 Sent，禁止回写数据库")
+        if latest is None or latest.state not in {
+            DesktopLedgerState.SENT,
+            DesktopLedgerState.MANUAL_HANDLED,
+        }:
+            raise DesktopNoticeSendError(
+                "桌面账本尚未确认 Sent 或 ManualHandled，禁止回写数据库"
+            )
         return self._reconcile_sent(task_id)
 
     def _reconcile_sent(self, task_id: int) -> bool:

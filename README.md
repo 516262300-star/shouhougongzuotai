@@ -327,6 +327,8 @@ alembic upgrade head
 
 2026-09-01 当前开发机开始真实运行模块 1：本机 `.env` 已启用 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true`、`MODULE1_PDD_REFUND_EXECUTION_ENABLED=true`、`PDD_WRITE_ENABLED=true`、`MODULE1_ERP_REFUND_EXECUTION_ENABLED=true` 和 `ERP_WRITE_ENABLED=true`；上线水位设为经只读预演确认的最新验收任务 `144`，因此更早的历史通知不会补发，桌面单周期批量上限仍为 `1`。版本库 `.env.example` 继续全部保持安全默认关闭。本机配置已在 `.runtime/env-before-production-automation-20260901.bak` 备份且不得提交仓库。
 
+同日真实验收结果：通知任务 `144` 已在正确极兔外部群发送，群机器人明确回复已登记拦截；拼多多退款任务 `173` 单次执行成功，平台随后回传退款完成，系统自动建立 ERP 匹配任务 `175` 并进入 `RETURN_WAITING_ERP_MATCH`。这证明“售后同步 → 全额仅退款筛选 → 实时物流闸门 → 企业微信拦截 → 拼多多退款 → ERP 回仓匹配任务”已经贯通。业务上的最终闭环仍需等待真实包裹回仓及仓库开具退货单，不能在验收时伪造。随后任务 `172` 启动时发现同一运单已经由业务员发群且机器人确认受理，系统清空未发草稿并按 `ManualHandled` 对账，没有重复发群；其拼多多退款任务 `178` 也已成功。
+
 ### 企业微信桌面发送准备
 
 外部快递群不支持群机器人 Webhook，因此桌面发送使用拼多多物流公司 ID 到“完整精确群名”的本机白名单。真实群名只允许写入被 Git 忽略的 `.env`，示例仓库和日志不得输出完整订单消息。快递群消息只包含快递公司（Webhook 出口）、发货运单号和拦截要求；店铺名称、平台订单号、售后单号及内部任务编号仅保留在售后工作台中，禁止发送到快递群。2026-08-31 已在当前企业微信客户端中用键盘搜索逐一验证德邦、极兔、圆通和顺丰四个外部群均能被完整群名唯一命中；没有进入聊天、填写草稿或发送消息。拼多多官方物流公司列表对应关系为普通顺丰 `44/SF`、圆通 `85/YTO`、德邦 `131/DB`、极兔 `384/JTSD`。
@@ -368,6 +370,14 @@ alembic upgrade head
 ```powershell
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --confirm-sent 任务ID --apply
 ```
+
+若自动草稿尚未发送，但同一运单已经由业务员手工发群且快递方/群机器人明确确认受理，应先在企业微信清空自动草稿，再执行以下命令记录 `ManualHandled`。该状态同样满足“先通知再退款”的前置条件，但审计上不会冒充自动发送；没有同时看到运单号和受理确认时禁止使用：
+
+```powershell
+.\.venv\Scripts\aftersales-send-desktop-notices.exe --confirm-manual-handled 任务ID --apply
+```
+
+企业微信截图必须使用物理像素坐标。桌面发送器启动时会声明 Per-Monitor V2 DPI 感知，避免 Windows 200% 等缩放比例下 `GetWindowRect` 与屏幕截图坐标不一致，导致底部输入框落在变化检测区域之外。
 
 ### 拦截退回后的 ERP 闭环匹配
 

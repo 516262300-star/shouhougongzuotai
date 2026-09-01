@@ -98,6 +98,17 @@ class WindowsWeComGateway:
     def __init__(self, *, process_name: str = "WXWork.exe") -> None:
         if sys.platform != "win32":
             raise DesktopBeforePasteError("企业微信桌面发送仅支持 Windows")
+        # GetWindowRect 会按调用进程的 DPI 感知级别返回坐标，而 ImageGrab
+        # 使用物理屏幕坐标。高缩放屏幕若不先声明 DPI 感知，截图会只覆盖
+        # 窗口左上角，搜索变化可见但底部输入框永远落在截图之外。
+        user32 = ctypes.windll.user32
+        try:
+            setter = user32.SetProcessDpiAwarenessContext
+            setter.argtypes = (ctypes.c_void_p,)
+            setter.restype = wintypes.BOOL
+            setter(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+        except AttributeError:
+            user32.SetProcessDPIAware()
         try:
             from PIL import ImageChops, ImageGrab, ImageStat
         except ImportError as exc:
@@ -108,7 +119,7 @@ class WindowsWeComGateway:
         self.process_name = process_name.strip().lower()
         if not self.process_name:
             raise ValueError("process_name 不能为空")
-        self.user32 = ctypes.windll.user32
+        self.user32 = user32
         self.kernel32 = ctypes.windll.kernel32
         self.user32.SendInput.argtypes = (
             wintypes.UINT,

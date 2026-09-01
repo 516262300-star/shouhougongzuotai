@@ -169,6 +169,30 @@ def test_confirmed_sent_task_reconciles_database(tmp_path) -> None:
     assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
 
 
+def test_manual_handled_task_reconciles_without_claiming_another_send(tmp_path) -> None:
+    session = _FakeSession()
+    session.task.action_status = AutomationTaskStatus.RUNNING
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PASTE_STARTED,
+        plan_hash=desktop_notice_plan_hash(_plan()),
+    )
+
+    handled = ledger.confirm_manual_handled(61)
+    service = DesktopNoticeSendService(
+        session,  # type: ignore[arg-type]
+        None,
+        ledger,
+    )
+
+    assert handled.state is DesktopLedgerState.MANUAL_HANDLED
+    assert ledger.blocking_entry() is None
+    assert service.reconcile_confirmed_sent(61) is True
+    assert session.task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+
+
 def test_successful_desktop_send_updates_ledger_and_workflow(tmp_path) -> None:
     session = _FakeSession()
     gateway = _SuccessfulGateway()

@@ -41,11 +41,20 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         help="人工在目标群确认消息已发送后，将结果不明任务记为 Sent 并回写数据库",
     )
+    parser.add_argument(
+        "--confirm-manual-handled",
+        type=int,
+        help="人工确认同一运单已发群且得到处理后，清除草稿并将任务记为 ManualHandled",
+    )
     args = parser.parse_args(argv)
     settings = get_settings()
     ledger = DesktopNoticeLedger(Path(settings.module1_desktop_ledger_path))
     if not args.apply:
-        if args.resume_before_paste is not None or args.confirm_sent is not None:
+        if (
+            args.resume_before_paste is not None
+            or args.confirm_sent is not None
+            or args.confirm_manual_handled is not None
+        ):
             parser.error("人工恢复或确认已发送必须同时提供 --apply")
         with SessionLocal() as session:
             preview = DesktopNoticePreviewService(
@@ -65,10 +74,36 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         with DesktopSendProcessLock(Path(settings.module1_desktop_lock_path)):
-            if args.resume_before_paste is not None and args.confirm_sent is not None:
+            recovery_values = (
+                args.resume_before_paste,
+                args.confirm_sent,
+                args.confirm_manual_handled,
+            )
+            if sum(value is not None for value in recovery_values) > 1:
                 raise DesktopNoticeSendError(
-                    "--resume-before-paste 与 --confirm-sent 不能同时使用"
+                    "桌面恢复参数不能同时使用"
                 )
+            if args.confirm_manual_handled is not None:
+                ledger.confirm_manual_handled(args.confirm_manual_handled)
+                with SessionLocal() as session:
+                    reconciled = DesktopNoticeSendService(
+                        session,
+                        gateway=None,
+                        ledger=ledger,
+                    ).reconcile_confirmed_sent(args.confirm_manual_handled)
+                print(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "task_id": args.confirm_manual_handled,
+                            "ledger_state": "ManualHandled",
+                            "database_reconciled": reconciled,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return 0
             if args.confirm_sent is not None:
                 ledger.confirm_sent(args.confirm_sent)
                 with SessionLocal() as session:
