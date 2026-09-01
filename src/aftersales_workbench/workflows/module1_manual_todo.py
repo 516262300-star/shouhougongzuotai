@@ -39,6 +39,7 @@ class Module1ManualTodoCandidate:
     logistics_latest_context: str | None
     tracking_number: str
     carrier_code: str | None
+    erp_match_payload: dict[str, Any] | None = None
 
     _LOGISTICS_LABELS: ClassVar[dict[str, str]] = {
         "OUT_FOR_DELIVERY": "派件中",
@@ -48,9 +49,18 @@ class Module1ManualTodoCandidate:
         "IN_TRANSIT": "运输中",
         "UNKNOWN": "待核实",
     }
+    _ERP_RETURN_REASON_CODES: ClassVar[dict[str, str]] = {
+        "staged": "ERP_RETURN_STAGED",
+        "receivable_open": "ERP_RETURN_RECEIVABLE_OPEN",
+        "item_mismatch": "ERP_RETURN_ITEM_MISMATCH",
+        "customer_conflict": "ERP_RETURN_CUSTOMER_CONFLICT",
+    }
 
     @property
     def reason_code(self) -> str:
+        if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
+            status = str((self.erp_match_payload or {}).get("erp_match_status") or "")
+            return self._ERP_RETURN_REASON_CODES.get(status, "ERP_RETURN_EXCEPTION")
         if self.workflow_status is WorkflowStatus.INTERCEPT_FAILED:
             return "INTERCEPT_FAILED"
         if self.workflow_status is WorkflowStatus.MANUAL_PROCESSING:
@@ -61,6 +71,8 @@ class Module1ManualTodoCandidate:
 
     @property
     def reason_text(self) -> str:
+        if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
+            return self.exception_type or "ERP 退货闭环存在异常，需要人工核对"
         if self.workflow_status is WorkflowStatus.INTERCEPT_FAILED:
             return self.exception_type or "快递拦截失败，需要人工处理平台售后"
         if self.workflow_status is WorkflowStatus.MANUAL_PROCESSING:
@@ -78,13 +90,53 @@ class Module1ManualTodoCandidate:
             str(self.logistics_state or "UNKNOWN"),
             "待核实",
         )
-        content = (
-            f"{marker} 模块1在途售后需人工处理；原因：{self.reason_text}；"
-            f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
-            f"售后单号：{self.after_sales_sn}；发货运单：{self.tracking_number}"
-            f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
-        )
-        return {
+        erp_payload = self.erp_match_payload or {}
+        if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
+            details = [
+                f"{marker} 模块1退货闭环需人工处理",
+                f"原因：{self.reason_text}",
+                f"店铺：{self.shop_name}",
+                f"平台订单号：{self.platform_order_sn}",
+                f"售后单号：{self.after_sales_sn}",
+                f"发货运单：{self.tracking_number}",
+            ]
+            return_order_sn = str(
+                erp_payload.get("erp_return_order_sn") or ""
+            ).strip()
+            receivable_amount = str(
+                erp_payload.get("erp_receivable_amount") or ""
+            ).strip()
+            if return_order_sn:
+                details.append(f"ERP退货单：{return_order_sn}")
+            if receivable_amount:
+                details.append(f"客户累计应收：{receivable_amount}元")
+            row_summaries = []
+            for row in erp_payload.get("erp_return_rows") or []:
+                if not isinstance(row, dict):
+                    continue
+                product = str(row.get("product") or "").strip()
+                color = str(row.get("color") or "").strip()
+                quantity = str(row.get("quantity") or "").strip()
+                if product and quantity:
+                    row_summaries.append(
+                        f"{product}/{color or '颜色待核'}×{quantity}"
+                    )
+                if len(row_summaries) >= 5:
+                    break
+            if row_summaries:
+                details.append(f"ERP退货明细：{'、'.join(row_summaries)}")
+            manual_context = str(erp_payload.get("manual_context") or "").strip()
+            if manual_context:
+                details.append(f"处理提示：{manual_context.rstrip('。；; ')}")
+            content = "；".join(details) + "。"
+        else:
+            content = (
+                f"{marker} 模块1在途售后需人工处理；原因：{self.reason_text}；"
+                f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
+                f"售后单号：{self.after_sales_sn}；发货运单：{self.tracking_number}"
+                f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
+            )
+        payload = {
             "origin": "module1",
             "reason_code": self.reason_code,
             "assignee": str(self.sales_owner or "").strip(),
@@ -96,6 +148,17 @@ class Module1ManualTodoCandidate:
             "tracking_number": self.tracking_number,
             "carrier_code": self.carrier_code,
         }
+        if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
+            payload.update(
+                {
+                    "erp_match_status": erp_payload.get("erp_match_status"),
+                    "erp_return_order_sn": erp_payload.get("erp_return_order_sn"),
+                    "erp_receivable_amount": erp_payload.get(
+                        "erp_receivable_amount"
+                    ),
+                }
+            )
+        return payload
 
 
 @dataclass(slots=True)
@@ -140,6 +203,12 @@ class SqlAlchemyModule1ManualTodoRepository:
         WorkflowStatus.INTERCEPT_WAITING_RETURN,
         WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,
     )
+    _ACTIONABLE_RETURN_EXCEPTIONS = (
+        "退货单在暂存列表，等待认领",
+        "退货单已入客户名下，累计应收未归零",
+        "ERP退货单型号颜色数量不一致",
+        "ERP客户档案未唯一匹配",
+    )
 
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -157,9 +226,23 @@ class SqlAlchemyModule1ManualTodoRepository:
             AfterSalesOrder.logistics_state.in_(("OUT_FOR_DELIVERY", "DELIVERED")),
             AfterSalesOrder.workflow_status.in_(self._LOGISTICS_WORKFLOWS),
         )
+        return_match_state = and_(
+            AfterSalesOrder.workflow_status
+            == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+            AfterSalesOrder.exception_type.in_(self._ACTIONABLE_RETURN_EXCEPTIONS),
+        )
         statement = (
-            select(AfterSalesOrder, Shop.shop_name)
+            select(AfterSalesOrder, Shop.shop_name, AftersalesActionTask.payload)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .outerjoin(
+                AftersalesActionTask,
+                and_(
+                    AftersalesActionTask.after_sales_sn
+                    == AfterSalesOrder.after_sales_sn,
+                    AftersalesActionTask.action_type
+                    == AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                ),
+            )
             .where(
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.platform_order_amount.is_not(None),
@@ -170,7 +253,7 @@ class SqlAlchemyModule1ManualTodoRepository:
                 ),
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
-                or_(manual_state, logistics_state),
+                or_(manual_state, logistics_state, return_match_state),
             )
             .order_by(AfterSalesOrder.id)
             .limit(limit)
@@ -191,8 +274,9 @@ class SqlAlchemyModule1ManualTodoRepository:
                 logistics_latest_context=order.logistics_latest_context,
                 tracking_number=str(order.forward_tracking_number),
                 carrier_code=order.carrier_code,
+                erp_match_payload=erp_match_payload,
             )
-            for order, shop_name in rows
+            for order, shop_name, erp_match_payload in rows
         ]
 
     def enqueue_todo(

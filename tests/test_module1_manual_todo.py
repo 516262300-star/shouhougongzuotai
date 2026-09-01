@@ -16,6 +16,7 @@ def _candidate(
     workflow: WorkflowStatus = WorkflowStatus.PENDING_CHECK,
     logistics_state: str | None = "OUT_FOR_DELIVERY",
     exception_type: str | None = None,
+    erp_match_payload: dict | None = None,
 ) -> Module1ManualTodoCandidate:
     return Module1ManualTodoCandidate(
         after_sales_sn="after-1",
@@ -29,6 +30,7 @@ def _candidate(
         logistics_latest_context="正在派件，请保持电话畅通",
         tracking_number="tracking-1",
         carrier_code="384",
+        erp_match_payload=erp_match_payload,
     )
 
 
@@ -101,6 +103,38 @@ def test_manual_todo_failed_intercept_uses_exception_reason() -> None:
     assert candidate.reason_text == "极兔反馈拦截失败"
 
 
+def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
+    manual_context = (
+        "ERP待处理退货退款存在305.08元补开退款单；"
+        "同包裹平台数量22件、ERP退货数量24件，请核对多出的2件。"
+    )
+    candidate = _candidate(
+        workflow=WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+        logistics_state="RETURNED",
+        exception_type="ERP退货单型号颜色数量不一致",
+        erp_match_payload={
+            "erp_match_status": "item_mismatch",
+            "erp_return_order_sn": "TH-1",
+            "erp_receivable_amount": "-333.16",
+            "erp_return_rows": [
+                {"product": "8143-128", "color": "铜本色", "quantity": "11"},
+                {"product": "8066-30直径", "color": "铜本色", "quantity": "24"},
+            ],
+            "manual_context": manual_context,
+        },
+    )
+
+    payload = candidate.task_payload(started_at="2026-09-01 12:00:00")
+
+    assert candidate.reason_code == "ERP_RETURN_ITEM_MISMATCH"
+    assert "模块1退货闭环需人工处理" in payload["content"]
+    assert "ERP退货单：TH-1" in payload["content"]
+    assert "客户累计应收：-333.16元" in payload["content"]
+    assert "8066-30直径/铜本色×24" in payload["content"]
+    assert manual_context.rstrip("。") in payload["content"]
+    assert payload["erp_match_status"] == "item_mismatch"
+
+
 def test_manual_todo_service_counts_safe_requeue() -> None:
     repository = FakeRepository(
         [_candidate()],
@@ -151,3 +185,8 @@ def test_manual_todo_repository_requires_full_refund() -> None:
         "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
         in str(session.statement)
     )
+    compiled = str(
+        session.statement.compile(compile_kwargs={"literal_binds": True})
+    )
+    assert "RETURN_WAITING_ERP_MATCH" in compiled
+    assert "ERP退货单型号颜色数量不一致" in compiled
