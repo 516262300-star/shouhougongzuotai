@@ -16,6 +16,10 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     ErpSalesOwnerSyncService,
     get_erp_sales_owner_resolver,
 )
+from aftersales_workbench.integrations.marketplace.runner import (
+    enabled_marketplace_platforms,
+    sync_marketplaces,
+)
 from aftersales_workbench.integrations.pdd.client import PddConfigurationError
 from aftersales_workbench.integrations.pdd.repository import (
     SqlAlchemyPddSyncRepository,
@@ -127,6 +131,7 @@ class Module1WorkerCycleResult:
     ok: bool = True
     sync: WorkerStageResult | None = None
     tmall_sync: WorkerStageResult | None = None
+    marketplace_sync: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
     module3_exception_todos: WorkerStageResult | None = None
@@ -167,6 +172,10 @@ class Module1WorkerCycleResult:
             },
             "tmall_sync": self._stage_counts(
                 self.tmall_sync,
+                ("shops_ok", "shops_failed", "records_seen", "records_created"),
+            ),
+            "marketplace_sync": self._stage_counts(
+                self.marketplace_sync,
                 ("shops_ok", "shops_failed", "records_seen", "records_created"),
             ),
             "module3_tasks": self._stage_counts(
@@ -320,6 +329,7 @@ class Module1WorkerRuntime:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
         result.tmall_sync = self._capture(self._sync_tmall)
+        result.marketplace_sync = self._capture(self._sync_marketplaces)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.module3_tasks = self._capture(self._prepare_module3_tasks)
         result.module3_erp_refunds = self._capture(self._process_module3_erp_refunds)
@@ -343,6 +353,7 @@ class Module1WorkerRuntime:
         stages = (
             result.sync,
             result.tmall_sync,
+            result.marketplace_sync,
             result.erp_sales_owners,
             result.module3_tasks,
             result.module3_erp_refunds,
@@ -527,6 +538,44 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=summary,
                 error="天猫同步存在失败店铺: " + "; ".join(failures),
+            )
+        return WorkerStageResult.completed(summary)
+
+    def _sync_marketplaces(self) -> WorkerStageResult:
+        platforms = enabled_marketplace_platforms(self.settings)
+        if not platforms:
+            return WorkerStageResult.skipped(
+                "淘宝、1688、京东、抖音只读售后同步均未启用",
+                shops_ok=0,
+                shops_failed=0,
+                records_seen=0,
+                records_created=0,
+            )
+        with SessionLocal() as session:
+            sync_results = sync_marketplaces(
+                session,
+                self.settings,
+                platforms=platforms,
+                max_windows=self.options.max_sync_windows,
+            )
+        details = [item.safe_dict() for item in sync_results]
+        summary = {
+            "shops": details,
+            "shops_ok": sum(item.ok for item in sync_results),
+            "shops_failed": sum(not item.ok for item in sync_results),
+            "records_seen": sum(item.records_seen for item in sync_results),
+            "records_created": sum(item.records_created for item in sync_results),
+        }
+        if not all(item.ok for item in sync_results):
+            failures = [
+                f"{item.platform}/{item.shop_code}: {item.error or '未知错误'}"
+                for item in sync_results
+                if not item.ok
+            ]
+            return WorkerStageResult(
+                status="failed",
+                details=summary,
+                error="多平台同步存在失败店铺: " + "; ".join(failures),
             )
         return WorkerStageResult.completed(summary)
 

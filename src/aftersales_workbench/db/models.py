@@ -200,6 +200,8 @@ class AfterSalesOrder(Base):
     logistics_next_check_at: Mapped[datetime | None] = mapped_column(DateTime)
     platform_after_sales_status: Mapped[int | None] = mapped_column(SmallInteger)
     platform_order_refund_status: Mapped[int | None] = mapped_column(SmallInteger)
+    platform_after_sales_status_text: Mapped[str | None] = mapped_column(String(100))
+    platform_order_status_text: Mapped[str | None] = mapped_column(String(100))
     erp_customer_name: Mapped[str | None] = mapped_column(String(255))
     erp_sales_owner: Mapped[str | None] = mapped_column(String(50))
     erp_sales_owner_status: Mapped[str | None] = mapped_column(String(20))
@@ -322,6 +324,29 @@ class TmallSyncCursor(Base):
     __tablename__ = "tmall_sync_cursors"
     __table_args__ = (
         UniqueConstraint("shop_id", "sync_scope", name="uk_tmall_sync_cursor_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(
+        ForeignKey("shops.shop_id", ondelete="CASCADE"), nullable=False
+    )
+    sync_scope: Mapped[str] = mapped_column(String(100), nullable=False)
+    cursor_end_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
+
+
+class PlatformSyncCursor(Base):
+    __tablename__ = "platform_sync_cursors"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "sync_scope", name="uk_platform_sync_cursor_scope"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

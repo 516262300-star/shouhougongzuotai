@@ -156,6 +156,31 @@ class Settings(BaseSettings):
     tmall_shop_6_code: str = "tmall-shop-06"
     tmall_shop_6_session_key: SecretStr | None = None
 
+    # 其余平台售后均为只读同步。店铺凭据使用 JSON 数组，支持任意店铺数量；
+    # 真实密钥只放本机 .env，不写数据库和版本库。
+    marketplace_sync_initial_lookback_hours: int = Field(default=72, ge=1, le=720)
+    marketplace_sync_overlap_seconds: int = Field(default=300, ge=0, le=3600)
+    marketplace_sync_window_hours: int = Field(default=24, ge=1, le=24 * 30)
+    marketplace_sync_page_size: int = Field(default=50, ge=1, le=100)
+    marketplace_timeout_seconds: float = Field(default=15, gt=0, le=60)
+    marketplace_read_max_attempts: int = Field(default=3, ge=1, le=5)
+
+    taobao_api_url: str = "https://eco.taobao.com/router/rest"
+    taobao_sync_enabled: bool = False
+    taobao_shops_json: list[dict[str, str]] = Field(default_factory=list)
+
+    alibaba_1688_api_url: str = "https://gw.open.1688.com/openapi"
+    alibaba_1688_sync_enabled: bool = False
+    alibaba_1688_shops_json: list[dict[str, str]] = Field(default_factory=list)
+
+    jd_api_url: str = "https://api.jd.com/routerjson"
+    jd_sync_enabled: bool = False
+    jd_shops_json: list[dict[str, str]] = Field(default_factory=list)
+
+    douyin_api_url: str = "https://openapi-fxg.jinritemai.com"
+    douyin_sync_enabled: bool = False
+    douyin_shops_json: list[dict[str, str]] = Field(default_factory=list)
+
 
 @lru_cache
 def get_settings() -> Settings:
