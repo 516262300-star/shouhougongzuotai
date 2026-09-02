@@ -75,6 +75,34 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     assert result.item.applied_quantity == 22
 
 
+def test_normalize_refund_accepts_formatted_platform_times() -> None:
+    result = normalize_refund(
+        {
+            "id": 456,
+            "order_sn": "order-formatted-time",
+            "after_sales_type": 2,
+            "refund_amount": "4.94",
+            "goods_number": 1,
+            "outer_id": "sku-1",
+            "created_time": "2026-09-02 10:38:32",
+            "updated_time": "2026-09-02T10:41:50+08:00",
+        },
+        {
+            "id": 456,
+            "order_sn": "order-formatted-time",
+            "after_sales_type": 1,
+            "refund_amount": 494,
+            "order_amount": 494,
+            "out_sku_sn": "sku-1",
+            "goods_number": 1,
+        },
+        {"order_status": 2, "tracking_number": "JT-test"},
+    )
+
+    assert result.platform_created_at == datetime(2026, 9, 2, 10, 38, 32)
+    assert result.platform_updated_at == datetime(2026, 9, 2, 10, 41, 50)
+
+
 def test_unknown_after_sales_type_is_rejected() -> None:
     with pytest.raises(PddDataMappingError, match="after_sales_type"):
         normalize_refund(

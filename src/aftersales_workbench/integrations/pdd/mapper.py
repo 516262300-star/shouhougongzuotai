@@ -73,15 +73,25 @@ def _optional_int(value: Any, *, field: str) -> int | None:
 def _optional_timestamp(value: Any, *, field: str) -> datetime | None:
     if value is None or str(value).strip() == "":
         return None
+    text_value = str(value).strip()
+    shanghai = timezone(timedelta(hours=8), name="Asia/Shanghai")
     try:
-        timestamp = int(value)
-        shanghai = timezone(timedelta(hours=8), name="Asia/Shanghai")
+        timestamp = int(text_value)
+    except (OSError, OverflowError, TypeError, ValueError):
+        try:
+            parsed = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
+        except ValueError as parse_exc:
+            raise PddDataMappingError(f"{field} 不是有效时间戳") from parse_exc
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(shanghai).replace(tzinfo=None)
+        return parsed
+    try:
         return (
             datetime.fromtimestamp(timestamp, tz=UTC)
             .astimezone(shanghai)
             .replace(tzinfo=None)
         )
-    except (OSError, OverflowError, TypeError, ValueError) as exc:
+    except (OSError, OverflowError, ValueError) as exc:
         raise PddDataMappingError(f"{field} 不是有效时间戳") from exc
 
 
