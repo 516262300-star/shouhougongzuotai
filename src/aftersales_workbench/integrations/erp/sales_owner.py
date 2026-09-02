@@ -14,7 +14,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
-from aftersales_workbench.db.models import AfterSalesOrder
+from aftersales_workbench.db.models import AfterSalesOrder, Platform, Shop
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,14 +355,18 @@ class ErpSalesOwnerSyncService:
         )
         stale_total = int(
             self.session.scalar(
-                select(func.count()).select_from(AfterSalesOrder).where(stale_filter)
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+                .where(Shop.platform == Platform.PDD, stale_filter)
             )
             or 0
         )
         orders = list(
             self.session.scalars(
                 select(AfterSalesOrder)
-                .where(stale_filter)
+                .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+                .where(Shop.platform == Platform.PDD, stale_filter)
                 .order_by(
                     AfterSalesOrder.erp_sales_owner_synced_at.asc(),
                     AfterSalesOrder.id.desc(),

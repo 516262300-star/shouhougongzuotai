@@ -205,7 +205,7 @@ function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, b
           <span>店铺</span>
           <select value={draft.shop_id} onChange={update("shop_id")}>
             <option value="">全部</option>
-            {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.shop_name}</option>)}
+            {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.platform_label ? `${shop.platform_label} · ` : ""}{shop.shop_name}</option>)}
           </select>
         </label>
         <label>
@@ -313,7 +313,7 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
               className={selected === item.after_sales_sn ? "selected" : ""}
               onClick={() => onSelect(item.after_sales_sn)}
             >
-              <td title={item.shop_name}><span className="truncate shop-cell">{item.shop_name}</span></td>
+              <td title={`${item.platform_label || ""} ${item.shop_name}`}><div className="stacked-cell"><b className="truncate shop-cell">{item.shop_name}</b><small>{item.platform_label || "—"}</small></div></td>
               <td className="mono">{item.after_sales_sn}</td>
               <td className="mono" title={item.platform_order_sn}>{item.platform_order_sn}</td>
               <td title={item.erp_customer_name}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
@@ -390,7 +390,7 @@ function InterceptFilterPanel({ draft, setDraft, onSubmit, onReset, shops, sales
           <span>店铺</span>
           <select value={draft.shop_id} onChange={update("shop_id")}>
             <option value="">全部</option>
-            {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.shop_name}</option>)}
+            {shops.filter((shop) => !shop.platform || shop.platform === "PDD").map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.platform_label ? `${shop.platform_label} · ` : ""}{shop.shop_name}</option>)}
           </select>
         </label>
         <label>
@@ -588,7 +588,7 @@ function AttributionFilters({ draft, setDraft, shops, categories, busy, onSubmit
   const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
   return (
     <form className="attribution-filters" onSubmit={onSubmit}>
-      <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")}><option value="">全部店铺</option>{shops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.shop_name}</option>)}</select></label>
+      <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")}><option value="">全部店铺</option>{shops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.platform_label ? `${shop.platform_label} · ` : ""}{shop.shop_name}</option>)}</select></label>
       <label><span>原因大类</span><select value={draft.reason_category} onChange={update("reason_category")}><option value="">全部原因</option>{categories.map((category) => <option key={category.code} value={category.code}>{category.label}</option>)}</select></label>
       <label className="attribution-date"><span>申请时间</span><div><input type="date" value={draft.started_on} onChange={update("started_on")} /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} /></div></label>
       <label className="attribution-search"><span>型号 / SKU</span><div><MagnifyingGlass size={15} /><input value={draft.model_keyword} onChange={update("model_keyword")} placeholder="例如 6050" /></div></label>
@@ -848,6 +848,7 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
             <h3>基础信息</h3>
             <dl>
               <DetailRow label="店铺" value={detail.shop_name} />
+              <DetailRow label="平台" value={detail.platform_label} />
               <DetailRow label="售后单号" value={detail.after_sales_sn} copyable onCopy={onCopy} />
               <DetailRow label="订单号" value={detail.platform_order_sn} copyable onCopy={onCopy} />
               <DetailRow label="归属业务员" value={detail.erp_customer.sales_owner} />

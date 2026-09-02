@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aftersales_workbench.db.models import AfterSalesType
+from aftersales_workbench.db.models import AfterSalesType, Platform
 from aftersales_workbench.workflows.module1 import (
     Module1Candidate,
     Module1InterceptService,
@@ -87,6 +87,7 @@ def test_module1_repository_only_selects_only_refund() -> None:
     assert session.statement is not None
     assert AfterSalesType.ONLY_REFUND in session.statement.compile().params.values()
     assert AfterSalesType.RETURN_AND_REFUND not in session.statement.compile().params.values()
+    assert Platform.PDD in session.statement.compile().params.values()
     assert (
         "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
         in str(session.statement)

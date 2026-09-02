@@ -25,6 +25,11 @@ from aftersales_workbench.integrations.pdd.shops import (
     load_configured_pdd_shops,
 )
 from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService
+from aftersales_workbench.integrations.tmall.repository import (
+    SqlAlchemyTmallSyncRepository,
+)
+from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
+from aftersales_workbench.integrations.tmall.sync import TmallRefundSyncService
 from aftersales_workbench.workflows.actions import ExternalActionExecutor
 from aftersales_workbench.workflows.desktop_notice import (
     DesktopNoticePlanner,
@@ -121,6 +126,7 @@ class Module1WorkerCycleResult:
     finished_at: str | None = None
     ok: bool = True
     sync: WorkerStageResult | None = None
+    tmall_sync: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
     module3_exception_todos: WorkerStageResult | None = None
@@ -159,6 +165,10 @@ class Module1WorkerCycleResult:
                 ),
                 "error": self.sync.error if self.sync else None,
             },
+            "tmall_sync": self._stage_counts(
+                self.tmall_sync,
+                ("shops_ok", "shops_failed", "records_seen", "records_created"),
+            ),
             "module3_tasks": self._stage_counts(
                 self.module3_tasks,
                 (
@@ -309,6 +319,7 @@ class Module1WorkerRuntime:
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
+        result.tmall_sync = self._capture(self._sync_tmall)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.module3_tasks = self._capture(self._prepare_module3_tasks)
         result.module3_erp_refunds = self._capture(self._process_module3_erp_refunds)
@@ -331,6 +342,7 @@ class Module1WorkerRuntime:
         result.pdd_refund = self._capture(self._process_pdd_refunds)
         stages = (
             result.sync,
+            result.tmall_sync,
             result.erp_sales_owners,
             result.module3_tasks,
             result.module3_erp_refunds,
@@ -478,6 +490,45 @@ class Module1WorkerRuntime:
                 error="拼多多同步存在失败店铺: " + "; ".join(failures),
             )
         return WorkerStageResult.completed({"shops": details})
+
+    def _sync_tmall(self) -> WorkerStageResult:
+        if not self.settings.tmall_sync_enabled:
+            return WorkerStageResult.skipped(
+                "天猫只读售后同步未启用",
+                shops_ok=0,
+                shops_failed=0,
+                records_seen=0,
+                records_created=0,
+            )
+        shops = load_configured_tmall_shops(self.settings, require_all=False)
+        with SessionLocal() as session:
+            sync_results = TmallRefundSyncService(
+                SqlAlchemyTmallSyncRepository(session),
+                self.settings,
+            ).sync_all(
+                shops,
+                max_windows=self.options.max_sync_windows,
+            )
+        details = [item.safe_dict() for item in sync_results]
+        summary = {
+            "shops": details,
+            "shops_ok": sum(item.ok for item in sync_results),
+            "shops_failed": sum(not item.ok for item in sync_results),
+            "records_seen": sum(item.records_seen for item in sync_results),
+            "records_created": sum(item.records_created for item in sync_results),
+        }
+        if not all(item.ok for item in sync_results):
+            failures = [
+                f"{item.shop_number}店: {item.error or '未知错误'}"
+                for item in sync_results
+                if not item.ok
+            ]
+            return WorkerStageResult(
+                status="failed",
+                details=summary,
+                error="天猫同步存在失败店铺: " + "; ".join(failures),
+            )
+        return WorkerStageResult.completed(summary)
 
     def _sync_sales_owners(self) -> WorkerStageResult:
         if not self.settings.erp_sales_owner_sync_enabled:

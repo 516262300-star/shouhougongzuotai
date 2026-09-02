@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     ShippingStatus,
     Shop,
     WorkflowStatus,
@@ -115,6 +116,15 @@ CARRIER_LABELS = {
     "DB": "德邦快递",
     "384": "极兔速递",
     "JTSD": "极兔速递",
+}
+
+PLATFORM_LABELS = {
+    "PDD": "拼多多",
+    "TMALL": "天猫",
+    "TAOBAO": "淘宝",
+    "1688": "1688",
+    "JD": "京东",
+    "DOUYIN": "抖音",
 }
 
 COMPLETED_WORKFLOWS = {
@@ -277,15 +287,12 @@ class AftersalesRecordService:
         rows = self.session.execute(statement).all()
         after_sales_sns = [row.AfterSalesOrder.after_sales_sn for row in rows]
         tasks_by_order = self._tasks_by_order(after_sales_sns)
-        owners_by_order = {
-            row.AfterSalesOrder.platform_order_sn: cached
-            for row in rows
-            if (cached := self._cached_owner(row.AfterSalesOrder)) is not None
-        }
+        owners_by_order = self._owners_for_rows(rows)
         missing_order_sns = [
             row.AfterSalesOrder.platform_order_sn
             for row in rows
-            if row.AfterSalesOrder.platform_order_sn not in owners_by_order
+            if row.Shop.platform == Platform.PDD
+            and row.AfterSalesOrder.platform_order_sn not in owners_by_order
         ]
         if missing_order_sns:
             owners_by_order.update(
@@ -515,14 +522,22 @@ class AftersalesRecordService:
             or order.logistics_latest_context
             or self._decision_note(workflow, logistics)
         )
-        owner = self._cached_owner(order) or self.sales_owner_resolver.resolve(
-            order.platform_order_sn
-        )
+        owner = self._cached_owner(order)
+        if owner is None:
+            owner = (
+                self.sales_owner_resolver.resolve(order.platform_order_sn)
+                if shop.platform == Platform.PDD
+                else self._unsupported_platform_owner(shop.platform)
+            )
         serialized_owner = self._serialize_owner(owner)
         return {
             "after_sales_sn": order.after_sales_sn,
             "shop_name": shop.shop_name,
             "shop_code": shop.shop_code,
+            "platform": _enum_value(shop.platform),
+            "platform_label": PLATFORM_LABELS.get(
+                _enum_value(shop.platform), _enum_value(shop.platform)
+            ),
             "platform_order_sn": order.platform_order_sn,
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
@@ -627,6 +642,10 @@ class AftersalesRecordService:
             "shop_id": shop.shop_id,
             "shop_name": shop.shop_name,
             "shop_code": shop.shop_code,
+            "platform": _enum_value(shop.platform),
+            "platform_label": PLATFORM_LABELS.get(
+                _enum_value(shop.platform), _enum_value(shop.platform)
+            ),
             "after_sales_sn": order.after_sales_sn,
             "platform_order_sn": order.platform_order_sn,
             "sales_owner": serialized_owner["sales_owner"],
@@ -889,21 +908,37 @@ class AftersalesRecordService:
         )
 
     def _owners_for_rows(self, rows: list[Any]) -> dict[str, SalesOwnerLookup]:
-        owners_by_order = {
-            row.AfterSalesOrder.platform_order_sn: cached
-            for row in rows
-            if (cached := self._cached_owner(row.AfterSalesOrder)) is not None
-        }
+        owners_by_order: dict[str, SalesOwnerLookup] = {}
+        for row in rows:
+            order_sn = row.AfterSalesOrder.platform_order_sn
+            cached = self._cached_owner(row.AfterSalesOrder)
+            if cached is not None:
+                owners_by_order[order_sn] = cached
+            elif row.Shop.platform != Platform.PDD:
+                owners_by_order[order_sn] = self._unsupported_platform_owner(
+                    row.Shop.platform
+                )
         missing_order_sns = [
             row.AfterSalesOrder.platform_order_sn
             for row in rows
-            if row.AfterSalesOrder.platform_order_sn not in owners_by_order
+            if row.Shop.platform == Platform.PDD
+            and row.AfterSalesOrder.platform_order_sn not in owners_by_order
         ]
         if missing_order_sns:
             owners_by_order.update(
                 self.sales_owner_resolver.resolve_many(missing_order_sns)
             )
         return owners_by_order
+
+    @staticmethod
+    def _unsupported_platform_owner(platform: Platform | str) -> SalesOwnerLookup:
+        platform_value = _enum_value(platform)
+        return SalesOwnerLookup(
+            None,
+            None,
+            "not_configured",
+            f"{PLATFORM_LABELS.get(platform_value, platform_value)}订单的 ERP 客户归属尚未接入",
+        )
 
     @staticmethod
     def _task_exists(
@@ -1266,12 +1301,20 @@ class AftersalesRecordService:
 
     def _shops(self) -> list[dict[str, Any]]:
         rows = self.session.execute(
-            select(Shop.shop_id, Shop.shop_name, Shop.shop_code)
+            select(Shop.shop_id, Shop.shop_name, Shop.shop_code, Shop.platform)
             .where(Shop.is_active == 1)
             .order_by(Shop.shop_id)
         ).all()
         return [
-            {"shop_id": row.shop_id, "shop_name": row.shop_name, "shop_code": row.shop_code}
+            {
+                "shop_id": row.shop_id,
+                "shop_name": row.shop_name,
+                "shop_code": row.shop_code,
+                "platform": _enum_value(row.platform),
+                "platform_label": PLATFORM_LABELS.get(
+                    _enum_value(row.platform), _enum_value(row.platform)
+                ),
+            }
             for row in rows
         ]
 

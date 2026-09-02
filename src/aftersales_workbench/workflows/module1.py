@@ -12,6 +12,7 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     ShippingStatus,
     Shop,
     WorkflowStatus,
@@ -74,6 +75,7 @@ class SqlAlchemyModule1Repository:
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
+                Shop.platform == Platform.PDD,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,

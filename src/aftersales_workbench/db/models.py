@@ -318,6 +318,29 @@ class PddSyncCursor(Base):
     )
 
 
+class TmallSyncCursor(Base):
+    __tablename__ = "tmall_sync_cursors"
+    __table_args__ = (
+        UniqueConstraint("shop_id", "sync_scope", name="uk_tmall_sync_cursor_scope"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    shop_id: Mapped[int] = mapped_column(
+        ForeignKey("shops.shop_id", ondelete="CASCADE"), nullable=False
+    )
+    sync_scope: Mapped[str] = mapped_column(String(100), nullable=False)
+    cursor_end_at: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
+
+
 class AftersalesActionTask(Base):
     __tablename__ = "aftersales_action_tasks"
     __table_args__ = (

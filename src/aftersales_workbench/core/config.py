@@ -131,6 +131,31 @@ class Settings(BaseSettings):
     pdd_shop_7_app: int = Field(default=2, ge=1, le=2)
     pdd_shop_7_access_token: SecretStr | None = None
 
+    # 天猫/淘宝开放平台（TOP）只读售后同步。六店共用应用凭据，各店独立 SessionKey。
+    tmall_api_url: str = "https://eco.taobao.com/router/rest"
+    tmall_app_key: SecretStr | None = None
+    tmall_app_secret: SecretStr | None = None
+    tmall_timeout_seconds: float = Field(default=15, gt=0, le=60)
+    tmall_read_max_attempts: int = Field(default=3, ge=1, le=5)
+    tmall_sync_enabled: bool = False
+    tmall_sync_initial_lookback_hours: int = Field(default=72, ge=1, le=720)
+    tmall_sync_overlap_seconds: int = Field(default=300, ge=0, le=3600)
+    tmall_sync_page_size: int = Field(default=100, ge=1, le=100)
+    tmall_sync_window_hours: int = Field(default=24, ge=1, le=24 * 30)
+
+    tmall_shop_1_code: str = "tmall-shop-01"
+    tmall_shop_1_session_key: SecretStr | None = None
+    tmall_shop_2_code: str = "tmall-shop-02"
+    tmall_shop_2_session_key: SecretStr | None = None
+    tmall_shop_3_code: str = "tmall-shop-03"
+    tmall_shop_3_session_key: SecretStr | None = None
+    tmall_shop_4_code: str = "tmall-shop-04"
+    tmall_shop_4_session_key: SecretStr | None = None
+    tmall_shop_5_code: str = "tmall-shop-05"
+    tmall_shop_5_session_key: SecretStr | None = None
+    tmall_shop_6_code: str = "tmall-shop-06"
+    tmall_shop_6_session_key: SecretStr | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

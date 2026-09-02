@@ -7,6 +7,7 @@ from aftersales_workbench.db.models import (
     PddSyncCursor,
     ReturnScrapRecord,
     Shop,
+    TmallSyncCursor,
     WarehouseReturnItem,
     WarehouseReturnRecord,
 )
@@ -20,6 +21,7 @@ def test_global_schema_contains_all_master_tables() -> None:
         ReturnScrapRecord.__tablename__,
         NegativeReview.__tablename__,
         PddSyncCursor.__tablename__,
+        TmallSyncCursor.__tablename__,
         AftersalesActionTask.__tablename__,
         WarehouseReturnRecord.__tablename__,
         WarehouseReturnItem.__tablename__,

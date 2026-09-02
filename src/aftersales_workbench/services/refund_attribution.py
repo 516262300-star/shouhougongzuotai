@@ -22,6 +22,15 @@ REASON_CATEGORIES: dict[str, str] = {
     "OTHER": "其他 / 未说明",
 }
 
+PLATFORM_LABELS: dict[str, str] = {
+    "PDD": "拼多多",
+    "TMALL": "天猫",
+    "TAOBAO": "淘宝",
+    "1688": "1688",
+    "JD": "京东",
+    "DOUYIN": "抖音",
+}
+
 _CATEGORY_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "QUALITY",
@@ -375,9 +384,19 @@ class RefundAttributionService:
 
     def _shops(self) -> list[dict[str, Any]]:
         return [
-            {"shop_id": shop_id, "shop_name": shop_name}
-            for shop_id, shop_name in self.session.execute(
-                select(Shop.shop_id, Shop.shop_name)
+            {
+                "shop_id": shop_id,
+                "shop_name": shop_name,
+                "platform": (
+                    platform.value if hasattr(platform, "value") else str(platform)
+                ),
+                "platform_label": PLATFORM_LABELS.get(
+                    platform.value if hasattr(platform, "value") else str(platform),
+                    platform.value if hasattr(platform, "value") else str(platform),
+                ),
+            }
+            for shop_id, shop_name, platform in self.session.execute(
+                select(Shop.shop_id, Shop.shop_name, Shop.platform)
                 .where(Shop.is_active == 1)
                 .order_by(Shop.shop_id)
             )

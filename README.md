@@ -1,11 +1,11 @@
 # 利德仕电商自动化售后工作台
 
-面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步，以及模块 1–4 的核心流程。
+面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步、天猫六店只读售后同步，以及模块 1–4 的核心流程。
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、七店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 2 仓库扫码收货与人工验货、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、模块 4 售后原因自动分类与型号归因看板、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
-- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`aftersales_action_tasks`、`warehouse_return_records`、`warehouse_return_items`。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、拼多多七店与天猫六店售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 2 仓库扫码收货与人工验货、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、模块 4 售后原因自动分类与型号归因看板、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`tmall_sync_cursors`、`aftersales_action_tasks`、`warehouse_return_records`、`warehouse_return_items`。
 - ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 当前只写售后工作台本地库，不点击 ERP、不调用拼多多退款。
 - 所有外部写入默认关闭。企微、拼多多、ERP 分别受 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED`、`ERP_WRITE_ENABLED` 及对应功能开关保护。
 
@@ -115,6 +115,13 @@ alembic downgrade -1
 | `PDD_SHOP_1_CODE` … `PDD_SHOP_7_CODE` | 1–7 店的本地稳定代号 | `pdd-shop-01` … `pdd-shop-07` |
 | `PDD_SHOP_1_APP` … `PDD_SHOP_7_APP` | 店铺使用的应用组；1–4 店为 `1`，5–7 店为 `2` | `1` / `2` |
 | `PDD_SHOP_1_ACCESS_TOKEN` … `PDD_SHOP_7_ACCESS_TOKEN` | 1–7 店各自的授权 Token | 无 |
+| `TMALL_APP_KEY` / `TMALL_APP_SECRET` | 天猫六店共用的淘宝开放平台应用凭据 | 无 |
+| `TMALL_SHOP_1_SESSION_KEY` … `TMALL_SHOP_6_SESSION_KEY` | 天猫六店各自的卖家授权 SessionKey | 无 |
+| `TMALL_SHOP_1_CODE` … `TMALL_SHOP_6_CODE` | 天猫六店的本地稳定代号 | `tmall-shop-01` … `tmall-shop-06` |
+| `TMALL_SYNC_ENABLED` | 将天猫只读售后同步接入常驻后台周期 | `false` |
+| `TMALL_SYNC_INITIAL_LOOKBACK_HOURS` | 天猫新店铺无游标时的首次回溯小时数 | `72` |
+| `TMALL_SYNC_OVERLAP_SECONDS` | 天猫增量续传时向前重叠秒数 | `300` |
+| `TMALL_SYNC_WINDOW_HOURS` | 天猫单个修改时间窗口小时数 | `24` |
 
 生产环境不得使用示例密码，也不得将 `.env`、店铺 Secret 或 Token 提交到 Git。
 
@@ -176,6 +183,28 @@ alembic upgrade head
 可用 `--statuses 2 3 10`、`--shops 1 2 3` 限定范围。单店失败时该店当前窗口回滚，其他店继续；命令最终返回非零退出码。重新执行会从该店最后成功游标向前重叠 5 分钟续传，已存在的售后单按售后单号更新，不会重复新建。默认状态集合从 `2,3` 改为 `2,3,10` 后会使用新的同步游标范围，首次运行会按配置的回溯时长补齐退款成功记录。
 
 同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
+
+## 天猫六店售后只读同步
+
+天猫接入直接调用淘宝开放平台正式 HTTPS 网关，不依赖旧管理系统网页或旧代码运行环境。六个店铺共用 `TMALL_APP_KEY` / `TMALL_APP_SECRET`，每店使用独立的 `TMALL_SHOP_N_SESSION_KEY`。同步器调用 `taobao.user.seller.get` 校验卖家身份，按修改时间分页读取 `taobao.refunds.receive.get`，再用 `taobao.refund.get` 和 `taobao.trade.fullinfo.get` 补齐退款原因、留言、商品、SKU、订单状态和退货运单。结果与拼多多共用 `shops`、`aftersales_orders`、`aftersales_items`，进度单独保存在 `tmall_sync_cursors`。
+
+当前天猫接入为只读记录层：天猫售后会进入“售后订单”和“售后归因”，页面会显示“天猫”平台标识；不会生成拼多多拦截通知、拼多多退款或模块 3 动作。模块 1、模块 3 的数据库候选查询也强制限定 `Shop.platform=PDD`，即使店铺名或订单状态相同也不会误处理天猫订单。天猫退款审核、同意退款和物流拦截需另行设计平台状态机及写入保护，不能复用拼多多写接口。
+
+首次接入先升级数据库并校验六店授权：
+
+```powershell
+alembic upgrade head
+.\.venv\Scripts\tmall-check-shops.exe
+```
+
+只同步一店最近一小时的一个窗口，确认后再同步全部六店：
+
+```powershell
+.\.venv\Scripts\tmall-sync-refunds.exe --shops 1 --lookback-hours 1 --max-windows 1
+.\.venv\Scripts\tmall-sync-refunds.exe --lookback-hours 72
+```
+
+单店失败只回滚该店当前窗口，其他店继续；重新执行会从该店最后成功游标向前重叠 5 分钟幂等续传。若退款记录仍存在、但原交易已经无权查看或被平台归档，系统保留退款数据并将交易详情降级为空，不会让这一笔旧交易阻断整店同步。`TMALL_SYNC_ENABLED=true` 后，现有常驻后台运行器每个周期会附带执行天猫增量只读同步；凭据只能写入被 Git 忽略的本机 `.env`。
 
 ## 模块 1：在途拦截与退款
 
@@ -262,7 +291,7 @@ alembic upgrade head
 
 后台运行器沿用历史入口名 `aftersales-run-module1` 和脚本名 `module1-worker.ps1`，但现在同时承载模块 1 与模块 3。固定周期顺序为：
 
-1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；
+1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；`TMALL_SYNC_ENABLED=true` 时再独立读取天猫六店售后记录，天猫同步不进入后续拼多多动作链；
 2. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
 3. `MODULE3_WORKER_ENABLED=true` 时，小批量生成模块 3 幂等待办；同时开启 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 后，严格核验并补开未发货 ERP 退款单；
 4. 对 ERP 未找到、金额/商品不一致或页面不可用的模块 3 任务保留本地异常，并按客户档案归属业务员幂等生成 `ERP_CREATE_MANUAL_TODO`；后续复用现有管理系统待办发布器；
@@ -304,13 +333,14 @@ alembic upgrade head
 
 计划任务或用户启动项都使用当前 Windows 用户的交互登录令牌，因此电脑重启后至少需要登录一次；锁屏不影响同步，但休眠、关机和退出登录会停止本地运行。应在 Windows 电源设置中关闭自动休眠。若以后迁移到服务器，应先执行 `Uninstall`，避免两台机器同时处理同一售后。
 
-默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，模块 1 每周期最多处理 20 条动作任务，模块 3 默认每周期只处理 1 笔，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。工作台 Web 的标准输出、错误输出和 PID 分别位于 `.runtime/workbench-web.log`、`.runtime/workbench-web-error.log`、`.runtime/workbench-web.pid`。`module1-autostart.ps1 -Action Status` 会同时显示 MySQL、后台运行器和 Web 健康状态；后台运行器的 `Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
+默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口。开启天猫同步后，同一进程也会按天猫独立游标追赶最多两个配置时间窗口。模块 1 每周期最多处理 20 条动作任务，模块 3 默认每周期只处理 1 笔，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。工作台 Web 的标准输出、错误输出和 PID 分别位于 `.runtime/workbench-web.log`、`.runtime/workbench-web-error.log`、`.runtime/workbench-web.pid`。`module1-autostart.ps1 -Action Status` 会同时显示 MySQL、后台运行器和 Web 健康状态；后台运行器的 `Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
 
 快递 100 不再跟随 60 秒后台周期重复查询同一运单；同一周期内多笔售后共用同一快递公司和运单号时也只查询一次。正常取得轨迹后默认 5 分钟再刷新；夜间退款闸门会把下次检查时间直接调度到次日 09:00。失败后按 5、10、20、30 分钟递增，之后保持 30 分钟上限。每次失败会保存快递 100 原始错误、连续失败次数和下次查询时间，同时保留最后一次成功轨迹；连续 6 次失败后，订单和待发送拦截任务会显示“需人工核对”。无论失败次数多少，自动退款均继续冻结。若之后恢复成功，失败次数和错误提示会自动清零。平台退款真正执行前会同时复查当前是否在 09:00–21:00，并强制进行一次不受退避时间限制的实时查询，避免使用夜间或缓存轨迹放款。
 
 后台运行失败时按以下方式恢复：
 
 - 单店拼多多读取失败：其他店继续完成；修复 Token 或网络后，下个周期从该店最后成功游标重试，不会跳过失败窗口；
+- 单店天猫读取失败：其他天猫店与拼多多动作链继续完成；修复 SessionKey、接口权限或网络后，从 `tmall_sync_cursors` 的最后成功窗口重试；原交易不可查看但退款详情有效时会自动降级保留退款记录；
 - 单票详情返回拼多多 `45001`“订单不属于当前店铺或订单不存在”：隔离并计入 `records_skipped`，其余订单继续处理且窗口游标正常推进；其他平台错误仍按整店失败处理；
 - ERP 归属查询失败：该批记录保留失败状态并在 5 分钟后重试；该独立阶段不会阻断后续拦截安全流程；
 - ERP 人工待办发布关闭：本地任务保留为 `PENDING`；开启双重写开关后下个周期继续。发布失败会使用远端售后标识先查重，再在 `ERP_TODO_MAX_ATTEMPTS` 范围内重新入队；超过次数后保留 `FAILED` 和错误原因供人工检查；
