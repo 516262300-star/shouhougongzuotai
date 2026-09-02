@@ -29,6 +29,7 @@ def test_attribution_overview_passes_dashboard_filters() -> None:
         response = TestClient(app).get(
             "/api/v1/attribution/overview",
             params={
+                "platform": "1688",
                 "shop_id": 3,
                 "started_on": "2026-08-01",
                 "ended_on": "2026-08-31",
@@ -43,6 +44,7 @@ def test_attribution_overview_passes_dashboard_filters() -> None:
     assert response.status_code == 200
     assert response.json()["summary"]["refund_applications"] == 12
     assert service.kwargs == {
+        "platform": "1688",
         "shop_id": 3,
         "started_on": date(2026, 8, 1),
         "ended_on": date(2026, 8, 31),
@@ -58,6 +60,19 @@ def test_attribution_rejects_unknown_reason_category() -> None:
         response = TestClient(app).get(
             "/api/v1/attribution/overview",
             params={"reason_category": "MAYBE"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_attribution_rejects_unknown_platform() -> None:
+    app.dependency_overrides[get_attribution_service] = lambda: FakeAttributionService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/attribution/overview",
+            params={"platform": "UNKNOWN"},
         )
     finally:
         app.dependency_overrides.clear()

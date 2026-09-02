@@ -303,6 +303,7 @@ class RefundAttributionService:
     def overview(
         self,
         *,
+        platform: str | None = None,
         shop_id: int | None = None,
         started_on: date | None = None,
         ended_on: date | None = None,
@@ -334,6 +335,9 @@ class RefundAttributionService:
             )
             .order_by(occurred_at.desc(), AfterSalesOrder.id.desc())
         )
+        clean_platform = (platform or "").strip().upper()
+        if clean_platform:
+            statement = statement.where(Shop.platform == clean_platform)
         if shop_id is not None:
             statement = statement.where(AfterSalesOrder.shop_id == shop_id)
         if started_on:

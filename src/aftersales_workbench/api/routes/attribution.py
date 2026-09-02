@@ -19,6 +19,8 @@ def get_attribution_service(
 @router.get("/overview")
 def overview(
     service: Annotated[RefundAttributionService, Depends(get_attribution_service)],
+    platform: Literal["PDD", "TMALL", "TAOBAO", "1688", "JD", "DOUYIN"]
+    | None = None,
     shop_id: int | None = None,
     started_on: date | None = None,
     ended_on: date | None = None,
@@ -36,6 +38,7 @@ def overview(
     focus_model: Annotated[str | None, Query(max_length=100)] = None,
 ) -> dict[str, Any]:
     return service.overview(
+        platform=platform,
         shop_id=shop_id,
         started_on=started_on,
         ended_on=ended_on,

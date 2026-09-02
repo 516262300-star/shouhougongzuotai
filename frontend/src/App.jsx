@@ -68,6 +68,7 @@ function createAttributionFilters() {
   const start = new Date(end);
   start.setDate(end.getDate() - 30);
   return {
+    platform: "",
     shop_id: "",
     reason_category: "",
     started_on: inputDate(start),
@@ -623,9 +624,13 @@ function AttributionSummary({ summary }) {
 
 function AttributionFilters({ draft, setDraft, shops, categories, busy, onSubmit, onReset }) {
   const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
+  const changePlatform = (event) => setDraft((current) => ({ ...current, platform: event.target.value, shop_id: "" }));
+  const platformShops = draft.platform ? shops.filter((shop) => shop.platform === draft.platform) : [];
+  const selectedPlatformLabel = PLATFORM_OPTIONS.find((item) => item.value === draft.platform)?.label;
   return (
     <form className="attribution-filters" onSubmit={onSubmit}>
-      <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")}><option value="">全部店铺</option>{shops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.platform_label ? `${shop.platform_label} · ` : ""}{shop.shop_name}</option>)}</select></label>
+      <label><span>平台</span><select value={draft.platform} onChange={changePlatform}><option value="">全部平台</option>{PLATFORM_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+      <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")} disabled={!draft.platform}><option value="">{draft.platform ? `全部${selectedPlatformLabel}店铺` : "请先选择平台"}</option>{platformShops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.shop_name}</option>)}{draft.platform && !platformShops.length && <option value="" disabled>暂无已接入店铺</option>}</select></label>
       <label><span>原因大类</span><select value={draft.reason_category} onChange={update("reason_category")}><option value="">全部原因</option>{categories.map((category) => <option key={category.code} value={category.code}>{category.label}</option>)}</select></label>
       <label className="attribution-date"><span>申请时间</span><div><input type="date" value={draft.started_on} onChange={update("started_on")} /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} /></div></label>
       <label className="attribution-search"><span>型号 / SKU</span><div><MagnifyingGlass size={15} /><input value={draft.model_keyword} onChange={update("model_keyword")} placeholder="例如 6050" /></div></label>
