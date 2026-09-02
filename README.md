@@ -289,18 +289,20 @@ alembic upgrade head
 & .\scripts\module1-worker.ps1 -Action Stop
 ```
 
-本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，启动入口不保存平台 Token、管理系统账号或数据库密码。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时隐藏启动 MySQL，售后后台运行器未运行时调用上面的幂等启动脚本；已经运行时不会重复启动。
+本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，启动入口不保存平台 Token、管理系统账号或数据库密码。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时隐藏启动 MySQL，售后后台运行器未运行时调用上面的幂等启动脚本，工作台 Web 健康检查未通过时使用生产构建启动 `uvicorn`；已经运行时不会重复启动。Web 默认监听 `127.0.0.1:8000`，要求 `frontend/dist/client/index.html` 已由 `npm run build` 生成。
 
 ```powershell
 & .\scripts\module1-autostart.ps1 -Action Install
 & .\scripts\module1-autostart.ps1 -Action Status
+# 可选：改用其他本机端口
+& .\scripts\module1-autostart.ps1 -Action Install -WebPort 8080
 # 不再需要时再显式卸载
 & .\scripts\module1-autostart.ps1 -Action Uninstall
 ```
 
 计划任务或用户启动项都使用当前 Windows 用户的交互登录令牌，因此电脑重启后至少需要登录一次；锁屏不影响同步，但休眠、关机和退出登录会停止本地运行。应在 Windows 电源设置中关闭自动休眠。若以后迁移到服务器，应先执行 `Uninstall`，避免两台机器同时处理同一售后。
 
-默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，模块 1 每周期最多处理 20 条动作任务，模块 3 默认每周期只处理 1 笔，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。`Status` 同时显示模块 1/3 最近一个周期的精简摘要；`Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
+默认运行拼多多 1–7 店；每店每周期最多追赶两个 30 分钟窗口，模块 1 每周期最多处理 20 条动作任务，模块 3 默认每周期只处理 1 笔，完整周期结束后等待 60 秒。运行日志位于 `.runtime/module1-worker.log`，错误日志位于 `.runtime/module1-worker-error.log`，PID 和安全停止信号也保存在被 Git 忽略的 `.runtime/`。工作台 Web 的标准输出、错误输出和 PID 分别位于 `.runtime/workbench-web.log`、`.runtime/workbench-web-error.log`、`.runtime/workbench-web.pid`。`module1-autostart.ps1 -Action Status` 会同时显示 MySQL、后台运行器和 Web 健康状态；后台运行器的 `Stop` 会等待当前平台请求和数据库事务完成后退出，不会在请求中途强杀进程。
 
 快递 100 不再跟随 60 秒后台周期重复查询同一运单；同一周期内多笔售后共用同一快递公司和运单号时也只查询一次。正常取得轨迹后默认 5 分钟再刷新；夜间退款闸门会把下次检查时间直接调度到次日 09:00。失败后按 5、10、20、30 分钟递增，之后保持 30 分钟上限。每次失败会保存快递 100 原始错误、连续失败次数和下次查询时间，同时保留最后一次成功轨迹；连续 6 次失败后，订单和待发送拦截任务会显示“需人工核对”。无论失败次数多少，自动退款均继续冻结。若之后恢复成功，失败次数和错误提示会自动清零。平台退款真正执行前会同时复查当前是否在 09:00–21:00，并强制进行一次不受退避时间限制的实时查询，避免使用夜间或缓存轨迹放款。
 
@@ -316,8 +318,8 @@ alembic upgrade head
 - 拼多多优惠后实付金额缺失：该售后不会进入拦截、人工待办或平台退款动作；先运行 `pdd-backfill-refund-amounts` 只读预演，确认接口能够返回金额后再使用 `--apply`；
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
-- 电脑重启：本地 MySQL 不是 Windows 服务时先启动 MySQL，再重新执行 `Start`；
-- 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；如果 MySQL 或工作区路径发生变化，重新执行 `Install` 刷新本机配置；
+- 电脑重启：登录当前 Windows 用户后，自启动守护会依次恢复 MySQL、后台运行器和工作台 Web；打开 `http://127.0.0.1:8000/` 即可。若 Web 未恢复，先执行 `& .\scripts\module1-autostart.ps1 -Action Run`；
+- 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；Web 启动失败另查 `.runtime/workbench-web-error.log`。如果 MySQL、工作区路径或 Web 端口发生变化，重新执行 `Install` 刷新本机配置；
 - 重复启动：启停脚本通过 PID 文件阻止第二个后台进程。不要绕过脚本同时启动多个 `--forever` 实例。
 
 如需前台观察持续循环或临时覆盖店铺，可直接执行：
