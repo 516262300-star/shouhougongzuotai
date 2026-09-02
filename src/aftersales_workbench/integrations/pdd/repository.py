@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.pdd.mapper import NormalizedRefund
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
+from aftersales_workbench.services.refund_attribution import classify_refund_reason
 from aftersales_workbench.services.refund_scope import reconcile_refund_scope
 
 
@@ -100,6 +101,13 @@ class SqlAlchemyPddSyncRepository:
 
         order.buyer_reason_raw = refund.buyer_reason_raw
         order.buyer_memo = refund.buyer_memo
+        order.reason_category = classify_refund_reason(
+            refund.buyer_reason_raw,
+            refund.buyer_memo,
+        )
+        order.product_name = refund.product_name
+        order.platform_created_at = refund.platform_created_at
+        order.platform_updated_at = refund.platform_updated_at
         order.forward_tracking_number = refund.forward_tracking_number
         order.carrier_code = refund.carrier_code
         order.return_tracking_number = refund.return_tracking_number

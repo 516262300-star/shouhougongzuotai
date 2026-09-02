@@ -1,3 +1,4 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
@@ -22,6 +23,9 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
         "tracking_number": "return-list-no",
         "after_sales_status": 10,
         "speed_refund_flag": 1,
+        "goods_name": "6050 柜门拉手",
+        "created_time": 1788192000,
+        "updated_time": 1788195600,
     }
     detail = {
         "id": 123,
@@ -64,6 +68,9 @@ def test_normalize_refund_maps_real_pdd_shapes() -> None:
     assert result.platform_after_sales_status == 10
     assert result.platform_order_refund_status == 4
     assert result.is_speed_refund is True
+    assert result.product_name == "6050 柜门拉手"
+    assert result.platform_created_at == datetime(2026, 9, 1, 0, 0)
+    assert result.platform_updated_at == datetime(2026, 9, 1, 1, 0)
     assert result.item.sku_code == "sku-1"
     assert result.item.applied_quantity == 22
 

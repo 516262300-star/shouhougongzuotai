@@ -139,6 +139,30 @@ class AfterSalesOrder(Base):
     __table_args__ = (
         Index("idx_return_tracking", "return_tracking_number"),
         Index("idx_order_sn", "platform_order_sn"),
+        Index("idx_aftersales_platform_created", "platform_created_at"),
+        Index("idx_aftersales_erp_owner_sync", "erp_sales_owner_synced_at", "id"),
+        Index("idx_aftersales_erp_sales_owner", "erp_sales_owner", "updated_at"),
+        Index(
+            "idx_aftersales_intercept_logistics",
+            "workflow_status",
+            "logistics_state",
+            "logistics_checked_at",
+        ),
+        Index("idx_aftersales_logistics_next_check", "logistics_next_check_at"),
+        Index(
+            "idx_aftersales_refund_scope",
+            "after_sales_type",
+            "refund_amount",
+            "platform_order_amount",
+            "workflow_status",
+        ),
+        Index(
+            "idx_aftersales_refund_trigger",
+            "platform_after_sales_status",
+            "platform_order_refund_status",
+            "order_shipping_status",
+            "workflow_status",
+        ),
         UniqueConstraint("after_sales_sn", name="uk_after_sales"),
     )
 
@@ -159,6 +183,9 @@ class AfterSalesOrder(Base):
     buyer_reason_raw: Mapped[str | None] = mapped_column(String(255))
     reason_category: Mapped[str | None] = mapped_column(String(50))
     buyer_memo: Mapped[str | None] = mapped_column(Text)
+    product_name: Mapped[str | None] = mapped_column(String(255))
+    platform_created_at: Mapped[datetime | None] = mapped_column(DateTime)
+    platform_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     forward_tracking_number: Mapped[str | None] = mapped_column(String(100))
     carrier_code: Mapped[str | None] = mapped_column(String(50))
     return_tracking_number: Mapped[str | None] = mapped_column(String(100))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -30,6 +31,9 @@ class NormalizedRefund:
     merchant_receivable_amount: Decimal | None
     buyer_reason_raw: str | None
     buyer_memo: str | None
+    product_name: str | None
+    platform_created_at: datetime | None
+    platform_updated_at: datetime | None
     forward_tracking_number: str | None
     carrier_code: str | None
     return_tracking_number: str | None
@@ -64,6 +68,21 @@ def _optional_int(value: Any, *, field: str) -> int | None:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise PddDataMappingError(f"{field} 不是整数") from exc
+
+
+def _optional_timestamp(value: Any, *, field: str) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        timestamp = int(value)
+        shanghai = timezone(timedelta(hours=8), name="Asia/Shanghai")
+        return (
+            datetime.fromtimestamp(timestamp, tz=UTC)
+            .astimezone(shanghai)
+            .replace(tzinfo=None)
+        )
+    except (OSError, OverflowError, TypeError, ValueError) as exc:
+        raise PddDataMappingError(f"{field} 不是有效时间戳") from exc
 
 
 def _refund_amount(detail: dict[str, Any], list_record: dict[str, Any]) -> Decimal:
@@ -236,6 +255,15 @@ def normalize_refund(
             detail.get("after_sales_reason") or list_record.get("after_sale_reason")
         ),
         buyer_memo=_nonempty(detail.get("remark") or order.get("buyer_memo")),
+        product_name=_nonempty(
+            list_record.get("goods_name") or detail.get("goods_name") or order.get("goods_name")
+        ),
+        platform_created_at=_optional_timestamp(
+            list_record.get("created_time"), field="created_time"
+        ),
+        platform_updated_at=_optional_timestamp(
+            list_record.get("updated_time"), field="updated_time"
+        ),
         forward_tracking_number=_nonempty(order.get("tracking_number")),
         carrier_code=_nonempty(order.get("logistics_id")),
         return_tracking_number=_nonempty(

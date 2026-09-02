@@ -54,6 +54,19 @@ function createInterceptFilters() {
   };
 }
 
+function createAttributionFilters() {
+  const end = new Date();
+  const start = new Date(end);
+  start.setDate(end.getDate() - 30);
+  return {
+    shop_id: "",
+    reason_category: "",
+    started_on: inputDate(start),
+    ended_on: inputDate(end),
+    model_keyword: "",
+  };
+}
+
 const formatDateTime = (value, includeYear = false) => {
   if (!value) return "—";
   const date = new Date(value);
@@ -135,6 +148,7 @@ function Sidebar({ activeView, onNavigate }) {
     { id: "orders", label: "售后订单", icon: ClipboardText, enabled: true },
     { id: "intercepts", label: "在途拦截", icon: Truck, enabled: true },
     { id: "warehouse", label: "仓库验货", icon: Package, enabled: true },
+    { id: "attribution", label: "售后归因", icon: ChartBar, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: false },
     { id: "monitor", label: "运行监控", icon: ChartBar, enabled: false },
   ];
@@ -520,6 +534,158 @@ function InterceptWorkspace({ detailOpen, setDetailOpen }) {
       {detailOpen && <DetailPanel detail={detail} loading={detailLoading} onClose={() => setDetailOpen(false)} onCopy={copyValue} copied={copied} />}
       {!detailOpen && selected && <button type="button" className="open-detail" onClick={() => setDetailOpen(true)}>打开售后详情</button>}
     </>
+  );
+}
+
+const reasonColors = {
+  DISLIKE: "#3979cf",
+  QUALITY: "#e95b55",
+  SPEC_MISMATCH: "#8a63d2",
+  LOGISTICS: "#ee8a2f",
+  DESCRIPTION: "#36a38a",
+  PRICE: "#d4a72c",
+  OTHER: "#8b96a7",
+};
+
+function AttributionSummary({ summary }) {
+  const items = [
+    { label: "退款申请单", value: summary.refund_applications ?? 0, suffix: "单" },
+    { label: "涉及退款件数", value: summary.refund_units ?? 0, suffix: "件" },
+    { label: "涉及型号", value: summary.model_count ?? 0, suffix: "款" },
+    { label: "质量类占退款申请", value: summary.quality_issue_share ?? 0, suffix: "%", tone: "danger" },
+  ];
+  return (
+    <section className="attribution-summary" aria-label="售后归因摘要">
+      {items.map((item) => (
+        <div key={item.label}>
+          <span>{item.label}</span>
+          <strong className={item.tone ? `attribution-${item.tone}` : ""}>{item.value}<small>{item.suffix}</small></strong>
+        </div>
+      ))}
+      <div className="dominant-reason"><span>当前主要原因</span><strong>{summary.dominant_reason || "—"}</strong></div>
+    </section>
+  );
+}
+
+function AttributionFilters({ draft, setDraft, shops, categories, busy, onSubmit, onReset }) {
+  const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
+  return (
+    <form className="attribution-filters" onSubmit={onSubmit}>
+      <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")}><option value="">全部店铺</option>{shops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.shop_name}</option>)}</select></label>
+      <label><span>原因大类</span><select value={draft.reason_category} onChange={update("reason_category")}><option value="">全部原因</option>{categories.map((category) => <option key={category.code} value={category.code}>{category.label}</option>)}</select></label>
+      <label className="attribution-date"><span>申请时间</span><div><input type="date" value={draft.started_on} onChange={update("started_on")} /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} /></div></label>
+      <label className="attribution-search"><span>型号 / SKU</span><div><MagnifyingGlass size={15} /><input value={draft.model_keyword} onChange={update("model_keyword")} placeholder="例如 6050" /></div></label>
+      <button type="button" className="button secondary" onClick={onReset}><ArrowCounterClockwise size={16} />重置</button>
+      <button type="submit" className="button primary" disabled={busy}><MagnifyingGlass size={16} />查询</button>
+    </form>
+  );
+}
+
+function ModelRankingChart({ rows, focusModel, onFocus }) {
+  const visible = rows.slice(0, 10);
+  const maxValue = Math.max(1, ...visible.map((row) => row.refund_orders));
+  return (
+    <section className="attribution-card ranking-card">
+      <div className="card-heading"><div><h2>高退款申请型号</h2><p>按退款申请单量排名，点击型号查看原因</p></div><span>TOP {visible.length}</span></div>
+      <div className="ranking-bars">
+        {visible.map((row, index) => (
+          <button type="button" key={row.model_code} className={focusModel === row.model_code ? "active" : ""} onClick={() => onFocus(row.model_code)}>
+            <b>{index + 1}</b><strong>{row.model_code}</strong>
+            <span className="bar-track"><i style={{ width: `${Math.max(4, row.refund_orders * 100 / maxValue)}%` }} /></span>
+            <em>{row.refund_orders}单</em>
+          </button>
+        ))}
+        {!visible.length && <div className="attribution-empty">当前筛选条件下暂无型号数据</div>}
+      </div>
+    </section>
+  );
+}
+
+function ReasonBreakdown({ rows, title = "退款原因构成" }) {
+  const maxValue = Math.max(1, ...rows.map((row) => row.refund_orders));
+  return (
+    <section className="attribution-card reason-card">
+      <div className="card-heading"><div><h2>{title}</h2><p>互斥分类，同一退款申请只计一次</p></div></div>
+      <div className="reason-bars">
+        {rows.map((row) => (
+          <div key={row.code}>
+            <span><i style={{ background: reasonColors[row.code] }} />{row.label}</span>
+            <div><b style={{ width: `${Math.max(row.refund_orders ? 3 : 0, row.refund_orders * 100 / maxValue)}%`, background: reasonColors[row.code] }} /></div>
+            <strong>{row.share}%</strong><em>{row.refund_orders}单</em>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FocusModelPanel({ focus }) {
+  return (
+    <section className="attribution-card focus-card">
+      <div className="card-heading"><div><h2>{focus.model_code || "未选择型号"} 原因下钻</h2><p>{focus.refund_orders ?? 0} 笔退款申请的平台原始原因与 SKU 变体</p></div></div>
+      <div className="focus-columns">
+        <div><h3>平台原始原因</h3><ol>{(focus.raw_reasons ?? []).slice(0, 6).map((row) => <li key={row.reason}><span title={row.reason}>{row.reason}</span><strong>{row.refund_orders}单</strong></li>)}</ol></div>
+        <div><h3>SKU 变体</h3><ol>{(focus.variants ?? []).slice(0, 6).map((row) => <li key={row.sku_code}><span title={row.sku_code}>{row.sku_code}</span><strong>{row.refund_orders}单 / {row.refund_units}件</strong></li>)}</ol></div>
+      </div>
+    </section>
+  );
+}
+
+function AttributionTable({ rows, focusModel, onFocus }) {
+  return (
+    <section className="attribution-card attribution-table-card">
+      <div className="card-heading"><div><h2>型号归因明细</h2><p>退款率仅在接入同期销售分母后计算</p></div></div>
+      <div className="attribution-table-wrap"><table className="attribution-table"><thead><tr><th>型号</th><th>退款申请</th><th>退款件数</th><th>申请单占比</th><th>主要原因</th><th>该原因占比</th><th>覆盖店铺</th><th>退款率</th></tr></thead>
+        <tbody>{rows.slice(0, 30).map((row) => <tr key={row.model_code} className={focusModel === row.model_code ? "selected" : ""} onClick={() => onFocus(row.model_code)}><td><strong>{row.model_code}</strong><small>{row.variant_count} 个 SKU</small></td><td>{row.refund_orders}单</td><td>{row.refund_units}件</td><td>{row.application_share}%</td><td><span className="reason-pill" style={{ color: reasonColors[row.top_reason_code], borderColor: `${reasonColors[row.top_reason_code]}55`, background: `${reasonColors[row.top_reason_code]}10` }}>{row.top_reason_label}</span></td><td>{row.top_reason_share}%</td><td>{row.shop_count}店</td><td><StatusTag tone="warning">待接销量</StatusTag></td></tr>)}</tbody>
+      </table></div>
+    </section>
+  );
+}
+
+function AttributionWorkspace() {
+  const [draft, setDraft] = useState(createAttributionFilters);
+  const [filters, setFilters] = useState(createAttributionFilters);
+  const [focusModel, setFocusModel] = useState("");
+  const [data, setData] = useState({ summary: {}, reason_breakdown: [], model_ranking: [], focus: {}, shops: [], reason_categories: [], denominator: {} });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const load = useCallback(async (signal) => {
+    setLoading(true); setError("");
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    if (focusModel) params.set("focus_model", focusModel);
+    try {
+      const response = await fetch(`/api/v1/attribution/overview?${params}`, { signal });
+      if (!response.ok) throw new Error(`服务返回 ${response.status}`);
+      const payload = await response.json();
+      setData(payload);
+      if (!focusModel && payload.focus?.model_code) setFocusModel(payload.focus.model_code);
+    } catch (requestError) {
+      if (requestError.name !== "AbortError") setError("售后归因数据暂时无法读取，请检查数据库迁移和本地服务。");
+    } finally { if (!signal.aborted) setLoading(false); }
+  }, [filters, focusModel, refreshKey]);
+
+  useEffect(() => { const controller = new AbortController(); load(controller.signal); return () => controller.abort(); }, [load]);
+  const submit = (event) => { event.preventDefault(); setFocusModel(""); setFilters(draft); };
+  const reset = () => { const initial = createAttributionFilters(); setDraft(initial); setFilters(initial); setFocusModel(""); };
+
+  return (
+    <main className="workspace attribution-workspace">
+      <header className="topbar"><div className="page-title"><ChartBar size={22} /><h1>售后归因</h1><span className="read-only-badge">自动汇总</span></div><div className="sync-status"><span />最近同步 {formatDateTime(data.last_synced_at)}</div></header>
+      <div className="attribution-body">
+        <AttributionFilters draft={draft} setDraft={setDraft} shops={data.shops ?? []} categories={data.reason_categories ?? []} busy={loading} onSubmit={submit} onReset={reset} />
+        {error ? <div className="attribution-error"><WarningCircle size={20} />{error}<button type="button" onClick={() => setRefreshKey((key) => key + 1)}>重试</button></div> : <>
+          <AttributionSummary summary={data.summary ?? {}} />
+          <div className="denominator-note"><WarningCircle size={17} /><span><strong>口径提示：</strong>{data.denominator?.note}</span></div>
+          <div className="attribution-grid"><ModelRankingChart rows={data.model_ranking ?? []} focusModel={data.focus?.model_code} onFocus={setFocusModel} /><ReasonBreakdown rows={data.reason_breakdown ?? []} /></div>
+          <div className="attribution-grid lower-grid"><ReasonBreakdown rows={data.focus?.reason_breakdown ?? []} title={`${data.focus?.model_code || "选中型号"} 原因构成`} /><FocusModelPanel focus={data.focus ?? {}} /></div>
+          <AttributionTable rows={data.model_ranking ?? []} focusModel={data.focus?.model_code} onFocus={setFocusModel} />
+          <div className="attribution-meta"><span>{data.date_basis}</span><button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />刷新</button></div>
+        </>}
+      </div>
+    </main>
   );
 }
 
@@ -952,10 +1118,14 @@ export function App() {
     window.setTimeout(() => setCopied(false), 1500);
   };
 
+  const detailVisible = (
+    (activeView === "orders" && detailOpen)
+    || (activeView === "intercepts" && interceptDetailOpen)
+    || activeView === "warehouse"
+  );
+
   return (
-    <div className={`app-shell ${(
-      activeView === "orders" ? detailOpen : activeView === "intercepts" ? interceptDetailOpen : true
-    ) ? "" : "without-detail"}`}>
+    <div className={`app-shell ${detailVisible ? "" : "without-detail"}`}>
       <Sidebar activeView={activeView} onNavigate={setActiveView} />
       {activeView === "orders" ? (
         <>
@@ -981,6 +1151,8 @@ export function App() {
         </>
       ) : activeView === "intercepts" ? (
         <InterceptWorkspace detailOpen={interceptDetailOpen} setDetailOpen={setInterceptDetailOpen} />
+      ) : activeView === "attribution" ? (
+        <AttributionWorkspace />
       ) : (
         <WarehouseWorkspace />
       )}
