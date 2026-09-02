@@ -1140,7 +1140,7 @@ export function App() {
   const [interceptDetailOpen, setInterceptDetailOpen] = useState(true);
   const [draftFilters, setDraftFilters] = useState(createInitialFilters);
   const [filters, setFilters] = useState(createInitialFilters);
-  const [recordView, setRecordView] = useState("WORKBENCH");
+  const [recordView, setRecordView] = useState("ALL");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
   const [data, setData] = useState({ summary: {}, view_counts: {}, shops: [], sales_owners: [], items: [], pagination: { page: 1, page_size: 15, total: 0, pages: 1 }, last_synced_at: null });
