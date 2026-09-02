@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -24,19 +25,39 @@ VK_BACK = 0x08
 VK_RETURN = 0x0D
 VK_SHIFT = 0x10
 VK_CONTROL = 0x11
-VK_MENU = 0x12
 VK_ESCAPE = 0x1B
 VK_1 = 0x31
 VK_A = 0x41
 VK_F = 0x46
-VK_S = 0x53
 
 INPUT_KEYBOARD = 1
 KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+SW_RESTORE = 9
 
 _ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+@dataclass(frozen=True, slots=True)
+class _WeComWindowCandidate:
+    hwnd: int
+    process_id: int
+    title: str
+    area: int
+
+
+def _select_wecom_window(
+    candidates: list[_WeComWindowCandidate],
+) -> _WeComWindowCandidate:
+    """选择唯一最大的企业微信主窗口，避免把输入发到弹窗或小工具窗。"""
+
+    if not candidates:
+        raise DesktopBeforePasteError("未找到可见的企业微信主窗口")
+    ordered = sorted(candidates, key=lambda item: item.area, reverse=True)
+    if len(ordered) > 1 and ordered[0].area == ordered[1].area:
+        raise DesktopBeforePasteError("检测到多个同尺寸企业微信窗口，禁止自动选择")
+    return ordered[0]
 
 
 class _KEYBDINPUT(ctypes.Structure):
@@ -128,6 +149,24 @@ class WindowsWeComGateway:
         )
         self.user32.SendInput.restype = wintypes.UINT
         self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.IsWindow.argtypes = (wintypes.HWND,)
+        self.user32.IsWindow.restype = wintypes.BOOL
+        self.user32.IsWindowVisible.argtypes = (wintypes.HWND,)
+        self.user32.IsWindowVisible.restype = wintypes.BOOL
+        self.user32.IsIconic.argtypes = (wintypes.HWND,)
+        self.user32.IsIconic.restype = wintypes.BOOL
+        self.user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
+        self.user32.ShowWindow.restype = wintypes.BOOL
+        self.user32.BringWindowToTop.argtypes = (wintypes.HWND,)
+        self.user32.BringWindowToTop.restype = wintypes.BOOL
+        self.user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+        self.user32.SetForegroundWindow.restype = wintypes.BOOL
+        self.user32.AttachThreadInput.argtypes = (
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.BOOL,
+        )
+        self.user32.AttachThreadInput.restype = wintypes.BOOL
         self.user32.GetWindowThreadProcessId.argtypes = (
             wintypes.HWND,
             ctypes.POINTER(wintypes.DWORD),
@@ -155,75 +194,179 @@ class WindowsWeComGateway:
         self.kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
         self.kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
         self.kernel32.CloseHandle.restype = wintypes.BOOL
+        self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._random = random.SystemRandom()
 
     def send(self, plan: DesktopNoticePlan, hooks: DesktopSendHooks) -> None:
+        previous_hwnd = int(self.user32.GetForegroundWindow())
+        completed = False
+        input_started = False
         self._raise_if_escape()
-        self._hotkey(VK_SHIFT, VK_MENU, VK_S)
-        self._sleep_range(420, 720)
-        hwnd, process_id = self._require_wecom_foreground()
-        self._raise_if_security_window(process_id)
+        try:
+            hwnd, process_id = self._activate_wecom_foreground()
+            self._raise_if_security_window(process_id)
 
-        self._hotkey(VK_CONTROL, VK_1)
-        self._sleep_range(120, 260)
-        self._sleep_range(320, 620)
+            self._hotkey(VK_CONTROL, VK_1)
+            self._sleep_range(120, 260)
+            self._sleep_range(320, 620)
 
-        before_search = self._snapshot(hwnd)
-        self._hotkey(VK_CONTROL, VK_F)
-        self._wait_for_change(
-            hwnd,
-            before_search,
-            timeout_ms=2200,
-            threshold=0.002,
-            error="未检测到企业微信搜索区域变化",
+            before_search = self._snapshot(hwnd)
+            self._hotkey(VK_CONTROL, VK_F)
+            self._wait_for_change(
+                hwnd,
+                before_search,
+                timeout_ms=2200,
+                threshold=0.002,
+                error="未检测到企业微信搜索区域变化",
+            )
+
+            self._hotkey(VK_CONTROL, VK_A)
+            self._tap(VK_BACK)
+            self._type_unicode(plan.target_group)
+            self._sleep_range(1500, 2100)
+            self._tap(VK_RETURN)
+            self._sleep_range(650, 1050)
+
+            hwnd, process_id = self._require_wecom_foreground()
+            self._raise_if_security_window(process_id)
+            self._raise_if_escape()
+
+            before_input = self._snapshot(hwnd, region=self._INPUT_CHANGE_REGION)
+            hooks.paste_started()
+            input_started = True
+            self._type_multiline_message(plan.message)
+            self._wait_for_change(
+                hwnd,
+                before_input,
+                region=self._INPUT_CHANGE_REGION,
+                timeout_ms=4100,
+                threshold=0.001,
+                error="消息输入后未检测到聊天区域变化，禁止发送",
+                ambiguous=True,
+            )
+            self._sleep_range(130, 380)
+
+            hwnd, process_id = self._require_wecom_foreground(ambiguous=True)
+            self._raise_if_security_window(process_id, ambiguous=True)
+            self._raise_if_escape(ambiguous=True)
+
+            before_send = self._snapshot(hwnd, region=self._SEND_CHANGE_REGION)
+            hooks.send_pressed()
+            self._tap(VK_RETURN)
+            self._sleep_range(2200, 3100, ambiguous=True)
+            self._wait_for_change(
+                hwnd,
+                before_send,
+                region=self._SEND_CHANGE_REGION,
+                timeout_ms=1000,
+                threshold=0.001,
+                error="按过发送键但未能确认聊天区域变化",
+                ambiguous=True,
+            )
+            self._sleep_range(1800, 2600, ambiguous=True)
+            _hwnd, process_id = self._require_wecom_foreground(ambiguous=True)
+            self._raise_if_security_window(process_id, ambiguous=True)
+            hooks.sent()
+            completed = True
+        finally:
+            # 只有确认发送成功或尚未开始输入时才恢复原窗口。结果不明时保留
+            # 企业微信在前台，方便操作员立即核验，避免盲目重发。
+            if completed or not input_started:
+                self._restore_previous_window(previous_hwnd)
+
+    def _activate_wecom_foreground(self) -> tuple[int, int]:
+        candidate = _select_wecom_window(self._visible_wecom_windows())
+        self._raise_if_security_window(candidate.process_id)
+        self._focus_window(candidate.hwnd)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                hwnd, process_id = self._require_wecom_foreground()
+            except DesktopBeforePasteError:
+                time.sleep(0.08)
+                continue
+            return hwnd, process_id
+        raise DesktopBeforePasteError("无法将企业微信切换到前台，未输入任何消息")
+
+    def _visible_wecom_windows(self) -> list[_WeComWindowCandidate]:
+        candidates: list[_WeComWindowCandidate] = []
+        security_detected = False
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        @callback_type
+        def callback(hwnd: int, _lparam: int) -> bool:
+            nonlocal security_detected
+            if not self.user32.IsWindowVisible(hwnd):
+                return True
+            process_id = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            process_name = Path(self._process_path(process_id.value)).name.lower()
+            if process_name != self.process_name:
+                return True
+            length = self.user32.GetWindowTextLengthW(hwnd)
+            buffer = ctypes.create_unicode_buffer(length + 1)
+            if length:
+                self.user32.GetWindowTextW(hwnd, buffer, length + 1)
+            title = buffer.value.strip()
+            if self._SECURITY_TITLE.search(title):
+                security_detected = True
+                return True
+            rect = wintypes.RECT()
+            if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            width = max(0, rect.right - rect.left)
+            height = max(0, rect.bottom - rect.top)
+            if not title or width < 480 or height < 320:
+                return True
+            candidates.append(
+                _WeComWindowCandidate(
+                    hwnd=int(hwnd),
+                    process_id=int(process_id.value),
+                    title=title,
+                    area=width * height,
+                )
+            )
+            return True
+
+        self.user32.EnumWindows(callback, 0)
+        if security_detected:
+            raise DesktopBeforePasteError("检测到企业微信安全验证或登录验证窗口")
+        return candidates
+
+    def _focus_window(self, hwnd: int) -> None:
+        if self.user32.IsIconic(hwnd):
+            self.user32.ShowWindow(hwnd, SW_RESTORE)
+        foreground = int(self.user32.GetForegroundWindow())
+        current_thread = int(self.kernel32.GetCurrentThreadId())
+        foreground_thread = int(
+            self.user32.GetWindowThreadProcessId(foreground, None)
         )
+        target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
+        attached: list[int] = []
+        try:
+            for thread_id in {foreground_thread, target_thread}:
+                if thread_id and thread_id != current_thread:
+                    if self.user32.AttachThreadInput(current_thread, thread_id, True):
+                        attached.append(thread_id)
+            self.user32.BringWindowToTop(hwnd)
+            self.user32.SetForegroundWindow(hwnd)
+        finally:
+            for thread_id in reversed(attached):
+                self.user32.AttachThreadInput(current_thread, thread_id, False)
 
-        self._hotkey(VK_CONTROL, VK_A)
-        self._tap(VK_BACK)
-        self._type_unicode(plan.target_group)
-        self._sleep_range(1500, 2100)
-        self._tap(VK_RETURN)
-        self._sleep_range(650, 1050)
-
-        hwnd, process_id = self._require_wecom_foreground()
-        self._raise_if_security_window(process_id)
-        self._raise_if_escape()
-
-        before_input = self._snapshot(hwnd, region=self._INPUT_CHANGE_REGION)
-        hooks.paste_started()
-        self._type_multiline_message(plan.message)
-        self._wait_for_change(
-            hwnd,
-            before_input,
-            region=self._INPUT_CHANGE_REGION,
-            timeout_ms=4100,
-            threshold=0.001,
-            error="消息输入后未检测到聊天区域变化，禁止发送",
-            ambiguous=True,
-        )
-        self._sleep_range(130, 380)
-
-        hwnd, process_id = self._require_wecom_foreground(ambiguous=True)
-        self._raise_if_security_window(process_id, ambiguous=True)
-        self._raise_if_escape(ambiguous=True)
-
-        before_send = self._snapshot(hwnd, region=self._SEND_CHANGE_REGION)
-        hooks.send_pressed()
-        self._tap(VK_RETURN)
-        self._sleep_range(2200, 3100, ambiguous=True)
-        self._wait_for_change(
-            hwnd,
-            before_send,
-            region=self._SEND_CHANGE_REGION,
-            timeout_ms=1000,
-            threshold=0.001,
-            error="按过发送键但未能确认聊天区域变化",
-            ambiguous=True,
-        )
-        self._sleep_range(1800, 2600, ambiguous=True)
-        _hwnd, process_id = self._require_wecom_foreground(ambiguous=True)
-        self._raise_if_security_window(process_id, ambiguous=True)
-        hooks.sent()
+    def _restore_previous_window(self, hwnd: int) -> None:
+        if not hwnd or not self.user32.IsWindow(hwnd):
+            return
+        try:
+            process_id = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+            process_name = Path(self._process_path(process_id.value)).name.lower()
+            if process_name == self.process_name:
+                return
+            self._focus_window(hwnd)
+        except Exception:
+            # 恢复操作者原窗口是体验优化，不得覆盖已经确认的发送结果。
+            return
 
     def _type_multiline_message(self, message: str) -> None:
         lines = message.splitlines() or [message]

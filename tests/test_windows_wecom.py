@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import ctypes
 
+import pytest
+
+from aftersales_workbench.workflows.desktop_sender import DesktopBeforePasteError
 from aftersales_workbench.workflows.windows_wecom import (
     _INPUT,
     _INPUT_UNION,
     WindowsWeComGateway,
+    _select_wecom_window,
+    _WeComWindowCandidate,
 )
 
 
@@ -37,3 +42,27 @@ def test_wecom_change_detection_regions_focus_on_chat_content() -> None:
     assert send_right == input_right
     assert send_top < input_top
     assert send_bottom == input_bottom
+
+
+def test_wecom_window_selector_uses_largest_visible_main_window() -> None:
+    selected = _select_wecom_window(
+        [
+            _WeComWindowCandidate(11, 101, "企业微信", 1_200_000),
+            _WeComWindowCandidate(12, 101, "图片预览", 240_000),
+        ]
+    )
+
+    assert selected.hwnd == 11
+
+
+def test_wecom_window_selector_fails_closed_without_unique_main_window() -> None:
+    with pytest.raises(DesktopBeforePasteError, match="未找到"):
+        _select_wecom_window([])
+
+    with pytest.raises(DesktopBeforePasteError, match="多个同尺寸"):
+        _select_wecom_window(
+            [
+                _WeComWindowCandidate(11, 101, "企业微信", 1_200_000),
+                _WeComWindowCandidate(12, 102, "企业微信", 1_200_000),
+            ]
+        )
