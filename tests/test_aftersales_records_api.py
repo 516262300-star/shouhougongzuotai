@@ -58,6 +58,22 @@ class FakeRecordService:
             "last_synced_at": "2026-09-01T08:00:00",
         }
 
+    def list_manual_todos(self, **kwargs: Any) -> dict[str, Any]:
+        self.list_kwargs = kwargs
+        return {
+            "summary": {
+                "waiting": 2,
+                "sent": 5,
+                "failed": 1,
+                "cancelled": 3,
+                "total": 11,
+            },
+            "assignees": ["金博敏"],
+            "items": [],
+            "pagination": {"page": 1, "page_size": 15, "total": 0, "pages": 1},
+            "last_updated_at": "2026-09-02T09:00:00",
+        }
+
 
 def test_list_orders_passes_filters_to_record_service() -> None:
     service = FakeRecordService()
@@ -177,6 +193,53 @@ def test_list_intercepts_rejects_unknown_stage() -> None:
     assert response.status_code == 422
 
 
+def test_list_manual_todos_passes_audit_filters() -> None:
+    service = FakeRecordService()
+    app.dependency_overrides[get_record_service] = lambda: service
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/manual-todos",
+            params={
+                "page": 1,
+                "page_size": 15,
+                "task_status": "SUCCEEDED",
+                "assignee": "金博敏",
+                "origin": "module1",
+                "started_on": "2026-09-01",
+                "ended_on": "2026-09-02",
+                "keyword": "260831",
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json()["summary"]["sent"] == 5
+    assert service.list_kwargs == {
+        "page": 1,
+        "page_size": 15,
+        "task_status": "SUCCEEDED",
+        "assignee": "金博敏",
+        "origin": "module1",
+        "started_on": date(2026, 9, 1),
+        "ended_on": date(2026, 9, 2),
+        "keyword": "260831",
+    }
+
+
+def test_list_manual_todos_rejects_unknown_status() -> None:
+    app.dependency_overrides[get_record_service] = lambda: FakeRecordService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/manual-todos",
+            params={"task_status": "UNKNOWN"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
 def test_get_order_returns_404_for_unknown_record() -> None:
     app.dependency_overrides[get_record_service] = lambda: FakeRecordService()
     try:
@@ -211,3 +274,27 @@ def test_record_views_partition_workbench_and_passive_records() -> None:
     assert "EXISTS" in str(workbench)
     assert "NOT" in str(record_only)
     assert AftersalesRecordService._record_view_filter("ALL") is None
+
+
+def test_manual_todo_reason_prefers_explicit_reason_and_maps_legacy_code() -> None:
+    assert (
+        AftersalesRecordService._manual_todo_reason(
+            {"reason_text": "ERP退货单数量不一致", "reason_code": "OUT_FOR_DELIVERY"}
+        )
+        == "ERP退货单数量不一致"
+    )
+    assert "已签收" in AftersalesRecordService._manual_todo_reason(
+        {"reason_code": "DELIVERED_WITHOUT_RETURN"}
+    )
+    assert (
+        AftersalesRecordService._manual_todo_reason(
+            {
+                "content": (
+                    "模块1在途售后需人工处理；"
+                    "原因：包裹已签收，无法执行在途拦截；店铺：测试店"
+                ),
+                "reason_code": "MANUAL_PROCESSING",
+            }
+        )
+        == "包裹已签收，无法执行在途拦截"
+    )

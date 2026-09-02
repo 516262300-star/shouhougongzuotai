@@ -55,6 +55,7 @@ class Module3ExceptionTodoCandidate:
         return {
             "origin": "module3",
             "reason_code": f"ERP_REFUND_{self.exception_status.upper()}",
+            "reason_text": message,
             "assignee": str(self.sales_owner or "").strip(),
             "started_at": started_at,
             "marker": marker,

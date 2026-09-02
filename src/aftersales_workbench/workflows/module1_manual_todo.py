@@ -139,6 +139,7 @@ class Module1ManualTodoCandidate:
         payload = {
             "origin": "module1",
             "reason_code": self.reason_code,
+            "reason_text": self.reason_text,
             "assignee": str(self.sales_owner or "").strip(),
             "started_at": started_at,
             "marker": marker,

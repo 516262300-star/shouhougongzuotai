@@ -126,6 +126,8 @@ alembic downgrade -1
 
 管理系统人工待办发布复用同一组 `ERP_WEB_BASE_URL`、`ERP_WEB_USERNAME`、`ERP_WEB_PASSWORD`。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。模块 1/3 的远端事项分别包含 `【售后工作台 M1:售后单号】` / `【售后工作台 M3:售后单号】` 幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布。归属业务员为空或冲突时不会猜测经办人，也不会发布。
 
+售后工作台的“人工待办”导航和售后摘要中的“待人工”指标均可进入只读发送审计页。列表展示发送状态、对应业务员、触发原因、触发模块、平台订单号和售后单号；点击记录后，右侧详情会展示发送给业务员的完整事项、ERP 待办 ID、发送时间、尝试次数以及发送失败或取消原因。只有任务状态为 `SUCCEEDED` 且已取得远端待办 ID 时，页面才显示“已发送给业务员”；其余状态不会误报为发送成功。新任务会在动作载荷中保存明确的 `reason_text`，历史任务则按原因代码兼容映射中文原因。
+
 ## 拼多多单店只读联调
 
 1. 在拼多多开放平台确认应用已获得 `pdd.refund.list.increment.get` 和 `pdd.refund.information.get` 权限。`pdd.mall.info.get` 仅在使用 `--with-mall-info` 时需要。
@@ -611,10 +613,11 @@ cd ..
 
 - `GET /api/v1/aftersales/orders`：已同步售后退款记录的汇总、筛选、分页、店铺与归属业务员选项；支持 `record_view=WORKBENCH|RECORD_ONLY|ALL`，默认 `WORKBENCH`，分别对应工作台待处理、仅记录和全部售后；
 - `GET /api/v1/aftersales/intercepts`：仅限全额退款的模块 1 在途拦截汇总、阶段筛选、快递群与退款闸门状态；
+- `GET /api/v1/aftersales/manual-todos`：模块 1/3 人工待办的发送审计、业务员与原因筛选、完整事项、远端待办 ID、失败或取消原因；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 - `GET /api/v1/attribution/overview`：模块 4 售后归因摘要、原因构成、型号排名、店铺分布和选中型号下钻；支持 `shop_id`、`started_on`、`ended_on`、`model_keyword`、`reason_category`和 `focus_model`。
 
-售后订单和在途拦截页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。仓库验货页面会写入本地 `warehouse_return_*` 表和对应售后状态，但不会触发任何外部写操作。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
+售后订单、在途拦截和人工待办页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。仓库验货页面会写入本地 `warehouse_return_*` 表和对应售后状态，但不会触发任何外部写操作。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
 
 ## 健康检查
 

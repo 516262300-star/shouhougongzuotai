@@ -74,6 +74,31 @@ def list_intercepts(
     )
 
 
+@router.get("/manual-todos")
+def list_manual_todos(
+    service: Annotated[AftersalesRecordService, Depends(get_record_service)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=10, le=100)] = 15,
+    task_status: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    | None = None,
+    assignee: Annotated[str | None, Query(max_length=50)] = None,
+    origin: Literal["module1", "module3"] | None = None,
+    started_on: date | None = None,
+    ended_on: date | None = None,
+    keyword: Annotated[str | None, Query(max_length=100)] = None,
+) -> dict[str, Any]:
+    return service.list_manual_todos(
+        page=page,
+        page_size=page_size,
+        task_status=task_status,
+        assignee=assignee,
+        origin=origin,
+        started_on=started_on,
+        ended_on=ended_on,
+        keyword=keyword,
+    )
+
+
 @router.get("/orders/{after_sales_sn}")
 def get_order(
     after_sales_sn: str,

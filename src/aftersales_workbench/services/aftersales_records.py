@@ -78,6 +78,34 @@ ACTION_STATUS_LABELS = {
     "CANCELLED": "已取消",
 }
 
+MANUAL_TODO_STATUS_LABELS = {
+    "PENDING": "待发送",
+    "RUNNING": "发送中",
+    "SUCCEEDED": "已发送",
+    "FAILED": "发送失败",
+    "CANCELLED": "已取消",
+}
+
+MANUAL_TODO_ORIGIN_LABELS = {
+    "module1": "模块1·在途拦截",
+    "module3": "模块3·未发货退款",
+}
+
+MANUAL_TODO_REASON_LABELS = {
+    "OUT_FOR_DELIVERY": "物流正在派件，自动退款已冻结，需要业务员跟进拒收或退回",
+    "DELIVERED_WITHOUT_RETURN": "物流已签收且没有退回记录，无法自动拦截或退款",
+    "INTERCEPT_FAILED": "快递拦截失败，需要业务员处理平台售后",
+    "MANUAL_PROCESSING": "系统无法安全自动处理，已转业务员人工核对",
+    "ERP_RETURN_STAGED": "退货单在 ERP 暂存列表，需要认领到对应客户名下",
+    "ERP_RETURN_RECEIVABLE_OPEN": "ERP 已有退货单，但客户累计应收尚未归零",
+    "ERP_RETURN_ITEM_MISMATCH": "平台售后与 ERP 退货单的型号、颜色或数量不一致",
+    "ERP_RETURN_CUSTOMER_CONFLICT": "ERP 客户档案未唯一匹配，需要确认客户归属",
+    "ERP_RETURN_EXCEPTION": "ERP 退货闭环存在异常，需要业务员核对",
+    "ERP_REFUND_NOT_FOUND": "ERP 未找到对应未发货退款订单",
+    "ERP_REFUND_BLOCKED": "ERP 金额、商品或订单状态不满足自动补开退款单条件",
+    "ERP_REFUND_UNAVAILABLE": "ERP 页面或数据暂时不可用，需要业务员核对",
+}
+
 CARRIER_LABELS = {
     "44": "顺丰速运",
     "SF": "顺丰速运",
@@ -357,6 +385,104 @@ class AftersalesRecordService:
                 "pages": max(1, (total + page_size - 1) // page_size),
             },
             "last_synced_at": self._last_synced_at(),
+        }
+
+    def list_manual_todos(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        task_status: str | None = None,
+        assignee: str | None = None,
+        origin: str | None = None,
+        started_on: date | None = None,
+        ended_on: date | None = None,
+        keyword: str | None = None,
+    ) -> dict[str, Any]:
+        assignee_field = AftersalesActionTask.payload["assignee"].as_string()
+        origin_field = AftersalesActionTask.payload["origin"].as_string()
+        content_field = AftersalesActionTask.payload["content"].as_string()
+        filters: list[Any] = [
+            AftersalesActionTask.action_type
+            == AutomationActionType.ERP_CREATE_MANUAL_TODO
+        ]
+        clean_status = (task_status or "").strip().upper()
+        if clean_status:
+            filters.append(AftersalesActionTask.action_status == clean_status)
+        clean_assignee = (assignee or "").strip()
+        if clean_assignee:
+            filters.append(assignee_field == clean_assignee)
+        clean_origin = (origin or "").strip().lower()
+        if clean_origin:
+            filters.append(origin_field == clean_origin)
+        if started_on:
+            filters.append(
+                AftersalesActionTask.created_at
+                >= datetime.combine(started_on, time.min)
+            )
+        if ended_on:
+            filters.append(
+                AftersalesActionTask.created_at
+                < datetime.combine(ended_on + timedelta(days=1), time.min)
+            )
+        clean_keyword = (keyword or "").strip()
+        if clean_keyword:
+            pattern = f"%{clean_keyword}%"
+            filters.append(
+                or_(
+                    AfterSalesOrder.after_sales_sn.like(pattern),
+                    AfterSalesOrder.platform_order_sn.like(pattern),
+                    Shop.shop_name.like(pattern),
+                    assignee_field.like(pattern),
+                    content_field.like(pattern),
+                )
+            )
+
+        total = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AftersalesActionTask)
+                .join(
+                    AfterSalesOrder,
+                    AfterSalesOrder.after_sales_sn
+                    == AftersalesActionTask.after_sales_sn,
+                )
+                .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+                .where(*filters)
+            )
+            or 0
+        )
+        rows = self.session.execute(
+            select(AftersalesActionTask, AfterSalesOrder, Shop)
+            .join(
+                AfterSalesOrder,
+                AfterSalesOrder.after_sales_sn
+                == AftersalesActionTask.after_sales_sn,
+            )
+            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .where(*filters)
+            .order_by(
+                AftersalesActionTask.updated_at.desc(),
+                AftersalesActionTask.id.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        ).all()
+        items = [
+            self._serialize_manual_todo(task, order, shop)
+            for task, order, shop in rows
+        ]
+        return {
+            "summary": self._manual_todo_summary(),
+            "assignees": self._manual_todo_assignees(),
+            "items": items,
+            "pagination": {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "pages": max(1, (total + page_size - 1) // page_size),
+            },
+            "last_updated_at": self._manual_todo_last_updated_at(),
         }
 
     def get_order(self, after_sales_sn: str) -> dict[str, Any] | None:
@@ -1034,6 +1160,109 @@ class AftersalesRecordService:
             "manual": manual,
             "completed": completed,
         }
+
+    def _manual_todo_summary(self) -> dict[str, int]:
+        rows = self.session.execute(
+            select(
+                AftersalesActionTask.action_status,
+                func.count(AftersalesActionTask.id),
+            )
+            .where(
+                AftersalesActionTask.action_type
+                == AutomationActionType.ERP_CREATE_MANUAL_TODO
+            )
+            .group_by(AftersalesActionTask.action_status)
+        ).all()
+        counts = {_enum_value(status): int(count) for status, count in rows}
+        return {
+            "waiting": counts.get("PENDING", 0) + counts.get("RUNNING", 0),
+            "sent": counts.get("SUCCEEDED", 0),
+            "failed": counts.get("FAILED", 0),
+            "cancelled": counts.get("CANCELLED", 0),
+            "total": sum(counts.values()),
+        }
+
+    def _manual_todo_assignees(self) -> list[str]:
+        assignee_field = AftersalesActionTask.payload["assignee"].as_string()
+        values = self.session.scalars(
+            select(assignee_field)
+            .where(
+                AftersalesActionTask.action_type
+                == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+                assignee_field.is_not(None),
+                assignee_field != "",
+            )
+            .distinct()
+            .order_by(assignee_field)
+        ).all()
+        return [str(value) for value in values if str(value or "").strip()]
+
+    def _manual_todo_last_updated_at(self) -> str | None:
+        value = self.session.scalar(
+            select(func.max(AftersalesActionTask.updated_at)).where(
+                AftersalesActionTask.action_type
+                == AutomationActionType.ERP_CREATE_MANUAL_TODO
+            )
+        )
+        return _dt(value)
+
+    @classmethod
+    def _serialize_manual_todo(
+        cls,
+        task: AftersalesActionTask,
+        order: AfterSalesOrder,
+        shop: Shop,
+    ) -> dict[str, Any]:
+        payload = task.payload if isinstance(task.payload, dict) else {}
+        status = _enum_value(task.action_status)
+        origin = str(payload.get("origin") or "").strip().lower()
+        assignee = str(payload.get("assignee") or order.erp_sales_owner or "").strip()
+        external_todo_id = str(payload.get("external_todo_id") or "").strip()
+        reason_code = str(payload.get("reason_code") or "").strip().upper()
+        sent = status == "SUCCEEDED"
+        return {
+            "task_id": task.id,
+            "after_sales_sn": order.after_sales_sn,
+            "platform_order_sn": order.platform_order_sn,
+            "shop_name": shop.shop_name,
+            "assignee": assignee or "未匹配业务员",
+            "origin": origin or "unknown",
+            "origin_label": MANUAL_TODO_ORIGIN_LABELS.get(origin, "其他人工任务"),
+            "reason_code": reason_code or "MANUAL_REVIEW",
+            "reason": cls._manual_todo_reason(payload),
+            "content": str(payload.get("content") or "").strip() or "—",
+            "started_at": str(payload.get("started_at") or "").strip() or None,
+            "task_status": status,
+            "status_label": MANUAL_TODO_STATUS_LABELS.get(status, status),
+            "status_tone": _task_tone(status),
+            "sent_to_assignee": sent,
+            "sent_at": _dt(task.updated_at) if sent else None,
+            "external_todo_id": external_todo_id or None,
+            "external_todo_created": payload.get("external_todo_created"),
+            "attempts": int(task.attempts or 0),
+            "last_error": task.last_error,
+            "cancel_reason": str(payload.get("cancel_reason") or "").strip() or None,
+            "created_at": _dt(task.created_at),
+            "updated_at": _dt(task.updated_at or task.created_at),
+        }
+
+    @staticmethod
+    def _manual_todo_reason(payload: dict[str, Any]) -> str:
+        explicit = str(payload.get("reason_text") or "").strip()
+        if explicit:
+            return explicit
+        exception_message = str(payload.get("exception_message") or "").strip()
+        if exception_message:
+            return exception_message
+        content = str(payload.get("content") or "").strip()
+        if "原因：" in content:
+            reason = content.split("原因：", 1)[1].split("；", 1)[0].strip()
+            if reason:
+                return reason
+        reason_code = str(payload.get("reason_code") or "").strip().upper()
+        if reason_code in MANUAL_TODO_REASON_LABELS:
+            return MANUAL_TODO_REASON_LABELS[reason_code]
+        return "该售后不满足安全自动处理条件，需要对应业务员人工核对"
 
     def _shops(self) -> list[dict[str, Any]]:
         rows = self.session.execute(

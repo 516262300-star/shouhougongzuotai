@@ -62,6 +62,7 @@ def test_module3_exception_todo_payload_targets_sales_owner() -> None:
     assert payload["origin"] == "module3"
     assert payload["assignee"] == "测试业务员"
     assert payload["marker"] == "【售后工作台 M3:TEST-AFTERSALES-001】"
+    assert payload["reason_text"] == "商家应收金额缺失"
     assert "商家应收金额缺失" in payload["content"]
     assert "请核对商家应收" in payload["content"]
 
