@@ -9,7 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -348,6 +348,10 @@ class DesktopNoticeSendService:
                     f"任务 {plan.task_id} 已暂停；确认尚未输入消息后使用人工恢复参数"
                 )
                 break
+            if self._tracking_group_already_notified(plan.task_id):
+                self._complete_tracking_group(plan.task_id, require_running=False)
+                result.reconciled += 1
+                continue
 
             hooks = _LedgerHooks(self, plan, plan_hash)
             try:
@@ -389,28 +393,99 @@ class DesktopNoticeSendService:
             raise DesktopBeforePasteError("动作任务不是企业微信拦截通知")
         if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
             raise DesktopBeforePasteError("动作任务不再是 PENDING，禁止输入消息")
-        task.action_status = AutomationTaskStatus.RUNNING
-        task.attempts = int(task.attempts or 0) + 1
-        task.last_error = None
+        group = self._notification_group(task_id)
+        if any(
+            AutomationTaskStatus(group_task.action_status)
+            is AutomationTaskStatus.RUNNING
+            for group_task, _order in group
+        ):
+            raise DesktopBeforePasteError("同一运单已有通知任务正在发送，禁止并发输入")
+        for group_task, _order in group:
+            if (
+                AutomationTaskStatus(group_task.action_status)
+                is not AutomationTaskStatus.PENDING
+            ):
+                continue
+            group_task.action_status = AutomationTaskStatus.RUNNING
+            group_task.attempts = int(group_task.attempts or 0) + 1
+            group_task.last_error = None
         self.session.commit()
 
     def _complete(self, task_id: int) -> None:
+        self._complete_tracking_group(task_id, require_running=True)
+
+    def _complete_tracking_group(
+        self,
+        task_id: int,
+        *,
+        require_running: bool,
+    ) -> None:
         task = self.session.get(AftersalesActionTask, task_id)
         if task is None:
             raise DesktopAmbiguousSendError(f"已发送但动作任务不存在：{task_id}")
-        if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.RUNNING:
+        status = AutomationTaskStatus(task.action_status)
+        if require_running and status is not AutomationTaskStatus.RUNNING:
             raise DesktopAmbiguousSendError("已发送但本地任务不是 RUNNING，需要人工核对")
+        group = self._notification_group(task_id)
+        if not group:
+            raise DesktopAmbiguousSendError("已发送但未找到同运单售后任务，需要人工核对")
+        for group_task, order in group:
+            group_status = AutomationTaskStatus(group_task.action_status)
+            if group_status in {
+                AutomationTaskStatus.PENDING,
+                AutomationTaskStatus.RUNNING,
+                AutomationTaskStatus.SUCCEEDED,
+            }:
+                group_task.action_status = AutomationTaskStatus.SUCCEEDED
+                group_task.last_error = None
+            if WorkflowStatus(order.workflow_status) is WorkflowStatus.PENDING_CHECK:
+                order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+        self.session.commit()
+
+    def _tracking_group_already_notified(self, task_id: int) -> bool:
+        return any(
+            group_task.id != task_id
+            and AutomationTaskStatus(group_task.action_status)
+            is AutomationTaskStatus.SUCCEEDED
+            for group_task, _order in self._notification_group(task_id)
+        )
+
+    def _notification_group(
+        self,
+        task_id: int,
+    ) -> list[tuple[AftersalesActionTask, AfterSalesOrder]]:
+        task = self.session.get(AftersalesActionTask, task_id)
+        if task is None:
+            return []
         order = self.session.execute(
             select(AfterSalesOrder).where(
                 AfterSalesOrder.after_sales_sn == task.after_sales_sn
             )
         ).scalar_one_or_none()
         if order is None:
-            raise DesktopAmbiguousSendError("已发送但本地售后订单不存在，需要人工核对")
-        task.action_status = AutomationTaskStatus.SUCCEEDED
-        task.last_error = None
-        order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
-        self.session.commit()
+            return []
+        tracking_number = str(order.forward_tracking_number or "").strip().upper()
+        carrier_code = str(order.carrier_code or "").strip().upper()
+        if not tracking_number or not carrier_code:
+            return [(task, order)]
+        return list(
+            self.session.execute(
+                select(AftersalesActionTask, AfterSalesOrder)
+                .join(
+                    AfterSalesOrder,
+                    AfterSalesOrder.after_sales_sn
+                    == AftersalesActionTask.after_sales_sn,
+                )
+                .where(
+                    AftersalesActionTask.action_type
+                    == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                    func.upper(func.trim(AfterSalesOrder.forward_tracking_number))
+                    == tracking_number,
+                    func.upper(func.trim(AfterSalesOrder.carrier_code)) == carrier_code,
+                )
+                .order_by(AftersalesActionTask.id)
+            ).all()
+        )
 
     def reconcile_confirmed_sent(self, task_id: int) -> bool:
         """将已发送或已由人工处理的企微拦截任务回写数据库。"""
@@ -444,12 +519,13 @@ class DesktopNoticeSendService:
         return True
 
     def _record_ambiguous_failure(self, task_id: int, error: str) -> None:
-        task = self.session.get(AftersalesActionTask, task_id)
-        if task is None:
-            return
-        if AutomationTaskStatus(task.action_status) is AutomationTaskStatus.RUNNING:
-            task.last_error = (
-                "企业微信桌面发送结果不明，禁止自动重试，需人工核对："
-                f"{error}"
-            )[:2000]
+        changed = False
+        for task, _order in self._notification_group(task_id):
+            if AutomationTaskStatus(task.action_status) is AutomationTaskStatus.RUNNING:
+                task.last_error = (
+                    "企业微信桌面发送结果不明，禁止自动重试，需人工核对："
+                    f"{error}"
+                )[:2000]
+                changed = True
+        if changed:
             self.session.commit()

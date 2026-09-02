@@ -23,24 +23,34 @@ from aftersales_workbench.workflows.desktop_sender import (
 )
 
 
-def _plan() -> DesktopNoticePlan:
+def _plan(
+    *,
+    task_id: int = 61,
+    after_sales_sn: str = "after-1",
+    platform_order_sn: str = "order-1",
+    tracking_number: str = "JT123",
+) -> DesktopNoticePlan:
     return DesktopNoticePlan(
-        task_id=61,
+        task_id=task_id,
         target_group="精确极兔群名",
-        message="【售后快递拦截】\n订单：order-1",
-        after_sales_sn="after-1",
-        platform_order_sn="order-1",
-        tracking_number="JT123",
+        message=f"【售后快递拦截】\n运单：{tracking_number}",
+        after_sales_sn=after_sales_sn,
+        platform_order_sn=platform_order_sn,
+        tracking_number=tracking_number,
         carrier_id="384",
     )
 
 
 class _ScalarResult:
-    def __init__(self, value) -> None:
+    def __init__(self, value=None, rows=None) -> None:
         self.value = value
+        self.rows = rows or []
 
     def scalar_one_or_none(self):
         return self.value
+
+    def all(self):
+        return self.rows
 
 
 class _FakeSession:
@@ -56,17 +66,70 @@ class _FakeSession:
         self.order = SimpleNamespace(
             after_sales_sn="after-1",
             workflow_status=WorkflowStatus.PENDING_CHECK,
+            forward_tracking_number="JT123",
+            carrier_code="384",
         )
+        self.tasks = {self.task.id: self.task}
+        self.orders = {self.order.after_sales_sn: self.order}
         self.commits = 0
 
     def get(self, _model, task_id):
-        return self.task if task_id == self.task.id else None
+        return self.tasks.get(task_id)
 
-    def execute(self, _statement):
-        return _ScalarResult(self.order)
+    def execute(self, statement):
+        descriptions = statement.column_descriptions
+        params = {str(value).strip().upper() for value in statement.compile().params.values()}
+        if len(descriptions) == 1:
+            order = next(
+                (
+                    item
+                    for after_sales_sn, item in self.orders.items()
+                    if after_sales_sn.upper() in params
+                ),
+                None,
+            )
+            return _ScalarResult(order)
+        rows = [
+            (task, self.orders[task.after_sales_sn])
+            for task in self.tasks.values()
+            if str(self.orders[task.after_sales_sn].forward_tracking_number).upper()
+            in params
+            and str(self.orders[task.after_sales_sn].carrier_code).upper() in params
+        ]
+        return _ScalarResult(rows=rows)
 
     def commit(self):
         self.commits += 1
+
+    def add_notification_task(
+        self,
+        *,
+        task_id: int,
+        after_sales_sn: str,
+        tracking_number: str = "JT123",
+        status: AutomationTaskStatus = AutomationTaskStatus.PENDING,
+    ):
+        task = SimpleNamespace(
+            id=task_id,
+            after_sales_sn=after_sales_sn,
+            action_type=AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+            action_status=status,
+            attempts=0,
+            last_error=None,
+        )
+        order = SimpleNamespace(
+            after_sales_sn=after_sales_sn,
+            workflow_status=(
+                WorkflowStatus.INTERCEPT_PUSHED
+                if status is AutomationTaskStatus.SUCCEEDED
+                else WorkflowStatus.PENDING_CHECK
+            ),
+            forward_tracking_number=tracking_number,
+            carrier_code="384",
+        )
+        self.tasks[task_id] = task
+        self.orders[after_sales_sn] = order
+        return task, order
 
 
 class _SuccessfulGateway:
@@ -209,6 +272,107 @@ def test_successful_desktop_send_updates_ledger_and_workflow(tmp_path) -> None:
     assert ledger.latest(61).state is DesktopLedgerState.SENT  # type: ignore[union-attr]
     assert session.task.action_status is AutomationTaskStatus.SUCCEEDED
     assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+
+
+def test_same_tracking_group_is_sent_once_and_all_tasks_complete(tmp_path) -> None:
+    session = _FakeSession()
+    duplicate_task, duplicate_order = session.add_notification_task(
+        task_id=62,
+        after_sales_sn="after-2",
+    )
+    gateway = _SuccessfulGateway()
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+
+    result = DesktopNoticeSendService(
+        session,  # type: ignore[arg-type]
+        gateway,
+        ledger,
+    ).run(
+        [
+            _plan(),
+            _plan(
+                task_id=62,
+                after_sales_sn="after-2",
+                platform_order_sn="order-2",
+            ),
+        ]
+    )
+
+    assert gateway.calls == 1
+    assert result.sent == 1
+    assert result.reconciled == 1
+    assert session.task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert duplicate_task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+    assert duplicate_order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+    assert ledger.latest(61).state is DesktopLedgerState.SENT  # type: ignore[union-attr]
+    assert ledger.latest(62) is None
+
+
+def test_new_task_reuses_successful_tracking_group_without_sending(tmp_path) -> None:
+    session = _FakeSession()
+    session.task.action_status = AutomationTaskStatus.SUCCEEDED
+    session.order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+    duplicate_task, duplicate_order = session.add_notification_task(
+        task_id=62,
+        after_sales_sn="after-2",
+    )
+    gateway = _SuccessfulGateway()
+
+    result = DesktopNoticeSendService(
+        session,  # type: ignore[arg-type]
+        gateway,
+        DesktopNoticeLedger(tmp_path / "ledger.jsonl"),
+    ).run(
+        [
+            _plan(
+                task_id=62,
+                after_sales_sn="after-2",
+                platform_order_sn="order-2",
+            )
+        ]
+    )
+
+    assert gateway.calls == 0
+    assert result.sent == 0
+    assert result.reconciled == 1
+    assert duplicate_task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert duplicate_order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+
+
+def test_different_tracking_numbers_are_sent_separately(tmp_path) -> None:
+    session = _FakeSession()
+    second_task, second_order = session.add_notification_task(
+        task_id=62,
+        after_sales_sn="after-2",
+        tracking_number="JT456",
+    )
+    gateway = _SuccessfulGateway()
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+
+    result = DesktopNoticeSendService(
+        session,  # type: ignore[arg-type]
+        gateway,
+        ledger,
+    ).run(
+        [
+            _plan(),
+            _plan(
+                task_id=62,
+                after_sales_sn="after-2",
+                platform_order_sn="order-2",
+                tracking_number="JT456",
+            ),
+        ]
+    )
+
+    assert gateway.calls == 2
+    assert result.sent == 2
+    assert result.reconciled == 0
+    assert second_task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert second_order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+    assert ledger.latest(61).state is DesktopLedgerState.SENT  # type: ignore[union-attr]
+    assert ledger.latest(62).state is DesktopLedgerState.SENT  # type: ignore[union-attr]
 
 
 def test_before_paste_failure_stops_without_claiming_task(tmp_path) -> None:
