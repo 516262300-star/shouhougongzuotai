@@ -26,6 +26,7 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     SalesOwnerResolver,
     get_erp_sales_owner_resolver,
 )
+from aftersales_workbench.services.refund_attribution import REASON_CATEGORIES
 from aftersales_workbench.workflows.module1_logistics import (
     build_refund_business_hours,
 )
@@ -227,6 +228,7 @@ class AftersalesRecordService:
         page: int,
         page_size: int,
         record_view: str = "WORKBENCH",
+        platform: str | None = None,
         shop_id: int | None = None,
         after_sales_type: str | None = None,
         workflow_status: str | None = None,
@@ -240,6 +242,9 @@ class AftersalesRecordService:
         filters: list[Any] = []
         if view_filter is not None:
             filters.append(view_filter)
+        clean_platform = (platform or "").strip().upper()
+        if clean_platform:
+            filters.append(self._platform_filter(clean_platform))
         if shop_id is not None:
             filters.append(AfterSalesOrder.shop_id == shop_id)
         if after_sales_type:
@@ -513,7 +518,7 @@ class AftersalesRecordService:
         ).all()
         workflow = _enum_value(order.workflow_status)
         logistics = order.logistics_state or self._fallback_logistics(order)
-        product_name = (
+        product_name = order.product_name or (
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
         )
@@ -541,7 +546,7 @@ class AftersalesRecordService:
             "platform_order_sn": order.platform_order_sn,
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
-            "created_at": _dt(order.created_at),
+            "created_at": _dt(order.platform_created_at or order.created_at),
             "after_sales_type": self._type_label(_enum_value(order.after_sales_type)),
             "refund_amount": _money(order.refund_amount),
             "platform_order_amount": (
@@ -574,6 +579,10 @@ class AftersalesRecordService:
             "product_name": product_name,
             "buyer_name": "平台未返回",
             "buyer_reason": order.buyer_reason_raw or "—",
+            "buyer_reason_category": REASON_CATEGORIES.get(
+                order.reason_category or "OTHER",
+                "其他 / 未说明",
+            ),
             "buyer_memo": order.buyer_memo or "—",
             "erp_customer": serialized_owner,
             "decision": {
@@ -599,6 +608,9 @@ class AftersalesRecordService:
                 "next_check_at": _utc_naive_dt(order.logistics_next_check_at),
             },
             "timeline": self._timeline(order, tasks),
+            "closed_loop": self._erp_match_details(
+                self._latest_task(tasks, AutomationActionType.ERP_MATCH_RETURN_ORDER)
+            ),
         }
 
     def _serialize_list_item(
@@ -731,6 +743,7 @@ class AftersalesRecordService:
             ),
             None,
         )
+        erp_match = self._erp_match_details(erp_task)
         return {
             "shop_id": shop.shop_id,
             "shop_name": shop.shop_name,
@@ -760,7 +773,13 @@ class AftersalesRecordService:
             "workflow_status": workflow,
             "workflow_label": WORKFLOW_LABELS.get(workflow, workflow),
             "workflow_tone": _tone_for_workflow(workflow),
-            "erp_match_label": self._erp_match_display(erp_task),
+            "erp_match_label": erp_match["label"],
+            "erp_match_tone": erp_match["tone"],
+            "erp_match_context": erp_match["message"],
+            "erp_return_order_sn": erp_match["return_order_sn"],
+            "erp_receivable_amount": erp_match["receivable_amount"],
+            "erp_match_checked_at": erp_match["checked_at"],
+            "closed_loop_at": erp_match["closed_loop_at"],
             "latest_error": latest_error,
             "updated_at": _dt(order.updated_at),
         }
@@ -864,6 +883,48 @@ class AftersalesRecordService:
             _enum_value(task.action_status),
         )
 
+    @classmethod
+    def _erp_match_details(
+        cls,
+        task: AftersalesActionTask | None,
+    ) -> dict[str, Any]:
+        if task is None:
+            return {
+                "status": None,
+                "label": "—",
+                "tone": "neutral",
+                "message": "尚未进入 ERP 退货闭环核对",
+                "return_order_sn": None,
+                "receivable_amount": None,
+                "checked_at": None,
+                "closed_loop_at": None,
+            }
+        payload = task.payload or {}
+        status = str(payload.get("erp_match_status") or "").strip()
+        tone = {
+            "closed_loop": "success",
+            "staged": "warning",
+            "receivable_open": "warning",
+            "item_mismatch": "danger",
+            "customer_conflict": "danger",
+            "unavailable": "danger",
+            "not_found": "neutral",
+        }.get(status, _task_tone(_enum_value(task.action_status)))
+        return {
+            "status": status or None,
+            "label": cls._erp_match_display(task),
+            "tone": tone,
+            "message": str(
+                payload.get("erp_match_message")
+                or task.last_error
+                or "ERP 闭环核对任务等待执行"
+            ),
+            "return_order_sn": payload.get("erp_return_order_sn"),
+            "receivable_amount": payload.get("erp_receivable_amount"),
+            "checked_at": payload.get("erp_match_checked_at"),
+            "closed_loop_at": payload.get("closed_loop_at"),
+        }
+
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:
         return (
@@ -952,6 +1013,28 @@ class AftersalesRecordService:
         if action_status is not None:
             conditions.append(AftersalesActionTask.action_status == action_status)
         return exists().where(*conditions).correlate(AfterSalesOrder)
+
+    @staticmethod
+    def _platform_filter(platform: str) -> Any:
+        return AfterSalesOrder.shop_id.in_(
+            select(Shop.shop_id).where(Shop.platform == platform)
+        )
+
+    @staticmethod
+    def _erp_match_status_filter(*statuses: str) -> Any:
+        return (
+            exists()
+            .where(
+                AftersalesActionTask.after_sales_sn
+                == AfterSalesOrder.after_sales_sn,
+                AftersalesActionTask.action_type
+                == AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                AftersalesActionTask.payload["erp_match_status"]
+                .as_string()
+                .in_(statuses),
+            )
+            .correlate(AfterSalesOrder)
+        )
 
     @classmethod
     def _module1_filter(cls) -> Any:
@@ -1071,6 +1154,20 @@ class AftersalesRecordService:
             )
         if stage == "ERP_MATCH":
             return AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH
+        if stage == "ERP_NOT_FOUND":
+            return cls._erp_match_status_filter("not_found")
+        if stage == "ERP_STAGED":
+            return cls._erp_match_status_filter("staged")
+        if stage == "ERP_RECEIVABLE_OPEN":
+            return cls._erp_match_status_filter("receivable_open")
+        if stage == "ERP_EXCEPTION":
+            return cls._erp_match_status_filter(
+                "item_mismatch",
+                "customer_conflict",
+                "unavailable",
+            )
+        if stage == "CLOSED_LOOP":
+            return AfterSalesOrder.workflow_status == WorkflowStatus.INTERCEPT_SUCCESS
         if stage == "MANUAL":
             return AfterSalesOrder.workflow_status.in_(
                 (WorkflowStatus.MANUAL_PROCESSING, WorkflowStatus.INTERCEPT_FAILED)
@@ -1128,11 +1225,54 @@ class AftersalesRecordService:
             )
             or 0
         )
+        waiting_warehouse_order = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(module1_filter, self._erp_match_status_filter("not_found"))
+            )
+            or 0
+        )
+        staged = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(module1_filter, self._erp_match_status_filter("staged"))
+            )
+            or 0
+        )
+        receivable_open = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(
+                    module1_filter,
+                    self._erp_match_status_filter("receivable_open"),
+                )
+            )
+            or 0
+        )
+        closed_loop = int(
+            self.session.scalar(
+                select(func.count())
+                .select_from(AfterSalesOrder)
+                .where(
+                    module1_filter,
+                    AfterSalesOrder.workflow_status
+                    == WorkflowStatus.INTERCEPT_SUCCESS,
+                )
+            )
+            or 0
+        )
         return {
             "waiting_notice": waiting_notice,
             "refund_blocked": refund_blocked,
             "waiting_return": waiting_return,
             "waiting_erp_match": waiting_erp_match,
+            "waiting_warehouse_order": waiting_warehouse_order,
+            "staged": staged,
+            "receivable_open": receivable_open,
+            "closed_loop": closed_loop,
         }
 
     def _summary(self, base_filter: Any | None = None) -> dict[str, int]:

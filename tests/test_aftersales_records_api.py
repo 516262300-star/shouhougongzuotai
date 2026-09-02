@@ -75,6 +75,13 @@ class FakeRecordService:
         }
 
 
+def record_service_override(service: FakeRecordService):
+    def override() -> FakeRecordService:
+        return service
+
+    return override
+
+
 def test_list_orders_passes_filters_to_record_service() -> None:
     service = FakeRecordService()
     app.dependency_overrides[get_record_service] = lambda: service
@@ -85,6 +92,7 @@ def test_list_orders_passes_filters_to_record_service() -> None:
                 "page": 1,
                 "page_size": 15,
                 "record_view": "RECORD_ONLY",
+                "platform": "JD",
                 "shop_id": 1,
                 "after_sales_type": "ONLY_REFUND",
                 "logistics_state": "IN_TRANSIT",
@@ -103,6 +111,7 @@ def test_list_orders_passes_filters_to_record_service() -> None:
         "page": 1,
         "page_size": 15,
         "record_view": "RECORD_ONLY",
+        "platform": "JD",
         "shop_id": 1,
         "after_sales_type": "ONLY_REFUND",
         "workflow_status": None,
@@ -132,6 +141,19 @@ def test_list_orders_rejects_unknown_record_view() -> None:
         response = TestClient(app).get(
             "/api/v1/aftersales/orders",
             params={"record_view": "DUPLICATES"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_list_orders_rejects_unknown_platform() -> None:
+    app.dependency_overrides[get_record_service] = lambda: FakeRecordService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/aftersales/orders",
+            params={"platform": "UNKNOWN"},
         )
     finally:
         app.dependency_overrides.clear()
@@ -191,6 +213,28 @@ def test_list_intercepts_rejects_unknown_stage() -> None:
         app.dependency_overrides.clear()
 
     assert response.status_code == 422
+
+
+def test_list_intercepts_accepts_closed_loop_stages() -> None:
+    for stage in (
+        "ERP_NOT_FOUND",
+        "ERP_STAGED",
+        "ERP_RECEIVABLE_OPEN",
+        "ERP_EXCEPTION",
+        "CLOSED_LOOP",
+    ):
+        service = FakeRecordService()
+        app.dependency_overrides[get_record_service] = record_service_override(service)
+        try:
+            response = TestClient(app).get(
+                "/api/v1/aftersales/intercepts",
+                params={"stage": stage},
+            )
+        finally:
+            app.dependency_overrides.clear()
+
+        assert response.status_code == 200
+        assert service.list_kwargs["stage"] == stage
 
 
 def test_list_manual_todos_passes_audit_filters() -> None:
@@ -274,6 +318,13 @@ def test_record_views_partition_workbench_and_passive_records() -> None:
     assert "EXISTS" in str(workbench)
     assert "NOT" in str(record_only)
     assert AftersalesRecordService._record_view_filter("ALL") is None
+
+
+def test_platform_filter_targets_shops_on_selected_platform() -> None:
+    statement = AftersalesRecordService._platform_filter("JD")
+
+    assert "aftersales_orders.shop_id IN" in str(statement)
+    assert "shops.platform" in str(statement)
 
 
 def test_manual_todo_reason_prefers_explicit_reason_and_maps_legacy_code() -> None:

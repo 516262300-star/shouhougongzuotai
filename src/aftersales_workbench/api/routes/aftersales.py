@@ -22,6 +22,8 @@ def list_orders(
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=10, le=100)] = 15,
     record_view: Literal["WORKBENCH", "RECORD_ONLY", "ALL"] = "WORKBENCH",
+    platform: Literal["PDD", "TMALL", "TAOBAO", "1688", "JD", "DOUYIN"]
+    | None = None,
     shop_id: int | None = None,
     after_sales_type: str | None = None,
     workflow_status: str | None = None,
@@ -35,6 +37,7 @@ def list_orders(
         page=page,
         page_size=page_size,
         record_view=record_view,
+        platform=platform,
         shop_id=shop_id,
         after_sales_type=after_sales_type,
         workflow_status=workflow_status,
@@ -59,6 +62,11 @@ def list_intercepts(
         "REFUND_BLOCKED",
         "WAITING_RETURN",
         "ERP_MATCH",
+        "ERP_NOT_FOUND",
+        "ERP_STAGED",
+        "ERP_RECEIVABLE_OPEN",
+        "ERP_EXCEPTION",
+        "CLOSED_LOOP",
         "MANUAL",
     ]
     | None = None,

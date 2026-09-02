@@ -23,6 +23,14 @@ import {
 } from "@phosphor-icons/react";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
+const PLATFORM_OPTIONS = [
+  { value: "PDD", label: "拼多多" },
+  { value: "TMALL", label: "天猫" },
+  { value: "TAOBAO", label: "淘宝" },
+  { value: "1688", label: "1688" },
+  { value: "JD", label: "京东" },
+  { value: "DOUYIN", label: "抖音" },
+];
 
 function inputDate(date) {
   const offset = date.getTimezoneOffset();
@@ -34,6 +42,7 @@ function createInitialFilters() {
   const start = new Date(end);
   start.setDate(end.getDate() - 7);
   return {
+    platform: "",
     shop_id: "",
     sales_owner: "",
     after_sales_type: "",
@@ -198,14 +207,25 @@ function Sidebar({ activeView, onNavigate }) {
 
 function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, busy }) {
   const update = (key) => (event) => setDraft((current) => ({ ...current, [key]: event.target.value }));
+  const changePlatform = (event) => setDraft((current) => ({ ...current, platform: event.target.value, shop_id: "" }));
+  const platformShops = draft.platform ? shops.filter((shop) => shop.platform === draft.platform) : [];
+  const selectedPlatformLabel = PLATFORM_OPTIONS.find((item) => item.value === draft.platform)?.label;
   return (
     <form className="filters" onSubmit={onSubmit}>
       <div className="filter-row filter-row-primary">
         <label>
+          <span>平台</span>
+          <select value={draft.platform} onChange={changePlatform}>
+            <option value="">全部平台</option>
+            {PLATFORM_OPTIONS.map((item) => <option value={item.value} key={item.value}>{item.label}</option>)}
+          </select>
+        </label>
+        <label>
           <span>店铺</span>
-          <select value={draft.shop_id} onChange={update("shop_id")}>
-            <option value="">全部</option>
-            {shops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.platform_label ? `${shop.platform_label} · ` : ""}{shop.shop_name}</option>)}
+          <select value={draft.shop_id} onChange={update("shop_id")} disabled={!draft.platform}>
+            <option value="">{draft.platform ? `全部${selectedPlatformLabel}店铺` : "请先选择平台"}</option>
+            {platformShops.map((shop) => <option value={shop.shop_id} key={shop.shop_id}>{shop.shop_name}</option>)}
+            {draft.platform && !platformShops.length && <option value="" disabled>暂无已接入店铺</option>}
           </select>
         </label>
         <label>
@@ -245,6 +265,8 @@ function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, b
             <option value="RETURNED">已退回</option>
           </select>
         </label>
+      </div>
+      <div className="filter-row filter-row-secondary">
         <div className="date-field">
           <span>申请时间</span>
           <div className="date-range">
@@ -254,8 +276,6 @@ function FilterPanel({ draft, setDraft, onSubmit, onReset, shops, salesOwners, b
             <input type="date" value={draft.ended_on} onChange={update("ended_on")} aria-label="结束日期" />
           </div>
         </div>
-      </div>
-      <div className="filter-row filter-row-secondary">
         <label className="search-field">
           <MagnifyingGlass size={17} />
           <input value={draft.keyword} onChange={update("keyword")} placeholder="订单号/售后单号/快递单号" />
@@ -362,20 +382,24 @@ function Pagination({ pagination, onPage, onPageSize }) {
   );
 }
 
-function InterceptSummaryStrip({ summary }) {
+function InterceptSummaryStrip({ summary, onStage }) {
   const items = [
-    { label: "待发拦截", value: summary.waiting_notice ?? 0, tone: "orange" },
-    { label: "退款冻结", value: summary.refund_blocked ?? 0, tone: "orange" },
-    { label: "已退款待退回", value: summary.waiting_return ?? 0, tone: "blue" },
-    { label: "待匹配ERP退货单", value: summary.waiting_erp_match ?? 0, tone: "green" },
+    { label: "待发拦截", value: summary.waiting_notice ?? 0, tone: "orange", stage: "WAITING_NOTICE" },
+    { label: "退款冻结", value: summary.refund_blocked ?? 0, tone: "orange", stage: "REFUND_BLOCKED" },
+    { label: "已退款待退回", value: summary.waiting_return ?? 0, tone: "blue", stage: "WAITING_RETURN" },
+    { label: "待仓库开单", value: summary.waiting_warehouse_order ?? 0, tone: "blue", stage: "ERP_NOT_FOUND" },
+    { label: "暂存待认领", value: summary.staged ?? 0, tone: "orange", stage: "ERP_STAGED" },
+    { label: "客户名下待平账", value: summary.receivable_open ?? 0, tone: "orange", stage: "ERP_RECEIVABLE_OPEN" },
+    { label: "售后已闭环", value: summary.closed_loop ?? 0, tone: "green", stage: "CLOSED_LOOP" },
   ];
   return (
-    <section className="summary-strip" aria-label="在途拦截摘要">
+    <section className="summary-strip intercept-summary" aria-label="在途拦截和退货闭环摘要">
       {items.map((item) => (
-        <div className="summary-item" key={item.label}>
+        <button className="summary-item summary-button" type="button" key={item.label} onClick={() => onStage(item.stage)}>
           <span>{item.label}</span>
           <strong className={`metric-${item.tone}`}>{item.value}</strong>
-        </div>
+          <small>点击查看</small>
+        </button>
       ))}
     </section>
   );
@@ -408,7 +432,12 @@ function InterceptFilterPanel({ draft, setDraft, onSubmit, onReset, shops, sales
             <option value="NOTICE_SENT">拦截已发送</option>
             <option value="REFUND_BLOCKED">退款冻结</option>
             <option value="WAITING_RETURN">已退款待退回</option>
-            <option value="ERP_MATCH">待匹配ERP退货单</option>
+            <option value="ERP_MATCH">全部待匹配ERP退货单</option>
+            <option value="ERP_NOT_FOUND">待仓库开退货单</option>
+            <option value="ERP_STAGED">暂存列表待认领</option>
+            <option value="ERP_RECEIVABLE_OPEN">客户名下待平账</option>
+            <option value="ERP_EXCEPTION">ERP匹配异常</option>
+            <option value="CLOSED_LOOP">售后已闭环</option>
             <option value="MANUAL">人工处理</option>
           </select>
         </label>
@@ -434,7 +463,7 @@ function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) 
         <thead>
           <tr>
             <th>店铺</th><th>归属业务员</th><th>售后单号</th><th>平台订单号</th><th>快递群 / 运单</th><th>拦截通知</th>
-            <th>物流状态</th><th>退款闸门</th><th>当前环节</th><th>最近更新</th><th>操作</th>
+            <th>物流状态</th><th>退款闸门</th><th>ERP退货 / 平账</th><th>当前环节</th><th>最近更新</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -455,6 +484,9 @@ function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) 
               <td><StatusTag tone={item.notice_tone}>{item.notice_label}</StatusTag></td>
               <td title={item.logistics_context}><StatusTag tone={item.logistics_tone}>{item.logistics_label}</StatusTag></td>
               <td><StatusTag tone={item.refund_gate_tone}>{item.refund_gate_label}</StatusTag></td>
+              <td title={`${item.erp_match_context || ""}${item.erp_match_checked_at ? ` · 核对于 ${formatDateTime(item.erp_match_checked_at, true)}` : ""}`}>
+                <span className="stacked-cell"><StatusTag tone={item.erp_match_tone}>{item.erp_match_label}</StatusTag><small>{item.erp_return_order_sn || (item.erp_receivable_amount !== null && item.erp_receivable_amount !== undefined ? `累计应收 ${formatCurrency(Number(item.erp_receivable_amount))}` : "—")}</small></span>
+              </td>
               <td><StatusTag tone={item.workflow_tone}>{item.workflow_label}</StatusTag></td>
               <td>{formatDateTime(item.updated_at)}</td>
               <td><button type="button" className="link-button" onClick={(event) => { event.stopPropagation(); onSelect(item.after_sales_sn); }}>查看详情</button></td>
@@ -525,6 +557,11 @@ function InterceptWorkspace({ detailOpen, setDetailOpen }) {
   const chooseOrder = (afterSalesSn) => { setSelected(afterSalesSn); setDetailOpen(true); };
   const submitFilters = (event) => { event.preventDefault(); setPage(1); setFilters(draftFilters); };
   const resetFilters = () => { const initial = createInterceptFilters(); setDraftFilters(initial); setFilters(initial); setPage(1); };
+  const applyStage = (stage) => {
+    setDraftFilters((current) => ({ ...current, stage }));
+    setFilters((current) => ({ ...current, stage }));
+    setPage(1);
+  };
   const copyValue = async (value) => { await navigator.clipboard.writeText(String(value)); setCopied(true); window.setTimeout(() => setCopied(false), 1500); };
 
   return (
@@ -535,7 +572,7 @@ function InterceptWorkspace({ detailOpen, setDetailOpen }) {
           <div className="sync-status"><span />模块1后台运行 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
         </header>
         <div className="workspace-body">
-          <InterceptSummaryStrip summary={data.summary} />
+          <InterceptSummaryStrip summary={data.summary} onStage={applyStage} />
           <InterceptFilterPanel draft={draftFilters} setDraft={setDraftFilters} onSubmit={submitFilters} onReset={resetFilters} shops={data.shops} salesOwners={data.sales_owners ?? []} busy={loading} />
           <InterceptTable items={data.items} selected={selected} onSelect={chooseOrder} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} />
           <div className="workspace-actions">
@@ -863,6 +900,7 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="商家应收" value={formatCurrency(detail.merchant_receivable_amount)} />
               <DetailRow label="退款范围" value={detail.refund_scope} />
               <DetailRow label="商品名称" value={detail.product_name} />
+              <DetailRow label="原因分类" value={detail.buyer_reason_category} />
               <DetailRow label="买家昵称" value={detail.buyer_name} />
             </dl>
           </section>
@@ -876,6 +914,17 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="备注" value={detail.decision.note} />
             </dl>
           </section>
+          {detail.closed_loop && <section className="detail-section decision-section">
+            <h3>拦截退回闭环</h3>
+            <dl>
+              <div className="detail-row"><dt>ERP状态</dt><dd><StatusTag tone={detail.closed_loop.tone}>{detail.closed_loop.label}</StatusTag></dd></div>
+              <DetailRow label="ERP退货单" value={detail.closed_loop.return_order_sn} copyable onCopy={onCopy} />
+              <DetailRow label="累计应收" value={detail.closed_loop.receivable_amount === null || detail.closed_loop.receivable_amount === undefined ? "—" : formatCurrency(Number(detail.closed_loop.receivable_amount))} />
+              <DetailRow label="最近核对" value={formatDateTime(detail.closed_loop.checked_at, true)} />
+              <DetailRow label="闭环时间" value={formatDateTime(detail.closed_loop.closed_loop_at, true)} />
+              <DetailRow label="核对说明" value={detail.closed_loop.message} />
+            </dl>
+          </section>}
           <section className="detail-section timeline-section">
             <h3>处理流程</h3>
             <ol className="timeline">
