@@ -64,17 +64,43 @@ function createInterceptFilters() {
 }
 
 function createAttributionFilters() {
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - 30);
+  const current = new Date();
+  const currentDate = inputDate(current);
   return {
     platform: "",
     shop_id: "",
     reason_category: "",
-    started_on: inputDate(start),
-    ended_on: inputDate(end),
+    period_mode: "MONTH",
+    period_month: currentDate.slice(0, 7),
+    period_year: currentDate.slice(0, 4),
+    started_on: `${currentDate.slice(0, 7)}-01`,
+    ended_on: currentDate,
     model_keyword: "",
   };
+}
+
+function attributionRequestFilters(filters) {
+  const currentDate = inputDate(new Date());
+  const request = {
+    platform: filters.platform,
+    shop_id: filters.shop_id,
+    reason_category: filters.reason_category,
+    period_mode: filters.period_mode,
+    model_keyword: filters.model_keyword,
+  };
+  if (filters.period_mode === "MONTH") {
+    const [year, month] = filters.period_month.split("-").map(Number);
+    const monthEnd = inputDate(new Date(year, month, 0));
+    request.started_on = `${filters.period_month}-01`;
+    request.ended_on = filters.period_month === currentDate.slice(0, 7) ? currentDate : monthEnd;
+  } else if (filters.period_mode === "YEAR") {
+    request.started_on = `${filters.period_year}-01-01`;
+    request.ended_on = filters.period_year === currentDate.slice(0, 4) ? currentDate : `${filters.period_year}-12-31`;
+  } else {
+    request.started_on = filters.started_on;
+    request.ended_on = filters.ended_on;
+  }
+  return request;
 }
 
 function createManualFilters() {
@@ -602,6 +628,88 @@ const reasonColors = {
   OTHER: "#8b96a7",
 };
 
+const formatDelta = (value) => {
+  if (value === null || value === undefined) return "暂无可比基期";
+  if (value === 0) return "持平";
+  return `${value > 0 ? "+" : ""}${value}%`;
+};
+
+function FinancialSummary({ financial }) {
+  const summary = financial.summary ?? {};
+  const comparison = financial.comparison ?? {};
+  const items = [
+    { key: "actual_total", label: "实际退款成功金额", value: summary.actual_total, primary: true },
+    { key: "actual_only_refund", label: "实际仅退款金额", value: summary.actual_only_refund },
+    { key: "actual_return_refund", label: "实际退货退款金额", value: summary.actual_return_refund },
+    { key: "application_total", label: "申请退款金额", value: summary.application_total, requested: true },
+  ];
+  return (
+    <section className="financial-summary" aria-label="退款金额摘要">
+      {items.map((item) => {
+        const previous = comparison.previous?.deltas?.[item.key];
+        const yearOverYear = comparison.year_over_year?.deltas?.[item.key];
+        return (
+          <article key={item.key} className={`${item.primary ? "primary" : ""} ${item.requested ? "requested" : ""}`}>
+            <div className="financial-label"><span>{item.label}</span>{item.primary && <b>默认口径</b>}{item.requested && <b>辅助口径</b>}</div>
+            <strong>{formatCurrency(item.value ?? 0)}</strong>
+            <div className="financial-deltas">
+              {comparison.previous && <span className={previous > 0 ? "worse" : previous < 0 ? "better" : "neutral"}>{comparison.previous.label} {formatDelta(previous)}</span>}
+              {comparison.year_over_year && <span className={yearOverYear > 0 ? "worse" : yearOverYear < 0 ? "better" : "neutral"}>{comparison.year_over_year.label} {formatDelta(yearOverYear)}</span>}
+            </div>
+          </article>
+        );
+      })}
+      <div className="financial-counts"><span>退款成功 <strong>{summary.successful_orders ?? 0}</strong> 单</span><span>退款申请 <strong>{summary.application_orders ?? 0}</strong> 单</span></div>
+    </section>
+  );
+}
+
+function RefundTrend({ financial, period }) {
+  const rows = financial.trend ?? [];
+  const maxValue = Math.max(1, ...rows.flatMap((row) => [row.actual_total ?? 0, row.application_total ?? 0]));
+  const title = period.mode === "YEAR" ? `${period.started_on?.slice(0, 4) || "年度"} 十二个月退款趋势` : period.mode === "MONTH" ? `${period.started_on?.slice(0, 7) || "月度"} 每日退款趋势` : "自定义周期退款趋势";
+  return (
+    <section className="attribution-card refund-trend-card">
+      <div className="card-heading">
+        <div><h2>{title}</h2><p>柱形为实际退款成功金额，橙色短线为申请退款金额</p></div>
+        <div className="trend-legend"><span><i className="only" />仅退款</span><span><i className="returned" />退货退款</span><span><i className="applied" />申请金额</span></div>
+      </div>
+      <div className="refund-trend-scroll">
+        <div className={`refund-trend ${financial.granularity === "MONTH" ? "monthly" : "daily"}`}>
+          {rows.map((row) => {
+            const onlyHeight = Math.max(0, (row.actual_only_refund ?? 0) * 100 / maxValue);
+            const returnHeight = Math.max(0, (row.actual_return_refund ?? 0) * 100 / maxValue);
+            const applicationBottom = Math.max(0, (row.application_total ?? 0) * 100 / maxValue);
+            const tooltip = `${row.label}｜实际 ${formatCurrency(row.actual_total)}（仅退款 ${formatCurrency(row.actual_only_refund)}，退货退款 ${formatCurrency(row.actual_return_refund)}）｜申请 ${formatCurrency(row.application_total)}`;
+            return (
+              <div key={row.key} className={`trend-column ${row.is_future ? "future" : ""}`} title={tooltip}>
+                <div className="trend-plot">
+                  <i className="application-marker" style={{ bottom: `${applicationBottom}%` }} />
+                  <b className="return-bar" style={{ height: `${returnHeight}%`, bottom: `${onlyHeight}%` }} />
+                  <b className="only-bar" style={{ height: `${onlyHeight}%` }} />
+                </div>
+                <span>{row.label}</span>
+                {period.mode === "YEAR" && !row.is_future && <small><em className={row.mom_delta > 0 ? "worse" : row.mom_delta < 0 ? "better" : "neutral"}>环 {formatDelta(row.mom_delta)}</em><em className={row.yoy_delta > 0 ? "worse" : row.yoy_delta < 0 ? "better" : "neutral"}>同 {formatDelta(row.yoy_delta)}</em></small>}
+              </div>
+            );
+          })}
+          {!rows.length && <div className="attribution-empty">当前周期暂无退款金额趋势</div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function CoverageNotice({ coverage }) {
+  const activePlatforms = (coverage.by_platform ?? []).filter((item) => item.application_orders > 0);
+  return (
+    <div className={`coverage-note ${coverage.period_complete ? "complete" : "partial"}`}>
+      <WarningCircle size={17} />
+      <div><strong>数据覆盖：</strong><span>{coverage.note || "暂无覆盖信息。"}</span>{activePlatforms.length > 1 && <p>{activePlatforms.map((item) => <b key={item.platform}>{item.platform_label} 状态覆盖 {item.status_coverage_rate}%</b>)}</p>}</div>
+    </div>
+  );
+}
+
 function AttributionSummary({ summary }) {
   const items = [
     { label: "退款申请单", value: summary.refund_applications ?? 0, suffix: "单" },
@@ -632,7 +740,10 @@ function AttributionFilters({ draft, setDraft, shops, categories, busy, onSubmit
       <label><span>平台</span><select value={draft.platform} onChange={changePlatform}><option value="">全部平台</option>{PLATFORM_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
       <label><span>店铺</span><select value={draft.shop_id} onChange={update("shop_id")} disabled={!draft.platform}><option value="">{draft.platform ? `全部${selectedPlatformLabel}店铺` : "请先选择平台"}</option>{platformShops.map((shop) => <option key={shop.shop_id} value={shop.shop_id}>{shop.shop_name}</option>)}{draft.platform && !platformShops.length && <option value="" disabled>暂无已接入店铺</option>}</select></label>
       <label><span>原因大类</span><select value={draft.reason_category} onChange={update("reason_category")}><option value="">全部原因</option>{categories.map((category) => <option key={category.code} value={category.code}>{category.label}</option>)}</select></label>
-      <label className="attribution-date"><span>申请时间</span><div><input type="date" value={draft.started_on} onChange={update("started_on")} /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} /></div></label>
+      <label className="period-mode"><span>统计周期</span><select value={draft.period_mode} onChange={update("period_mode")}><option value="MONTH">月度</option><option value="YEAR">年度</option><option value="CUSTOM">自定义</option></select></label>
+      {draft.period_mode === "MONTH" && <label className="period-value"><span>选择月份</span><input type="month" required value={draft.period_month} onChange={update("period_month")} /></label>}
+      {draft.period_mode === "YEAR" && <label className="period-value"><span>选择年份</span><input type="number" min="2020" max="2100" required value={draft.period_year} onChange={update("period_year")} /></label>}
+      {draft.period_mode === "CUSTOM" && <label className="attribution-date"><span>自定义日期</span><div><input type="date" required value={draft.started_on} onChange={update("started_on")} /><b>~</b><input type="date" required value={draft.ended_on} onChange={update("ended_on")} /></div></label>}
       <label className="attribution-search"><span>型号 / SKU</span><div><MagnifyingGlass size={15} /><input value={draft.model_keyword} onChange={update("model_keyword")} placeholder="例如 6050" /></div></label>
       <button type="button" className="button secondary" onClick={onReset}><ArrowCounterClockwise size={16} />重置</button>
       <button type="submit" className="button primary" disabled={busy}><MagnifyingGlass size={16} />查询</button>
@@ -705,7 +816,7 @@ function AttributionWorkspace() {
   const [draft, setDraft] = useState(createAttributionFilters);
   const [filters, setFilters] = useState(createAttributionFilters);
   const [focusModel, setFocusModel] = useState("");
-  const [data, setData] = useState({ summary: {}, reason_breakdown: [], model_ranking: [], focus: {}, shops: [], reason_categories: [], denominator: {} });
+  const [data, setData] = useState({ summary: {}, financial: { summary: {}, comparison: {}, trend: [] }, period: {}, coverage: {}, reason_breakdown: [], model_ranking: [], focus: {}, shops: [], reason_categories: [], denominator: {} });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [refreshKey, setRefreshKey] = useState(0);
@@ -713,7 +824,7 @@ function AttributionWorkspace() {
   const load = useCallback(async (signal) => {
     setLoading(true); setError("");
     const params = new URLSearchParams();
-    Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+    Object.entries(attributionRequestFilters(filters)).forEach(([key, value]) => { if (value) params.set(key, value); });
     if (focusModel) params.set("focus_model", focusModel);
     try {
       const response = await fetch(`/api/v1/attribution/overview?${params}`, { signal });
@@ -736,6 +847,9 @@ function AttributionWorkspace() {
       <div className="attribution-body">
         <AttributionFilters draft={draft} setDraft={setDraft} shops={data.shops ?? []} categories={data.reason_categories ?? []} busy={loading} onSubmit={submit} onReset={reset} />
         {error ? <div className="attribution-error"><WarningCircle size={20} />{error}<button type="button" onClick={() => setRefreshKey((key) => key + 1)}>重试</button></div> : <>
+          <FinancialSummary financial={data.financial ?? {}} />
+          <RefundTrend financial={data.financial ?? {}} period={data.period ?? {}} />
+          <CoverageNotice coverage={data.coverage ?? {}} />
           <AttributionSummary summary={data.summary ?? {}} />
           <div className="denominator-note"><WarningCircle size={17} /><span><strong>口径提示：</strong>{data.denominator?.note}</span></div>
           <div className="attribution-grid"><ModelRankingChart rows={data.model_ranking ?? []} focusModel={data.focus?.model_code} onFocus={setFocusModel} /><ReasonBreakdown rows={data.reason_breakdown ?? []} /></div>

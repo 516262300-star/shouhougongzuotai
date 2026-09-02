@@ -17,6 +17,9 @@ from aftersales_workbench.integrations.marketplace.models import (
     ConfiguredMarketplaceShop,
     NormalizedMarketplaceRefund,
 )
+from aftersales_workbench.integrations.refund_financial import (
+    apply_refund_financial_state,
+)
 from aftersales_workbench.services.refund_attribution import classify_refund_reason
 
 
@@ -121,6 +124,7 @@ class SqlAlchemyMarketplaceSyncRepository:
         )
         order.platform_order_status_text = refund.platform_order_status_text
         order.is_speed_refund = 0
+        apply_refund_financial_state(order, config.platform)
 
         for normalized_item in refund.items:
             item = self.session.execute(

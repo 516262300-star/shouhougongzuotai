@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.session import get_db_session
@@ -22,6 +22,7 @@ def overview(
     platform: Literal["PDD", "TMALL", "TAOBAO", "1688", "JD", "DOUYIN"]
     | None = None,
     shop_id: int | None = None,
+    period_mode: Literal["MONTH", "YEAR", "CUSTOM"] = "MONTH",
     started_on: date | None = None,
     ended_on: date | None = None,
     model_keyword: Annotated[str | None, Query(max_length=100)] = None,
@@ -37,9 +38,12 @@ def overview(
     | None = None,
     focus_model: Annotated[str | None, Query(max_length=100)] = None,
 ) -> dict[str, Any]:
+    if started_on and ended_on and ended_on < started_on:
+        raise HTTPException(status_code=422, detail="结束日期不能早于开始日期")
     return service.overview(
         platform=platform,
         shop_id=shop_id,
+        period_mode=period_mode,
         started_on=started_on,
         ended_on=ended_on,
         model_keyword=model_keyword,

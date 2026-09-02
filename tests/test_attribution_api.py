@@ -31,6 +31,7 @@ def test_attribution_overview_passes_dashboard_filters() -> None:
             params={
                 "platform": "1688",
                 "shop_id": 3,
+                "period_mode": "CUSTOM",
                 "started_on": "2026-08-01",
                 "ended_on": "2026-08-31",
                 "model_keyword": "6050",
@@ -46,6 +47,7 @@ def test_attribution_overview_passes_dashboard_filters() -> None:
     assert service.kwargs == {
         "platform": "1688",
         "shop_id": 3,
+        "period_mode": "CUSTOM",
         "started_on": date(2026, 8, 1),
         "ended_on": date(2026, 8, 31),
         "model_keyword": "6050",
@@ -73,6 +75,19 @@ def test_attribution_rejects_unknown_platform() -> None:
         response = TestClient(app).get(
             "/api/v1/attribution/overview",
             params={"platform": "UNKNOWN"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 422
+
+
+def test_attribution_rejects_unknown_period_mode() -> None:
+    app.dependency_overrides[get_attribution_service] = lambda: FakeAttributionService()
+    try:
+        response = TestClient(app).get(
+            "/api/v1/attribution/overview",
+            params={"period_mode": "WEEK"},
         )
     finally:
         app.dependency_overrides.clear()

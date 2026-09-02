@@ -140,6 +140,12 @@ class AfterSalesOrder(Base):
         Index("idx_return_tracking", "return_tracking_number"),
         Index("idx_order_sn", "platform_order_sn"),
         Index("idx_aftersales_platform_created", "platform_created_at"),
+        Index("idx_aftersales_refund_completed", "refund_completed_at"),
+        Index(
+            "idx_aftersales_refund_financial",
+            "refund_financial_status",
+            "refund_completed_at",
+        ),
         Index("idx_aftersales_erp_owner_sync", "erp_sales_owner_synced_at", "id"),
         Index("idx_aftersales_erp_sales_owner", "erp_sales_owner", "updated_at"),
         Index(
@@ -174,6 +180,12 @@ class AfterSalesOrder(Base):
         ENUM(*[item.value for item in AfterSalesType]), nullable=False
     )
     refund_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    # refund_amount 是买家申请退款金额；实际退款仅在平台明确成功后写入。
+    actual_refund_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    refund_financial_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="UNKNOWN", server_default="UNKNOWN"
+    )
+    refund_completed_at: Mapped[datetime | None] = mapped_column(DateTime)
     # 拼多多订单的买家优惠后实付金额；模块 1 以此判断是否为买家全额退款。
     platform_order_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     platform_goods_amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))

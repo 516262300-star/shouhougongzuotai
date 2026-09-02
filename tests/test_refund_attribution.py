@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
 from aftersales_workbench.services.refund_attribution import (
     AttributionFact,
@@ -16,6 +17,12 @@ def _fact(
     *,
     quantity: int = 1,
     shop_id: int = 1,
+    occurred_at: datetime | None = None,
+    after_sales_type: str = "ONLY_REFUND",
+    refund_amount: str = "0",
+    actual_refund_amount: str | None = None,
+    refund_financial_status: str = "UNKNOWN",
+    refund_completed_at: datetime | None = None,
 ) -> AttributionFact:
     return AttributionFact(
         after_sales_sn=after_sales_sn,
@@ -27,7 +34,17 @@ def _fact(
         raw_reason=reason,
         buyer_memo="",
         product_name="柜门拉手",
-        occurred_at=datetime(2026, 9, shop_id, 9, 0),
+        occurred_at=occurred_at or datetime(2026, 9, shop_id, 9, 0),
+        platform="PDD",
+        after_sales_type=after_sales_type,
+        refund_amount=Decimal(refund_amount),
+        actual_refund_amount=(
+            Decimal(actual_refund_amount)
+            if actual_refund_amount is not None
+            else None
+        ),
+        refund_financial_status=refund_financial_status,
+        refund_completed_at=refund_completed_at,
     )
 
 
@@ -79,3 +96,120 @@ def test_aggregate_filters_reason_and_model_keyword() -> None:
 
     assert payload["summary"]["refund_applications"] == 1
     assert [item["model_code"] for item in payload["model_ranking"]] == ["6050"]
+
+
+def test_financial_summary_uses_success_time_and_keeps_application_amount() -> None:
+    payload = aggregate_attribution(
+        [
+            _fact(
+                "A1",
+                "6050-1",
+                "不想要",
+                "DISLIKE",
+                occurred_at=datetime(2026, 9, 1),
+                refund_amount="10",
+                actual_refund_amount="10",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2026, 9, 2),
+            ),
+            _fact(
+                "A1",
+                "6050-2",
+                "不想要",
+                "DISLIKE",
+                occurred_at=datetime(2026, 9, 1),
+                refund_amount="10",
+                actual_refund_amount="10",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2026, 9, 2),
+            ),
+            _fact(
+                "A2",
+                "6602-1",
+                "尺寸不合适",
+                "SPEC_MISMATCH",
+                occurred_at=datetime(2026, 9, 2),
+                after_sales_type="RETURN_AND_REFUND",
+                refund_amount="20",
+                refund_financial_status="PENDING",
+            ),
+            _fact(
+                "A3",
+                "7008-1",
+                "换货",
+                "OTHER",
+                occurred_at=datetime(2026, 9, 2),
+                after_sales_type="EXCHANGE",
+                refund_amount="30",
+                actual_refund_amount="30",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2026, 9, 2),
+            ),
+            _fact(
+                "A4",
+                "6050-3",
+                "补偿",
+                "OTHER",
+                occurred_at=datetime(2026, 8, 20),
+                refund_amount="5",
+                actual_refund_amount="5",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2026, 9, 1),
+            ),
+        ],
+        period_mode="MONTH",
+        started_on=date(2026, 9, 1),
+        ended_on=date(2026, 9, 2),
+        today=date(2026, 9, 2),
+    )
+
+    summary = payload["financial"]["summary"]
+    assert summary["actual_total"] == 15.0
+    assert summary["actual_only_refund"] == 15.0
+    assert summary["actual_return_refund"] == 0.0
+    assert summary["application_total"] == 30.0
+    assert summary["application_only_refund"] == 10.0
+    assert summary["application_return_refund"] == 20.0
+    assert summary["successful_orders"] == 2
+    assert summary["application_orders"] == 2
+    assert len(payload["financial"]["trend"]) == 2
+
+
+def test_year_trend_always_has_twelve_months_and_month_comparison() -> None:
+    payload = aggregate_attribution(
+        [
+            _fact(
+                "D1",
+                "6050-1",
+                "不想要",
+                "DISLIKE",
+                occurred_at=datetime(2025, 12, 20),
+                refund_amount="10",
+                actual_refund_amount="10",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2025, 12, 20),
+            ),
+            _fact(
+                "J1",
+                "6050-1",
+                "不想要",
+                "DISLIKE",
+                occurred_at=datetime(2026, 1, 5),
+                refund_amount="20",
+                actual_refund_amount="20",
+                refund_financial_status="SUCCESS",
+                refund_completed_at=datetime(2026, 1, 5),
+            ),
+        ],
+        period_mode="YEAR",
+        started_on=date(2026, 1, 1),
+        ended_on=date(2026, 6, 30),
+        today=date(2026, 9, 2),
+    )
+
+    trend = payload["financial"]["trend"]
+    assert len(trend) == 12
+    assert trend[0]["actual_total"] == 20.0
+    assert trend[0]["mom_delta"] == 100.0
+    assert trend[6]["is_future"] is True
+    assert payload["financial"]["comparison"]["previous"] is None

@@ -22,6 +22,7 @@ def test_normalize_return_refund_uses_trade_sku_and_return_tracking() -> None:
         "created": "2026-09-01 10:00:00",
         "modified": "2026-09-01 10:05:00",
         "order_status": "WAIT_BUYER_CONFIRM_GOODS",
+        "status": "SUCCESS",
         "sid": "YT123",
         "company_name": "圆通速递",
     }
@@ -46,6 +47,8 @@ def test_normalize_return_refund_uses_trade_sku_and_return_tracking() -> None:
     assert refund.refund_amount == Decimal("12.30")
     assert refund.order_shipping_status is ShippingStatus.IN_TRANSIT
     assert refund.return_tracking_number == "YT123"
+    assert refund.platform_after_sales_status_text == "SUCCESS"
+    assert refund.platform_order_status_text == "WAIT_BUYER_CONFIRM_GOODS"
     assert refund.item.sku_code == "8064-25#铜本色"
     assert refund.item.applied_quantity == 2
 

@@ -16,6 +16,9 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.pdd.mapper import NormalizedRefund
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
+from aftersales_workbench.integrations.refund_financial import (
+    apply_refund_financial_state,
+)
 from aftersales_workbench.services.refund_attribution import classify_refund_reason
 from aftersales_workbench.services.refund_scope import reconcile_refund_scope
 
@@ -114,6 +117,7 @@ class SqlAlchemyPddSyncRepository:
         order.platform_after_sales_status = refund.platform_after_sales_status
         order.platform_order_refund_status = refund.platform_order_refund_status
         order.is_speed_refund = int(refund.is_speed_refund)
+        apply_refund_financial_state(order, Platform.PDD)
         reconcile_refund_scope(self.session, order)
 
         item = self.session.execute(

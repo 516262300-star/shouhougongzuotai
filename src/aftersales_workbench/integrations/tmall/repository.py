@@ -14,6 +14,9 @@ from aftersales_workbench.db.models import (
     TmallSyncCursor,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.refund_financial import (
+    apply_refund_financial_state,
+)
 from aftersales_workbench.integrations.tmall.mapper import NormalizedTmallRefund
 from aftersales_workbench.integrations.tmall.shops import ConfiguredTmallShop
 from aftersales_workbench.services.refund_attribution import classify_refund_reason
@@ -115,7 +118,12 @@ class SqlAlchemyTmallSyncRepository:
         order.carrier_code = refund.carrier_code
         order.platform_after_sales_status = None
         order.platform_order_refund_status = None
+        order.platform_after_sales_status_text = (
+            refund.platform_after_sales_status_text
+        )
+        order.platform_order_status_text = refund.platform_order_status_text
         order.is_speed_refund = 0
+        apply_refund_financial_state(order, Platform.TMALL)
         reconcile_refund_scope(self.session, order)
 
         item = self.session.execute(

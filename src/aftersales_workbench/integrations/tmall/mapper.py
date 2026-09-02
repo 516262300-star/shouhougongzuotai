@@ -33,6 +33,8 @@ class NormalizedTmallRefund:
     platform_updated_at: datetime | None
     return_tracking_number: str | None
     carrier_code: str | None
+    platform_after_sales_status_text: str | None
+    platform_order_status_text: str | None
     order_shipping_status: ShippingStatus
     item: NormalizedTmallRefundItem
 
@@ -177,6 +179,10 @@ def normalize_refund(
         platform_updated_at=_date(merged.get("modified"), field="modified"),
         return_tracking_number=_nonempty(merged.get("sid")),
         carrier_code=_nonempty(merged.get("company_name")),
+        platform_after_sales_status_text=_nonempty(merged.get("status")),
+        platform_order_status_text=(
+            _nonempty(merged.get("order_status")) or _nonempty(trade.get("status"))
+        ),
         order_shipping_status=_shipping_status(merged, trade),
         item=NormalizedTmallRefundItem(
             sku_code=sku_code,
