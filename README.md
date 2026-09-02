@@ -219,7 +219,7 @@ alembic upgrade head
 
 ## 淘宝、1688、京东、抖音售后只读同步
 
-四个平台沿用各自真实接入方式，不依赖旧管理系统进程在线运行。淘宝和京东继续使用历史购买的第三方转发服务；1688使用开放平台；抖音使用第三方应用授权，但 SDK 请求仍发往抖店官方 HTTPS 地址。新同步器独立完成签名、分页、详情补查、字段归一化和 MySQL 幂等入库：
+四个平台沿用各自真实接入方式，不依赖旧管理系统进程在线运行。淘宝和京东继续使用历史购买的第三方转发服务；旧定时任务中的京东范围为默认 `p1` 与 `set_key('p2-')` 两店，迁移工具会把两组凭据分别写入 `jd-relay-01`、`jd-relay-02`。1688使用开放平台；抖音使用第三方应用授权，但 SDK 请求仍发往抖店官方 HTTPS 地址。新同步器独立完成签名、分页、详情补查、字段归一化和 MySQL 幂等入库：
 
 - 淘宝把签名后的 `taobao.user.seller.get`、`taobao.refunds.receive.get`、`taobao.refund.get` 和 `taobao.trade.fullinfo.get` 以 GET 方式交给第三方 `forward.ashx` 中转；
 - 1688 调用 `alibaba.trade.refund.queryOrderRefundList`、`alibaba.trade.refund.OpQueryOrderRefund` 和 `alibaba.trade.ec.getOrder.sellerView`；

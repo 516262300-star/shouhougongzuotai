@@ -81,13 +81,30 @@ $taobaoShop = [ordered]@{
 }
 
 $jdGateway = (Get-RequiredMatchValue $jd 'private\s+\$gatewayUrl\s*=\s*["'']([^"'']+)["'']' '京东中转地址').TrimEnd('?') -replace '^http://', 'https://'
-$jdShop = [ordered]@{
+$jdFirstShop = [ordered]@{
     shop_code = 'jd-relay-01'
-    shop_name = '京东（第三方中转）'
+    shop_name = '京东一店（第三方中转）'
     platform_shop_id = Get-RequiredMatchValue $jd '\$store\s*=\s*["'']([^"'']+)["'']' '京东店铺代号'
     app_key = Get-RequiredMatchValue $jd '\$this->appkey\s*=\s*["'']([^"'']+)["'']' '京东 app_key'
     app_secret = Get-RequiredMatchValue $jd '\$clientSecret\s*=\s*["'']([^"'']+)["'']' '京东 app_secret'
     access_token = Get-RequiredMatchValue $jd '\$accessToken\s*=\s*["'']([^"'']+)["'']' '京东 access_token'
+}
+$jdSecondMatch = [regex]::Match(
+    $jd,
+    'if\s*\(\s*\$store\s*==\s*["'']p2-["'']\s*\)\s*\{(?<body>.*?)\}\s*elseif',
+    [Text.RegularExpressions.RegexOptions]::Singleline
+)
+if (-not $jdSecondMatch.Success) {
+    throw '旧源码中没有找到京东二店 set_key(p2-) 配置'
+}
+$jdSecondBlock = $jdSecondMatch.Groups['body'].Value
+$jdSecondShop = [ordered]@{
+    shop_code = 'jd-relay-02'
+    shop_name = '京东二店（第三方中转）'
+    platform_shop_id = 'p2-'
+    app_key = Get-RequiredMatchValue $jdSecondBlock '\$this->appkey\s*=\s*["'']([^"'']+)["'']' '京东二店 app_key'
+    app_secret = Get-RequiredMatchValue $jdSecondBlock '\$this->clientSecret\s*=\s*["'']([^"'']+)["'']' '京东二店 app_secret'
+    access_token = Get-RequiredMatchValue $jdSecondBlock '\$this->accessToken\s*=\s*["'']([^"'']+)["'']' '京东二店 access_token'
 }
 
 $douyinShop = [ordered]@{
@@ -111,7 +128,7 @@ $updates = [ordered]@{
     TAOBAO_SHOPS_JSON = (ConvertTo-Json @($taobaoShop) -Compress -Depth 4)
     JD_API_URL = $jdGateway
     JD_REQUEST_METHOD = 'GET'
-    JD_SHOPS_JSON = (ConvertTo-Json @($jdShop) -Compress -Depth 4)
+    JD_SHOPS_JSON = (ConvertTo-Json @($jdFirstShop, $jdSecondShop) -Compress -Depth 4)
     DOUYIN_API_URL = 'https://openapi-fxg.jinritemai.com'
     DOUYIN_TOKEN_CACHE_PATH = '.runtime/douyin-access-token-cache.json'
     DOUYIN_TOKEN_REFRESH_SKEW_SECONDS = '300'
@@ -131,7 +148,7 @@ if ($EnableDouyin) {
 }
 [IO.File]::WriteAllText($resolvedEnvPath, $content, [Text.UTF8Encoding]::new($false))
 
-Write-Output '已迁移：淘宝 1 店、京东 1 店、抖音 1 店。'
+Write-Output '已迁移：淘宝 1 店、京东 2 店、抖音 1 店。'
 Write-Output "修改前备份：$backupPath"
 $enabled = @()
 if ($EnableTaobao) { $enabled += '淘宝' }
