@@ -41,3 +41,23 @@ def test_load_douyin_requires_access_token() -> None:
 
     with pytest.raises(MarketplaceConfigurationError, match="access_token"):
         load_marketplace_shops(settings, Platform.DOUYIN)
+
+
+def test_load_douyin_allows_third_party_self_authorization() -> None:
+    settings = Settings(
+        _env_file=None,
+        douyin_shops_json=[
+            {
+                "shop_code": "douyin-01",
+                "platform_shop_id": "123456",
+                "app_key": "key",
+                "app_secret": "secret",
+                "access_token_mode": "authorization_self",
+            }
+        ],
+    )
+
+    shops = load_marketplace_shops(settings, Platform.DOUYIN)
+
+    assert shops[0].access_token is None
+    assert shops[0].access_token_mode == "authorization_self"

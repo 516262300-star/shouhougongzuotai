@@ -165,7 +165,9 @@ class Settings(BaseSettings):
     marketplace_timeout_seconds: float = Field(default=15, gt=0, le=60)
     marketplace_read_max_attempts: int = Field(default=3, ge=1, le=5)
 
-    taobao_api_url: str = "https://eco.taobao.com/router/rest"
+    # 淘宝、京东沿用历史购买的第三方转发服务；如服务商升级地址，只改本机 .env。
+    taobao_api_url: str = "https://odiych.goldbrantech.com/forward.ashx"
+    taobao_request_method: Literal["GET", "POST"] = "GET"
     taobao_sync_enabled: bool = False
     taobao_shops_json: list[dict[str, str]] = Field(default_factory=list)
 
@@ -173,11 +175,14 @@ class Settings(BaseSettings):
     alibaba_1688_sync_enabled: bool = False
     alibaba_1688_shops_json: list[dict[str, str]] = Field(default_factory=list)
 
-    jd_api_url: str = "https://api.jd.com/routerjson"
+    jd_api_url: str = "https://odiych.goldbrantech.com/forward.ashx"
+    jd_request_method: Literal["GET", "POST"] = "GET"
     jd_sync_enabled: bool = False
     jd_shops_json: list[dict[str, str]] = Field(default_factory=list)
 
     douyin_api_url: str = "https://openapi-fxg.jinritemai.com"
+    douyin_token_cache_path: str = ".runtime/douyin-access-token-cache.json"
+    douyin_token_refresh_skew_seconds: int = Field(default=300, ge=60, le=3600)
     douyin_sync_enabled: bool = False
     douyin_shops_json: list[dict[str, str]] = Field(default_factory=list)
 

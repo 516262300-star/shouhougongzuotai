@@ -21,7 +21,7 @@ _TOKEN_FIELD = {
     Platform.TAOBAO: "session_key",
     Platform.ALIBABA_1688: None,
     Platform.JD: "access_token",
-    Platform.DOUYIN: "access_token",
+    Platform.DOUYIN: None,
 }
 
 
@@ -53,17 +53,34 @@ def load_marketplace_shops(
             raise MarketplaceConfigurationError(f"店铺代号重复: {shop_code}")
         app_key = _required_text(entry, "app_key", label)
         app_secret = _required_text(entry, "app_secret", label)
+        platform_shop_id = str(entry.get("platform_shop_id") or shop_code).strip()
         token_field = _TOKEN_FIELD[platform]
         token = _required_text(entry, token_field, label) if token_field else ""
+        access_token_mode = "static"
+        if platform is Platform.DOUYIN:
+            access_token_mode = str(
+                entry.get("access_token_mode") or "static"
+            ).strip().lower()
+            if access_token_mode not in {"static", "authorization_self"}:
+                raise MarketplaceConfigurationError(
+                    f"{label} access_token_mode 只能是 static 或 authorization_self"
+                )
+            token = str(entry.get("access_token") or "").strip()
+            if access_token_mode == "static" and not token:
+                raise MarketplaceConfigurationError(f"{label} 缺少 access_token")
+            if access_token_mode == "authorization_self" and not str(
+                entry.get("platform_shop_id") or ""
+            ).strip():
+                raise MarketplaceConfigurationError(
+                    f"{label} 使用 authorization_self 时缺少 platform_shop_id"
+                )
         shops.append(
             ConfiguredMarketplaceShop(
                 platform=platform,
                 shop_number=number,
                 shop_code=shop_code,
                 shop_name=str(entry.get("shop_name") or shop_code).strip(),
-                platform_shop_id=str(
-                    entry.get("platform_shop_id") or shop_code
-                ).strip(),
+                platform_shop_id=platform_shop_id,
                 app_key=SecretStr(app_key),
                 app_secret=SecretStr(app_secret),
                 access_token=(
@@ -72,6 +89,7 @@ def load_marketplace_shops(
                 session_key=(
                     SecretStr(token) if token_field == "session_key" else None
                 ),
+                access_token_mode=access_token_mode,
             )
         )
         seen_codes.add(shop_code)

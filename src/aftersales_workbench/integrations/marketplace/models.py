@@ -32,6 +32,7 @@ class ConfiguredMarketplaceShop:
     app_secret: SecretStr
     access_token: SecretStr | None = None
     session_key: SecretStr | None = None
+    access_token_mode: str = "static"
 
 
 @dataclass(frozen=True, slots=True)

@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import SecretStr
@@ -104,6 +104,7 @@ class TmallClient:
         api_url: str = "https://eco.taobao.com/router/rest",
         timeout_seconds: float = 15,
         read_max_attempts: int = 3,
+        request_method: Literal["GET", "POST"] = "POST",
         http_client: httpx.Client | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -113,6 +114,7 @@ class TmallClient:
         self.credentials = credentials
         self.api_url = api_url
         self.read_max_attempts = read_max_attempts
+        self.request_method = request_method
         self._now = now
         self._sleep = sleep
         self._owns_http_client = http_client is None
@@ -155,9 +157,16 @@ class TmallClient:
         last_error: Exception | None = None
         for attempt in range(1, self.read_max_attempts + 1):
             try:
-                response = self._http_client.post(
+                payload = self.build_signed_payload(method, parameters)
+                request_kwargs = (
+                    {"params": payload}
+                    if self.request_method == "GET"
+                    else {"data": payload}
+                )
+                response = self._http_client.request(
+                    self.request_method,
                     self.api_url,
-                    data=self.build_signed_payload(method, parameters),
+                    **request_kwargs,
                 )
                 if response.status_code in _RETRYABLE_STATUS_CODES:
                     raise TmallTransportError(f"网关暂时不可用: HTTP {response.status_code}")

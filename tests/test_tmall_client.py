@@ -71,6 +71,38 @@ def test_refund_list_calls_official_method(credentials: TmallCredentials) -> Non
     http_client.close()
 
 
+def test_relay_mode_sends_signed_parameters_by_get(
+    credentials: TmallCredentials,
+) -> None:
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        captured.update(dict(request.url.params))
+        return httpx.Response(
+            200,
+            json={"user_seller_get_response": {"user": {"user_id": 1, "nick": "店"}}},
+            request=request,
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = TmallClient(
+        credentials,
+        api_url="http://relay.example/forward.ashx",
+        request_method="GET",
+        http_client=http_client,
+    )
+
+    client.get_seller()
+
+    assert captured["method"] == "taobao.user.seller.get"
+    assert captured["app_key"] == "app-key"
+    assert captured["session"] == "session-key"
+    assert captured["sign"]
+    assert "app_secret" not in captured
+    http_client.close()
+
+
 def test_api_error_preserves_safe_diagnostics(credentials: TmallCredentials) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

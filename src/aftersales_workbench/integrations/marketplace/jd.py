@@ -48,6 +48,7 @@ class JdReadClient(RetryingJsonClient):
         )
         self.config = config
         self.api_url = settings.jd_api_url
+        self.request_method = settings.jd_request_method
 
     def identity(self) -> tuple[str, str]:
         return self.config.platform_shop_id, self.config.shop_name
@@ -70,7 +71,12 @@ class JdReadClient(RetryingJsonClient):
             payload,
             self.config.app_secret.get_secret_value().strip(),
         )
-        body = self.request_json("POST", self.api_url, data=payload)
+        request_kwargs = (
+            {"params": payload}
+            if self.request_method == "GET"
+            else {"data": payload}
+        )
+        body = self.request_json(self.request_method, self.api_url, **request_kwargs)
         error = body.get("error_response")
         if isinstance(error, dict):
             raise MarketplaceApiError(

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import time
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -27,6 +28,7 @@ from aftersales_workbench.integrations.marketplace.models import (
 
 DOUYIN_AFTERSALE_LIST_PATH = "/afterSale/List"
 DOUYIN_AFTERSALE_DETAIL_PATH = "/afterSale/Detail"
+DOUYIN_TOKEN_CREATE_PATH = "/token/create"
 
 
 def _sort_json(value: Any) -> Any:
@@ -74,7 +76,7 @@ class DouyinReadClient(RetryingJsonClient):
         now=time.time,
         **kwargs: Any,
     ) -> None:
-        if config.access_token is None:
+        if config.access_token is None and config.access_token_mode != "authorization_self":
             raise ValueError("抖音店铺缺少 access_token")
         super().__init__(
             timeout_seconds=settings.marketplace_timeout_seconds,
@@ -83,12 +85,25 @@ class DouyinReadClient(RetryingJsonClient):
         )
         self.config = config
         self.api_url = settings.douyin_api_url.rstrip("/")
+        self.token_cache_path = Path(settings.douyin_token_cache_path)
+        self.token_refresh_skew_seconds = settings.douyin_token_refresh_skew_seconds
         self._now = now
+        self._access_token = (
+            config.access_token.get_secret_value().strip()
+            if config.access_token is not None
+            else ""
+        )
 
     def identity(self) -> tuple[str, str]:
         return self.config.platform_shop_id, self.config.shop_name
 
-    def execute_read(self, path: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self,
+        path: str,
+        parameters: dict[str, Any],
+        *,
+        access_token: str,
+    ) -> dict[str, Any]:
         app_key = self.config.app_key.get_secret_value().strip()
         app_secret = self.config.app_secret.get_secret_value().strip()
         timestamp = int(self._now())
@@ -106,7 +121,7 @@ class DouyinReadClient(RetryingJsonClient):
                 param_json=param_json,
             ),
             "timestamp": timestamp,
-            "access_token": self.config.access_token.get_secret_value().strip(),
+            "access_token": access_token,
             "sign_method": "hmac-sha256",
         }
         body = self.request_json(
@@ -122,6 +137,85 @@ class DouyinReadClient(RetryingJsonClient):
                 f"code={code}, message={body.get('msg') or body.get('message')}"
             )
         return body
+
+    def _read_cached_access_token(self) -> str:
+        try:
+            body = json.loads(self.token_cache_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            return ""
+        entry = body.get(self.config.shop_code) if isinstance(body, dict) else None
+        if not isinstance(entry, dict):
+            return ""
+        token = str(entry.get("access_token") or "").strip()
+        expires_at = int(entry.get("expires_at") or 0)
+        if expires_at <= int(self._now()) + self.token_refresh_skew_seconds:
+            return ""
+        return token
+
+    def _write_cached_access_token(self, token: str, expires_at: int) -> None:
+        try:
+            body = json.loads(self.token_cache_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        body[self.config.shop_code] = {
+            "access_token": token,
+            "expires_at": expires_at,
+        }
+        self.token_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.token_cache_path.with_suffix(
+            self.token_cache_path.suffix + ".tmp"
+        )
+        temporary.write_text(
+            json.dumps(body, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        temporary.replace(self.token_cache_path)
+
+    def _self_authorized_access_token(self) -> str:
+        cached = self._read_cached_access_token()
+        if cached:
+            return cached
+        shop_id_text = self.config.platform_shop_id.strip()
+        shop_id: int | str = (
+            int(shop_id_text) if shop_id_text.isdigit() else shop_id_text
+        )
+        body = self._request(
+            DOUYIN_TOKEN_CREATE_PATH,
+            {
+                "grant_type": "authorization_self",
+                "shop_id": shop_id,
+                "code": "",
+            },
+            access_token="",
+        )
+        data = body.get("data")
+        if not isinstance(data, dict):
+            raise MarketplaceApiError("抖音自授权返回缺少 data")
+        token = str(data.get("access_token") or "").strip()
+        if not token:
+            raise MarketplaceApiError("抖音自授权返回缺少 access_token")
+        try:
+            expires_in = int(data.get("expires_in") or 604800)
+        except (TypeError, ValueError):
+            expires_in = 604800
+        expires_at = int(self._now()) + max(expires_in, 300)
+        self._write_cached_access_token(token, expires_at)
+        return token
+
+    def _effective_access_token(self) -> str:
+        if self._access_token:
+            return self._access_token
+        self._access_token = self._self_authorized_access_token()
+        return self._access_token
+
+    def execute_read(self, path: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        return self._request(
+            path,
+            parameters,
+            access_token=self._effective_access_token(),
+        )
 
     def get_detail(self, after_sales_id: str) -> dict[str, Any]:
         return self.execute_read(

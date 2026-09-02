@@ -122,10 +122,13 @@ alembic downgrade -1
 | `TMALL_SYNC_INITIAL_LOOKBACK_HOURS` | 天猫新店铺无游标时的首次回溯小时数 | `72` |
 | `TMALL_SYNC_OVERLAP_SECONDS` | 天猫增量续传时向前重叠秒数 | `300` |
 | `TMALL_SYNC_WINDOW_HOURS` | 天猫单个修改时间窗口小时数 | `24` |
-| `TAOBAO_SHOPS_JSON` | 淘宝任意多店配置；每店含应用凭据与独立 `session_key` | `[]` |
+| `TAOBAO_API_URL` / `TAOBAO_REQUEST_METHOD` | 历史付费中转地址及请求方式 | `https://odiych.goldbrantech.com/forward.ashx` / `GET` |
+| `TAOBAO_SHOPS_JSON` | 淘宝第三方中转配置；每店含中转应用凭据与 `session_key` | `[]` |
 | `ALIBABA_1688_SHOPS_JSON` | 1688 任意多店配置；每店含 `app_key` / `app_secret` | `[]` |
-| `JD_SHOPS_JSON` | 京东任意多店配置；每店含应用凭据与 `access_token` | `[]` |
-| `DOUYIN_SHOPS_JSON` | 抖音任意多店配置；每店含应用凭据与 `access_token` | `[]` |
+| `JD_API_URL` / `JD_REQUEST_METHOD` | 历史付费中转地址及请求方式 | `https://odiych.goldbrantech.com/forward.ashx` / `GET` |
+| `JD_SHOPS_JSON` | 京东第三方中转配置；每店含应用凭据与 `access_token` | `[]` |
+| `DOUYIN_SHOPS_JSON` | 抖音第三方应用配置；可用静态 Token，或用店铺 ID 自动自授权 | `[]` |
+| `DOUYIN_TOKEN_CACHE_PATH` | 抖音动态 Token 的本机缓存；被 Git 忽略 | `.runtime/douyin-access-token-cache.json` |
 | `TAOBAO_SYNC_ENABLED` / `ALIBABA_1688_SYNC_ENABLED` / `JD_SYNC_ENABLED` / `DOUYIN_SYNC_ENABLED` | 将对应平台接入常驻只读售后同步 | `false` |
 | `MARKETPLACE_SYNC_INITIAL_LOOKBACK_HOURS` | 新配置店铺首次同步回溯小时数 | `72` |
 | `MARKETPLACE_SYNC_OVERLAP_SECONDS` | 新平台增量游标向前重叠秒数 | `300` |
@@ -216,20 +219,32 @@ alembic upgrade head
 
 ## 淘宝、1688、京东、抖音售后只读同步
 
-这四个平台通过各自官方开放平台直接接入工作台，不依赖旧管理系统在线运行。旧代码仅用于核对接口名称与历史字段含义；新同步器独立完成签名、分页、详情补查、字段归一化和 MySQL 幂等入库：
+四个平台沿用各自真实接入方式，不依赖旧管理系统进程在线运行。淘宝和京东继续使用历史购买的第三方转发服务；1688使用开放平台；抖音使用第三方应用授权，但 SDK 请求仍发往抖店官方 HTTPS 地址。新同步器独立完成签名、分页、详情补查、字段归一化和 MySQL 幂等入库：
 
-- 淘宝调用 TOP 的 `taobao.user.seller.get`、`taobao.refunds.receive.get`、`taobao.refund.get` 和 `taobao.trade.fullinfo.get`；
+- 淘宝把签名后的 `taobao.user.seller.get`、`taobao.refunds.receive.get`、`taobao.refund.get` 和 `taobao.trade.fullinfo.get` 以 GET 方式交给第三方 `forward.ashx` 中转；
 - 1688 调用 `alibaba.trade.refund.queryOrderRefundList`、`alibaba.trade.refund.OpQueryOrderRefund` 和 `alibaba.trade.ec.getOrder.sellerView`；
-- 京东同时读取 `jingdong.pop.afs.soa.refundapply.queryPageList` 退款申请与 `jingdong.asc.serviceAndRefund.view` 退货售后服务单，并用 `jingdong.pop.order.get` 补齐订单和 SKU；
-- 抖音调用 `/afterSale/List` 与 `/afterSale/Detail`，使用 HMAC-SHA256 官方签名方式。
+- 京东通过同一第三方 `forward.ashx` 中转读取 `jingdong.pop.afs.soa.refundapply.queryPageList` 退款申请与 `jingdong.asc.serviceAndRefund.view` 退货售后服务单，并用 `jingdong.pop.order.get` 补齐订单和 SKU；
+- 抖音调用 `/afterSale/List` 与 `/afterSale/Detail`，使用第三方应用 `app_key` / `app_secret` 和 HMAC-SHA256 签名；配置 `access_token_mode=authorization_self` 时，以店铺 ID 调用 `/token/create` 自动取得 Token，并在过期前刷新。
 
-所有店铺配置使用 JSON 数组，因此不限制店铺数量。每个对象都要填写稳定且不能与其他平台重复的 `shop_code`，建议同时填写 `shop_name` 与平台店铺 ID。淘宝需要 `app_key`、`app_secret`、`session_key`；1688 需要 `app_key`、`app_secret`；京东和抖音需要 `app_key`、`app_secret`、`access_token`。示例：
+所有店铺配置使用 JSON 数组，因此不限制店铺数量。每个对象都要填写稳定且不能与其他平台重复的 `shop_code`，建议同时填写 `shop_name` 与平台店铺 ID。淘宝需要中转服务的 `app_key`、`app_secret`、`session_key`；1688 需要 `app_key`、`app_secret`；京东需要中转服务的 `app_key`、`app_secret`、`access_token`；抖音使用第三方应用的 `app_key`、`app_secret`，可填写静态 `access_token`，也可填写真实店铺 ID 并使用 `authorization_self`。示例：
 
 ```dotenv
 TAOBAO_SHOPS_JSON=[{"shop_code":"taobao-shop-01","shop_name":"淘宝一店","platform_shop_id":"平台店铺ID","app_key":"填写值","app_secret":"填写值","session_key":"填写值"}]
 ALIBABA_1688_SHOPS_JSON=[{"shop_code":"1688-shop-01","shop_name":"1688一店","platform_shop_id":"平台店铺ID","app_key":"填写值","app_secret":"填写值"}]
 JD_SHOPS_JSON=[{"shop_code":"jd-shop-01","shop_name":"京东一店","platform_shop_id":"平台店铺ID","app_key":"填写值","app_secret":"填写值","access_token":"填写值"}]
-DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","platform_shop_id":"平台店铺ID","app_key":"填写值","app_secret":"填写值","access_token":"填写值"}]
+DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","platform_shop_id":"数字店铺ID","app_key":"填写值","app_secret":"填写值","access_token_mode":"authorization_self"}]
+```
+
+从旧 PHP 服务迁移本机凭据时执行以下命令。工具只允许更新当前仓库根目录 `.env`，先把原配置备份到被 Git 忽略的 `.runtime/`，不会打印密钥；旧源码中的中转地址会自动升级为已验证可用的 HTTPS。首次迁移不打开常驻同步：
+
+```powershell
+.\scripts\migrate-legacy-marketplace-credentials.ps1 -LegacyRoot "D:\desktop\codex\daima\leedis2-main-a7580d396d7fa964463aad2886b8fe76bccf3825"
+```
+
+单窗口验证通过后，可只开启已通过的平台；例如淘宝、京东通过而抖音仍受 IP 白名单限制时：
+
+```powershell
+.\scripts\migrate-legacy-marketplace-credentials.ps1 -LegacyRoot "D:\desktop\codex\daima\leedis2-main-a7580d396d7fa964463aad2886b8fe76bccf3825" -EnableTaobao -EnableJd
 ```
 
 填好一个平台后，先保持常驻开关关闭，单独同步最近一小时的一个窗口：
@@ -241,7 +256,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 .\.venv\Scripts\marketplace-sync-refunds.exe --platforms DOUYIN --lookback-hours 1 --max-windows 1
 ```
 
-真实记录核对无误后，再把对应的 `*_SYNC_ENABLED` 改为 `true` 并安全重启后台运行器。每个平台、每个店铺、每个已提交时间窗口的进度保存在 `platform_sync_cursors`；平台失败彼此隔离，也不会阻断拼多多后续动作链。原始平台售后状态与订单状态保存为文字字段，订单、退款金额、原因、留言、SKU、件数、平台时间和可取得的正向/退货运单统一进入 `shops`、`aftersales_orders`、`aftersales_items`。
+真实记录核对无误后，再把对应的 `*_SYNC_ENABLED` 改为 `true` 并安全重启后台运行器。每个平台、每个店铺、每个已提交时间窗口的进度保存在 `platform_sync_cursors`；平台失败彼此隔离，也不会阻断拼多多后续动作链。原始平台售后状态与订单状态保存为文字字段，订单、退款金额、原因、留言、SKU、件数、平台时间和可取得的正向/退货运单统一进入 `shops`、`aftersales_orders`、`aftersales_items`。淘宝、京东已使用 HTTPS 中转；中转余额不足、旧授权失效、抖音运行 IP 未加入第三方应用白名单或自授权失败时，该店当前窗口回滚并保留游标，修复配置后可安全重跑。
 
 售后订单页采用“平台 → 店铺”两级联动筛选：可先选拼多多、天猫、淘宝、1688、京东或抖音，再从该平台已经接入的店铺中选择具体店铺；未选平台时店铺框保持禁用，避免跨平台同名店铺造成误选。平台条件和店铺条件都会由后端执行，不只是前端隐藏。
 

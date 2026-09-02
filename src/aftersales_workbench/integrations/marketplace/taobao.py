@@ -40,6 +40,7 @@ class TaobaoReadClient:
                 session_key=config.session_key,
             ),
             api_url=settings.taobao_api_url,
+            request_method=settings.taobao_request_method,
             timeout_seconds=settings.marketplace_timeout_seconds,
             read_max_attempts=settings.marketplace_read_max_attempts,
         )
