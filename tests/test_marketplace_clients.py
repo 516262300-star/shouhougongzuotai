@@ -9,7 +9,11 @@ from pydantic import SecretStr
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import Platform
 from aftersales_workbench.integrations.marketplace.douyin import DouyinReadClient
-from aftersales_workbench.integrations.marketplace.jd import JD_ORDER_GET, JdReadClient
+from aftersales_workbench.integrations.marketplace.jd import (
+    JD_AFTERSALE_LIST,
+    JD_ORDER_GET,
+    JdReadClient,
+)
 from aftersales_workbench.integrations.marketplace.models import ConfiguredMarketplaceShop
 
 
@@ -51,6 +55,49 @@ def test_jd_relay_uses_get_query() -> None:
     assert captured["sign"]
     assert "app_secret" not in captured
     http_client.close()
+
+
+def test_jd_fetch_window_skips_service_bill_without_refund(monkeypatch) -> None:
+    client = object.__new__(JdReadClient)
+
+    def execute_read(method: str, _parameters: dict[str, object]) -> dict[str, object]:
+        if method == JD_AFTERSALE_LIST:
+            return {
+                "jingdong_asc_serviceAndRefund_view_responce": {
+                    "pageResult": {
+                        "data": [
+                            {
+                                "sameOrderServiceBill": {
+                                    "serviceId": "SERVICE-ONLY",
+                                    "orderId": "ORDER-1",
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        return {
+            "jingdong_pop_afs_soa_refundapply_queryPageList_responce": {
+                "queryResult": {"result": []}
+            }
+        }
+
+    monkeypatch.setattr(client, "execute_read", execute_read)
+    monkeypatch.setattr(
+        client,
+        "get_order",
+        lambda _order_id: (_ for _ in ()).throw(AssertionError("不应查询订单")),
+    )
+
+    records = list(
+        client.fetch_window(
+            start_modified_at=1_788_230_400,
+            end_modified_at=1_788_234_000,
+            page_size=50,
+        )
+    )
+
+    assert records == []
 
 
 def test_douyin_self_authorization_is_cached(tmp_path: Path) -> None:

@@ -174,6 +174,14 @@ class JdReadClient(RetryingJsonClient):
                 bill = record.get("sameOrderServiceBill")
                 if not isinstance(bill, dict):
                     continue
+                # serviceAndRefund.view 同时返回“仅服务单”和“服务单 + 退款单”。
+                # 前者只有 sameOrderServiceBill，不属于退款同步范围；若已有退款
+                # 字段却缺少有效金额，仍交给 normalize_jd_aftersale 失败关闭。
+                if not any(
+                    key in record
+                    for key in ("afsRefundId", "refoundAmount", "refundAmount")
+                ):
+                    continue
                 service_id = required_text(bill.get("serviceId"), field="serviceId")
                 if service_id in seen:
                     continue
