@@ -69,6 +69,31 @@ class FakeRuntime(Module1WorkerRuntime):
             {"scanned": 1, "tasks_created": 1, "tasks_existing": 0}
         )
 
+    def _sync_module2_erp_returns(self) -> WorkerStageResult:
+        self.calls.append("module2_erp_intake")
+        return WorkerStageResult.completed(
+            {
+                "scanned": 1,
+                "receipts_created": 1,
+                "inspections_passed": 0,
+                "inspections_failed": 1,
+                "not_found": 0,
+                "ambiguous": 0,
+                "unavailable": 0,
+            }
+        )
+
+    def _prepare_module2_exception_todos(self) -> WorkerStageResult:
+        self.calls.append("module2_exception_todos")
+        return WorkerStageResult.completed(
+            {
+                "scanned": 1,
+                "tasks_created": 1,
+                "tasks_existing": 0,
+                "skipped_missing_owner": 0,
+            }
+        )
+
     def _process_notifications(self) -> WorkerStageResult:
         self.calls.append("notification")
         if not self._notification_preflight_completed:
@@ -131,7 +156,9 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert runtime.calls == [
         "sync",
         "erp_sales_owners",
+        "module2_erp_intake",
         "module2_refund_tasks",
+        "module2_exception_todos",
         "module3_tasks",
         "module3_erp_refunds",
         "module3_exception_todos",
@@ -158,6 +185,8 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert summary["module3_exception_todos"]["tasks_created"] == 1
     assert summary["erp_sales_owners"]["matched"] == 1
     assert summary["module2_refund_tasks"]["tasks_created"] == 1
+    assert summary["module2_erp_intake"]["inspections_failed"] == 1
+    assert summary["module2_exception_todos"]["tasks_created"] == 1
     assert summary["module2_pdd_refunds"]["succeeded"] == 1
     assert summary["erp_return_matches"]["closed_loop"] == 1
     assert summary["erp_scrap_sync"]["scrap_rows_seen"] == 2

@@ -31,7 +31,9 @@ _MODULE_STAGES = {
         "pdd_refund",
     ),
     "module2": (
+        "module2_erp_intake",
         "module2_refund_tasks",
+        "module2_exception_todos",
         "module2_pdd_refunds",
     ),
     "module3": (
@@ -182,6 +184,9 @@ class RuntimeMonitorService:
                     and self.settings.pdd_write_enabled
                 ),
                 "module2_refund_min_return_id": self.settings.module2_refund_min_return_id,
+                "module2_erp_intake_min_order_id": (
+                    self.settings.module2_erp_intake_min_order_id
+                ),
                 "module3_erp_refund_enabled": self.settings.module3_erp_refund_execution_enabled,
                 "erp_write_enabled": self.settings.erp_write_enabled,
             },

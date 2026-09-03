@@ -68,6 +68,10 @@ from aftersales_workbench.workflows.module1_manual_todo import (
 from aftersales_workbench.workflows.module1_preflight import (
     Module1NotificationPreflightService,
 )
+from aftersales_workbench.workflows.module2_erp_intake import (
+    Module2ErpIntakeService,
+    Module2ExceptionTodoService,
+)
 from aftersales_workbench.workflows.module2_refund import (
     Module2RefundService,
     SqlAlchemyModule2RefundRepository,
@@ -140,7 +144,9 @@ class Module1WorkerCycleResult:
     sync: WorkerStageResult | None = None
     tmall_sync: WorkerStageResult | None = None
     marketplace_sync: WorkerStageResult | None = None
+    module2_erp_intake: WorkerStageResult | None = None
     module2_refund_tasks: WorkerStageResult | None = None
+    module2_exception_todos: WorkerStageResult | None = None
     module2_pdd_refunds: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
@@ -189,9 +195,30 @@ class Module1WorkerCycleResult:
                 self.marketplace_sync,
                 ("shops_ok", "shops_failed", "records_seen", "records_created"),
             ),
+            "module2_erp_intake": self._stage_counts(
+                self.module2_erp_intake,
+                (
+                    "scanned",
+                    "receipts_created",
+                    "inspections_passed",
+                    "inspections_failed",
+                    "not_found",
+                    "ambiguous",
+                    "unavailable",
+                ),
+            ),
             "module2_refund_tasks": self._stage_counts(
                 self.module2_refund_tasks,
                 ("scanned", "tasks_created", "tasks_existing"),
+            ),
+            "module2_exception_todos": self._stage_counts(
+                self.module2_exception_todos,
+                (
+                    "scanned",
+                    "tasks_created",
+                    "tasks_existing",
+                    "skipped_missing_owner",
+                ),
             ),
             "module2_pdd_refunds": self._stage_counts(
                 self.module2_pdd_refunds,
@@ -365,7 +392,11 @@ class Module1WorkerRuntime:
         result.tmall_sync = self._capture(self._sync_tmall)
         result.marketplace_sync = self._capture(self._sync_marketplaces)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
+        result.module2_erp_intake = self._capture(self._sync_module2_erp_returns)
         result.module2_refund_tasks = self._capture(self._prepare_module2_refund_tasks)
+        result.module2_exception_todos = self._capture(
+            self._prepare_module2_exception_todos
+        )
         result.module3_tasks = self._capture(self._prepare_module3_tasks)
         result.module3_erp_refunds = self._capture(self._process_module3_erp_refunds)
         result.module3_exception_todos = self._capture(
@@ -392,7 +423,9 @@ class Module1WorkerRuntime:
             result.tmall_sync,
             result.marketplace_sync,
             result.erp_sales_owners,
+            result.module2_erp_intake,
             result.module2_refund_tasks,
+            result.module2_exception_todos,
             result.module3_tasks,
             result.module3_erp_refunds,
             result.module3_exception_todos,
@@ -411,6 +444,49 @@ class Module1WorkerRuntime:
         result.ok = all(stage is not None and stage.status != "failed" for stage in stages)
         result.finished_at = _utc_iso()
         return result
+
+    def _sync_module2_erp_returns(self) -> WorkerStageResult:
+        if not self.settings.module2_worker_enabled:
+            return WorkerStageResult.skipped(
+                "模块2后台运行未启用",
+                scanned=0,
+                receipts_created=0,
+                inspections_passed=0,
+                inspections_failed=0,
+                not_found=0,
+                ambiguous=0,
+                unavailable=0,
+            )
+        if not self._pdd_sync_completed:
+            return WorkerStageResult.skipped(
+                "当轮拼多多同步未成功，已阻止模块2 ERP退货单核对",
+                scanned=0,
+                receipts_created=0,
+                inspections_passed=0,
+                inspections_failed=0,
+                not_found=0,
+                ambiguous=0,
+                unavailable=0,
+            )
+        matcher = build_erp_return_matcher(self.settings)
+        try:
+            with SessionLocal() as session:
+                run = Module2ErpIntakeService(session, matcher).run(
+                    shop_codes=self.shop_codes,
+                    min_order_id=self.settings.module2_erp_intake_min_order_id,
+                    limit=self.options.task_limit,
+                    dry_run=False,
+                )
+        finally:
+            matcher.close()
+        details = run.safe_dict()
+        if run.unavailable:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"模块2 ERP退货单核对失败关闭 {run.unavailable} 笔",
+            )
+        return WorkerStageResult.completed(details)
 
     def _prepare_module2_refund_tasks(self) -> WorkerStageResult:
         if not self.settings.module2_worker_enabled:
@@ -433,6 +509,23 @@ class Module1WorkerRuntime:
             ).run(
                 shop_codes=self.shop_codes,
                 min_return_id=self.settings.module2_refund_min_return_id,
+                limit=self.options.task_limit,
+                dry_run=False,
+            )
+        return WorkerStageResult.completed(run.safe_dict())
+
+    def _prepare_module2_exception_todos(self) -> WorkerStageResult:
+        if not self.settings.module2_worker_enabled:
+            return WorkerStageResult.skipped(
+                "模块2后台运行未启用",
+                scanned=0,
+                tasks_created=0,
+                tasks_existing=0,
+                skipped_missing_owner=0,
+            )
+        with SessionLocal() as session:
+            run = Module2ExceptionTodoService(session).run(
+                shop_codes=self.shop_codes,
                 limit=self.options.task_limit,
                 dry_run=False,
             )

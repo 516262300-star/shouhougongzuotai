@@ -35,12 +35,23 @@ RETURN_ROW = """
     <td>JT123</td><td>-1</td><td>3.73</td><td>-3.73</td></tr>
 """
 
+STAGED_TEMPLATE = """
+<table>
+  <tr><th>编号</th><th>完成日期</th><th>型号</th><th>颜色</th><th>运单号</th>
+      <th>入库数量</th><th>单价</th></tr>
+  <tr><td>TH-STAGED-1</td><td>2026-09-02 14:13:45</td><td>{product}</td>
+      <td>{color}</td><td>JT123</td><td>1</td><td>0.00</td></tr>
+</table>
+"""
+
 
 def _matcher(
     *,
     receivable: str = "0",
     shipment_body: str = RETURN_ROW,
     staged: bool = False,
+    staged_document: str | None = None,
+    customer_found: bool = True,
 ) -> ErpWebReturnMatcher:
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -49,6 +60,8 @@ def _matcher(
         if path.endswith("/welcome/loginact"):
             return httpx.Response(200, json={"code": 2})
         if path.endswith("/customer/GetCustomerName"):
+            if not customer_found:
+                return httpx.Response(200, json=[])
             return httpx.Response(
                 200,
                 json=[{"autocomplete": "p3-客户@省@市@店@金博敏@2026-09-01"}],
@@ -64,7 +77,14 @@ def _matcher(
                 text=SHIPMENT_TEMPLATE.format(body=shipment_body),
             )
         if path.endswith("/b4refund"):
-            return httpx.Response(200, text="JT123" if staged else "暂无暂存单")
+            return httpx.Response(
+                200,
+                text=(
+                    staged_document
+                    if staged_document is not None
+                    else ("JT123" if staged else "暂无暂存单")
+                ),
+            )
         raise AssertionError(f"unexpected request: {request.url}")
 
     client = httpx.Client(
@@ -133,6 +153,51 @@ def test_web_matcher_detects_temporary_return_list() -> None:
         matcher.close()
 
     assert result.status is ErpReturnMatchStatus.STAGED
+
+
+def test_web_matcher_parses_staged_return_items() -> None:
+    matcher = _matcher(
+        shipment_body="",
+        staged_document=STAGED_TEMPLATE.format(
+            product="6050-单孔",
+            color="哑镍拉丝",
+        ),
+    )
+    try:
+        result = matcher.lookup(
+            platform_order_sn="260823-1",
+            tracking_number="JT123",
+            expected_items=_expected(),
+        )
+    finally:
+        matcher.close()
+
+    assert result.status is ErpReturnMatchStatus.STAGED
+    assert result.return_order_sn == "TH-STAGED-1"
+    assert result.source_location == "staging"
+    assert result.rows[0].product == "6050-单孔"
+
+
+def test_web_matcher_staged_item_mismatch_is_manual_even_without_customer() -> None:
+    matcher = _matcher(
+        staged_document=STAGED_TEMPLATE.format(
+            product="6050-单孔",
+            color="铜拉丝",
+        ),
+        customer_found=False,
+    )
+    try:
+        result = matcher.lookup(
+            platform_order_sn="260823-1",
+            tracking_number="JT123",
+            expected_items=_expected(),
+        )
+    finally:
+        matcher.close()
+
+    assert result.status is ErpReturnMatchStatus.ITEM_MISMATCH
+    assert result.source_location == "staging"
+    assert result.rows[0].color == "铜拉丝"
 
 
 def test_web_matcher_blocks_item_mismatch() -> None:

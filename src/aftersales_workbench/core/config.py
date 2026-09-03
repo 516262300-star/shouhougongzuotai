@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     module2_worker_enabled: bool = False
     module2_pdd_refund_execution_enabled: bool = False
     module2_refund_min_return_id: int = Field(default=0, ge=0)
+    module2_erp_intake_min_order_id: int = Field(default=0, ge=0)
 
     qywx_intercept_webhook_url: SecretStr | None = None
     qywx_timeout_seconds: float = Field(default=10, gt=0, le=60)

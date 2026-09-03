@@ -70,6 +70,7 @@ ACTION_LABELS = {
     "ERP_MATCH_RETURN_ORDER": "ERP 退货单匹配",
     "ERP_CREATE_MANUAL_TODO": "管理系统人工待办",
     "PDD_AGREE_REFUND": "拼多多同意退款",
+    "PDD_AGREE_RETURN_REFUND": "拼多多同意退货退款",
 }
 
 ACTION_STATUS_LABELS = {
@@ -90,6 +91,7 @@ MANUAL_TODO_STATUS_LABELS = {
 
 MANUAL_TODO_ORIGIN_LABELS = {
     "module1": "模块1·在途拦截",
+    "module2": "模块2·退货验收",
     "module3": "模块3·未发货退款",
 }
 
@@ -98,6 +100,7 @@ MANUAL_TODO_REASON_LABELS = {
     "DELIVERED_WITHOUT_RETURN": "物流已签收且没有退回记录，无法自动拦截或退款",
     "INTERCEPT_FAILED": "快递拦截失败，需要业务员处理平台售后",
     "MANUAL_PROCESSING": "系统无法安全自动处理，已转业务员人工核对",
+    "RETURN_ITEM_MISMATCH": "ERP退货单与平台申请的型号、颜色或数量不一致",
     "ERP_RETURN_STAGED": "退货单在 ERP 暂存列表，需要认领到对应客户名下",
     "ERP_RETURN_RECEIVABLE_OPEN": "ERP 已有退货单，但客户累计应收尚未归零",
     "ERP_RETURN_ITEM_MISMATCH": "平台售后与 ERP 退货单的型号、颜色或数量不一致",

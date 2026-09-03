@@ -885,7 +885,7 @@ function ManualTodoFilters({ draft, setDraft, assignees, busy, onSubmit, onReset
       <div className="filter-row filter-row-primary">
         <label><span>发送状态</span><select value={draft.task_status} onChange={update("task_status")}><option value="">全部</option><option value="PENDING">待发送</option><option value="RUNNING">发送中</option><option value="SUCCEEDED">已发送</option><option value="FAILED">发送失败</option><option value="CANCELLED">已取消</option></select></label>
         <label><span>对应业务员</span><select value={draft.assignee} onChange={update("assignee")}><option value="">全部</option>{assignees.map((name) => <option value={name} key={name}>{name}</option>)}</select></label>
-        <label><span>触发模块</span><select value={draft.origin} onChange={update("origin")}><option value="">全部</option><option value="module1">模块1·在途拦截</option><option value="module3">模块3·未发货退款</option></select></label>
+        <label><span>触发模块</span><select value={draft.origin} onChange={update("origin")}><option value="">全部</option><option value="module1">模块1·在途拦截</option><option value="module2">模块2·退货验收</option><option value="module3">模块3·未发货退款</option></select></label>
         <div className="date-field"><span>待办生成时间</span><div className="date-range"><CalendarBlank size={16} /><input type="date" value={draft.started_on} onChange={update("started_on")} aria-label="待办开始日期" /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} aria-label="待办结束日期" /></div></div>
       </div>
       <div className="filter-row filter-row-secondary">
@@ -987,7 +987,9 @@ const MONITOR_STAGE_LABELS = {
   logistics_gate: "退款物流闸门",
   module1_erp_refunds: "模块1 ERP退款闭环",
   pdd_refund: "平台退款执行",
+  module2_erp_intake: "ERP退货单核对",
   module2_refund_tasks: "验货通过退款入队",
+  module2_exception_todos: "验货异常人工待办",
   module2_pdd_refunds: "退货退款执行",
   module3_tasks: "未发货退款识别",
   module3_erp_refunds: "模块3 ERP退款处理",
@@ -1005,6 +1007,12 @@ const MONITOR_DETAIL_LABELS = {
   failed: "失败",
   blocked: "阻断",
   applied: "已执行",
+  receipts_created: "登记收货",
+  inspections_passed: "验货通过",
+  inspections_failed: "验货异常",
+  unavailable: "核对失败",
+  ambiguous: "运单冲突",
+  skipped_missing_owner: "缺少负责人",
   records_created: "新增记录",
   shops_ok: "店铺正常",
   shops_failed: "店铺失败",
@@ -1082,7 +1090,7 @@ function MonitorWorkspace() {
         <section className="monitor-modules">
           {(data?.modules ?? []).map((module) => (
             <article className="monitor-module-card" key={module.id}>
-              <header><div><strong>{{ module1: "模块 1 · 已发货仅退款拦截", module2: "模块 2 · 退货验收退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "识别、企微拦截、物流闸门与退款闭环", module2: "人工扫码验货通过后，自动提交平台退款", module3: "ERP 履约核验、退款补单与异常待办" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
+              <header><div><strong>{{ module1: "模块 1 · 已发货仅退款拦截", module2: "模块 2 · 退货验收退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "识别、企微拦截、物流闸门与退款闭环", module2: "ERP 实收核对一致后退款，明细不一致转人工", module3: "ERP 履约核验、退款补单与异常待办" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
               <div className="monitor-stage-list">
                 {module.stages.map((stage) => (
                   <div className="monitor-stage" key={stage.id}>

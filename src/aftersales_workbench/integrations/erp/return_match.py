@@ -79,6 +79,7 @@ class ErpReturnMatchLookup:
     receivable_amount: Decimal | None = None
     return_order_sn: str | None = None
     rows: tuple[ErpReturnRow, ...] = ()
+    source_location: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +94,7 @@ class ErpReturnMatchLookup:
             ),
             "return_order_sn": self.return_order_sn,
             "rows": [row.safe_dict() for row in self.rows],
+            "source_location": self.source_location,
         }
 
 
@@ -254,9 +256,37 @@ class ErpWebReturnMatcher:
         try:
             customer_name, sales_owner = self._lookup_customer(order_sn)
             if customer_name is None:
+                staged_page = self._get("/leedis2/public/b4refund")
+                staged_rows = self._parse_staged_return_rows(staged_page, tracking)
+                if staged_rows:
+                    return_order_sns = {row.return_order_sn for row in staged_rows}
+                    return_order_sn = (
+                        next(iter(return_order_sns))
+                        if len(return_order_sns) == 1
+                        else None
+                    )
+                    mismatch = (
+                        not expected_items
+                        or _items_counter(expected_items) != _items_counter(staged_rows)
+                    )
+                    return ErpReturnMatchLookup(
+                        status=(
+                            ErpReturnMatchStatus.ITEM_MISMATCH
+                            if mismatch
+                            else ErpReturnMatchStatus.STAGED
+                        ),
+                        message=(
+                            "ERP 退货暂存单已找到，但型号、颜色或数量与售后申请不一致"
+                            if mismatch
+                            else "ERP 退货单已在退货暂存列表找到"
+                        ),
+                        return_order_sn=return_order_sn,
+                        rows=staged_rows,
+                        source_location="staging",
+                    )
                 return ErpReturnMatchLookup(
                     status=ErpReturnMatchStatus.CUSTOMER_CONFLICT,
-                    message="平台订单未唯一匹配到 ERP 客户档案",
+                    message="平台订单未唯一匹配到 ERP 客户档案，暂存列表也未找到退货单",
                 )
 
             profile = self._get(
@@ -279,13 +309,47 @@ class ErpWebReturnMatcher:
                 )
 
             staged_page = self._get("/leedis2/public/b4refund")
-            if tracking in staged_page:
+            staged_rows = self._parse_staged_return_rows(staged_page, tracking)
+            if staged_rows:
+                return_order_sns = {row.return_order_sn for row in staged_rows}
+                return_order_sn = (
+                    next(iter(return_order_sns))
+                    if len(return_order_sns) == 1
+                    else None
+                )
+                if not expected_items or _items_counter(expected_items) != _items_counter(
+                    staged_rows
+                ):
+                    return ErpReturnMatchLookup(
+                        status=ErpReturnMatchStatus.ITEM_MISMATCH,
+                        message=(
+                            "ERP 退货暂存单已找到，但型号、颜色或数量与售后申请不一致"
+                        ),
+                        customer_name=customer_name,
+                        sales_owner=sales_owner,
+                        receivable_amount=receivable,
+                        return_order_sn=return_order_sn,
+                        rows=staged_rows,
+                        source_location="staging",
+                    )
                 return ErpReturnMatchLookup(
                     status=ErpReturnMatchStatus.STAGED,
-                    message="退货单仍在退货暂存列表，等待认领到客户名下",
+                    message="ERP 退货单已在退货暂存列表找到",
                     customer_name=customer_name,
                     sales_owner=sales_owner,
                     receivable_amount=receivable,
+                    return_order_sn=return_order_sn,
+                    rows=staged_rows,
+                    source_location="staging",
+                )
+            if tracking in staged_page:
+                return ErpReturnMatchLookup(
+                    status=ErpReturnMatchStatus.STAGED,
+                    message="退货单在暂存列表，但未解析到完整明细，不能自动处理",
+                    customer_name=customer_name,
+                    sales_owner=sales_owner,
+                    receivable_amount=receivable,
+                    source_location="staging",
                 )
             return ErpReturnMatchLookup(
                 status=ErpReturnMatchStatus.NOT_FOUND,
@@ -321,6 +385,7 @@ class ErpWebReturnMatcher:
                 receivable_amount=receivable,
                 return_order_sn=return_order_sn,
                 rows=rows,
+                source_location="customer_profile",
             )
         if abs(receivable) > self.receivable_tolerance:
             return ErpReturnMatchLookup(
@@ -331,6 +396,7 @@ class ErpWebReturnMatcher:
                 receivable_amount=receivable,
                 return_order_sn=return_order_sn,
                 rows=rows,
+                source_location="customer_profile",
             )
         return ErpReturnMatchLookup(
             status=ErpReturnMatchStatus.CLOSED_LOOP,
@@ -340,6 +406,7 @@ class ErpWebReturnMatcher:
             receivable_amount=receivable,
             return_order_sn=return_order_sn,
             rows=rows,
+            source_location="customer_profile",
         )
 
     def _lookup_customer(self, order_sn: str) -> tuple[str | None, str | None]:
@@ -444,6 +511,38 @@ class ErpWebReturnMatcher:
                     quantity=abs(quantity),
                     unit_price=_decimal(record.get("单价", "")),
                     amount=_decimal(record.get("金额", "")),
+                )
+            )
+        return tuple(rows)
+
+    @staticmethod
+    def _parse_staged_return_rows(
+        document: str,
+        tracking_number: str,
+    ) -> tuple[ErpReturnRow, ...]:
+        records = _find_table_records(
+            document,
+            required_headers={"编号", "完成日期", "型号", "颜色", "运单号", "入库数量"},
+        )
+        rows: list[ErpReturnRow] = []
+        for record in records:
+            return_order_sn = record.get("编号", "").strip()
+            tracking = record.get("运单号", "").strip()
+            if not return_order_sn.startswith("TH-") or tracking != tracking_number:
+                continue
+            quantity = _decimal(record.get("入库数量", ""))
+            if quantity is None:
+                continue
+            rows.append(
+                ErpReturnRow(
+                    return_order_sn=return_order_sn,
+                    completed_at=record.get("完成日期", "").strip(),
+                    product=record.get("型号", "").strip(),
+                    color=record.get("颜色", "").strip(),
+                    tracking_number=tracking,
+                    quantity=abs(quantity),
+                    unit_price=_decimal(record.get("单价", "")),
+                    amount=None,
                 )
             )
         return tuple(rows)
