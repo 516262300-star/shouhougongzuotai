@@ -1,6 +1,13 @@
 from fastapi import APIRouter
 
-from aftersales_workbench.api.routes import aftersales, attribution, health, scrap, warehouse
+from aftersales_workbench.api.routes import (
+    aftersales,
+    attribution,
+    health,
+    monitor,
+    scrap,
+    warehouse,
+)
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["健康检查"])
@@ -23,4 +30,9 @@ api_router.include_router(
     scrap.router,
     prefix="/api/v1/scrap",
     tags=["模块 5 退货报废"],
+)
+api_router.include_router(
+    monitor.router,
+    prefix="/api/v1/monitor",
+    tags=["运行监控"],
 )

@@ -205,7 +205,7 @@ function Sidebar({ activeView, onNavigate }) {
     { id: "attribution", label: "售后归因", icon: ChartBar, enabled: true },
     { id: "scrap", label: "退货报废", icon: Trash, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: true },
-    { id: "monitor", label: "运行监控", icon: ChartBar, enabled: false },
+    { id: "monitor", label: "运行监控", icon: ChartBar, enabled: true },
   ];
   return (
     <aside className="sidebar">
@@ -228,7 +228,7 @@ function Sidebar({ activeView, onNavigate }) {
       </nav>
       <div className="sidebar-foot">
         <span className="sidebar-dot" />
-        模块 1 后台运行中
+        模块 1/3 状态见运行监控
       </div>
     </aside>
   );
@@ -979,6 +979,129 @@ function ManualTodoWorkspace() {
   );
 }
 
+const MONITOR_STAGE_LABELS = {
+  sync: "拼多多同步",
+  intercept_tasks: "生成拦截任务",
+  notification_preflight: "发送前物流复核",
+  notification: "企业微信发送",
+  logistics_gate: "退款物流闸门",
+  module1_erp_refunds: "模块1 ERP退款闭环",
+  pdd_refund: "平台退款执行",
+  module3_tasks: "未发货退款识别",
+  module3_erp_refunds: "模块3 ERP退款处理",
+  module3_exception_todos: "异常人工待办",
+};
+
+const MONITOR_DETAIL_LABELS = {
+  scanned: "扫描",
+  tasks_created: "新建任务",
+  tasks_existing: "已有任务",
+  notices_ready: "可发送",
+  notices_cancelled: "已取消",
+  logistics_query_failed: "物流查询失败",
+  succeeded: "成功",
+  failed: "失败",
+  blocked: "阻断",
+  applied: "已执行",
+  records_created: "新增记录",
+  shops_ok: "店铺正常",
+  shops_failed: "店铺失败",
+};
+
+const monitorTone = (status) => ({ healthy: "success", completed: "success", warning: "warning", starting: "info", skipped: "neutral", disabled: "neutral", stopped: "danger", failed: "danger", missing: "neutral" }[status] ?? "neutral");
+const monitorStageStatus = (status) => ({ completed: "正常", skipped: "跳过", failed: "失败", missing: "暂无周期" }[status] ?? status);
+const formatAge = (seconds) => {
+  if (seconds === null || seconds === undefined) return "暂无记录";
+  if (seconds < 60) return `${seconds} 秒前`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分钟前`;
+  return `${Math.floor(seconds / 3600)} 小时前`;
+};
+
+function monitorStageSummary(stage) {
+  if (stage.error) return stage.error;
+  if (stage.reason) return stage.reason;
+  const details = Object.entries(stage)
+    .filter(([key, value]) => !["id", "status", "error", "reason"].includes(key) && value !== null && value !== undefined && MONITOR_DETAIL_LABELS[key])
+    .slice(0, 4)
+    .map(([key, value]) => `${MONITOR_DETAIL_LABELS[key]} ${value}`);
+  return details.join(" · ") || "本周期已完成";
+}
+
+function MonitorWorkspace() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/v1/monitor/status", { cache: "no-store" });
+      if (!response.ok) throw new Error(`服务返回 ${response.status}`);
+      setData(await response.json());
+      setError("");
+    } catch (requestError) {
+      setError(`监控状态读取失败：${requestError.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+    const timer = window.setInterval(load, 15_000);
+    return () => window.clearInterval(timer);
+  }, [load, refreshKey]);
+
+  const queue = data?.notification_queue ?? {};
+  const config = data?.configuration ?? {};
+  const worker = data?.worker ?? {};
+  return (
+    <main className="workspace monitor-workspace">
+      <header className="topbar">
+        <div className="page-title"><ChartBar size={22} /><h1>运行监控</h1><span className="read-only-badge">只读</span></div>
+        <div className={`sync-status monitor-sync monitor-${data?.state ?? "starting"}`}><span />{data?.state_label ?? "正在读取运行状态"}</div>
+      </header>
+      <div className="monitor-body">
+        {error && <div className="monitor-alert monitor-alert-danger"><WarningCircle size={18} />{error}</div>}
+        <section className={`monitor-overview monitor-overview-${data?.state ?? "starting"}`}>
+          <div>
+            {data?.state === "healthy" ? <CheckCircle size={26} weight="fill" /> : <WarningCircle size={26} weight="fill" />}
+            <div><strong>{data?.state_label ?? "正在读取运行状态"}</strong><span>每 15 秒自动刷新；这里只读取状态，不会触发退款或重复发送。</span></div>
+          </div>
+          <button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />立即刷新</button>
+        </section>
+        <section className="monitor-metrics">
+          <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
+          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "周期存在失败" : `间隔 ${worker.interval_seconds ?? "—"} 秒`}</small></article>
+          <article><span>企微待发送</span><strong className={queue.pending ? "monitor-warn" : "monitor-good"}>{queue.pending ?? "—"}</strong><small>发送中 {queue.running ?? 0} · 已成功 {queue.succeeded ?? 0}</small></article>
+          <article><span>发送失败</span><strong className={queue.failed ? "monitor-bad" : "monitor-good"}>{queue.failed ?? "—"}</strong><small>当前启用范围共 {queue.total ?? 0} 条任务</small></article>
+        </section>
+        <section className="monitor-modules">
+          {(data?.modules ?? []).map((module) => (
+            <article className="monitor-module-card" key={module.id}>
+              <header><div><strong>{module.id === "module1" ? "模块 1 · 已发货仅退款拦截" : "模块 3 · 未发货退款处理"}</strong><span>{module.id === "module1" ? "识别、企微拦截、物流闸门与退款闭环" : "ERP 履约核验、退款补单与异常待办"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
+              <div className="monitor-stage-list">
+                {module.stages.map((stage) => (
+                  <div className="monitor-stage" key={stage.id}>
+                    <span className={`monitor-stage-dot stage-${stage.status}`} />
+                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small></div>
+                    <StatusTag tone={monitorTone(stage.status)}>{monitorStageStatus(stage.status)}</StatusTag>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </section>
+        <section className="monitor-config">
+          <div><strong>自动化开关</strong><span>企业微信发送：{(config.notification_transport === "desktop" && config.desktop_send_enabled) || (config.notification_transport === "qywx_webhook" && config.qywx_write_enabled) ? "已开启" : "未开启"}</span><span>模块1平台退款：{config.module1_refund_enabled ? "已开启" : "未开启"}</span><span>模块3 ERP退款：{config.module3_erp_refund_enabled && config.erp_write_enabled ? "已开启" : "未开启"}</span></div>
+          <small>状态检查时间：{formatDateTime(data?.checked_at, true)}</small>
+        </section>
+      </div>
+    </main>
+  );
+}
+
 function DetailRow({ label, value, copyable = false, onCopy }) {
   return (
     <div className="detail-row">
@@ -1462,6 +1585,8 @@ export function App() {
         <ScrapWorkspace onClose={() => setActiveView("orders")} />
       ) : activeView === "manual" ? (
         <ManualTodoWorkspace />
+      ) : activeView === "monitor" ? (
+        <MonitorWorkspace />
       ) : (
         <WarehouseWorkspace />
       )}
