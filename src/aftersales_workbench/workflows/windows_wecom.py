@@ -263,9 +263,9 @@ class WindowsWeComGateway:
                 error="按过发送键但未能确认聊天区域变化",
                 ambiguous=True,
             )
-            self._sleep_range(1800, 2600, ambiguous=True)
-            _hwnd, process_id = self._require_wecom_foreground(ambiguous=True)
-            self._raise_if_security_window(process_id, ambiguous=True)
+            # 发送后的聊天区变化已经是本次动作的确认点。此后即使微信、通知
+            # 弹窗等程序抢走前台，也不能把已确认发送误判成结果不明，否则
+            # 会冻结后续队列并诱发人工重复发送。
             hooks.sent()
             completed = True
         finally:
@@ -277,13 +277,16 @@ class WindowsWeComGateway:
     def _activate_wecom_foreground(self) -> tuple[int, int]:
         candidate = _select_wecom_window(self._visible_wecom_windows())
         self._raise_if_security_window(candidate.process_id)
-        self._focus_window(candidate.hwnd)
         deadline = time.monotonic() + 2.0
         while time.monotonic() < deadline:
+            # 仅在尚未输入消息的激活阶段有限重试。部分桌面程序会在收到
+            # 通知时瞬间抢回焦点；重复激活可消除这种竞争，但开始输入后
+            # 仍由后续前台校验失败关闭，绝不边输入边争抢窗口。
+            self._focus_window(candidate.hwnd)
+            time.sleep(0.08)
             try:
                 hwnd, process_id = self._require_wecom_foreground()
             except DesktopBeforePasteError:
-                time.sleep(0.08)
                 continue
             return hwnd, process_id
         raise DesktopBeforePasteError("无法将企业微信切换到前台，未输入任何消息")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,20 @@ from aftersales_workbench.workflows.windows_wecom import (
     _select_wecom_window,
     _WeComWindowCandidate,
 )
+
+
+class _HookRecorder:
+    def __init__(self) -> None:
+        self.events: list[str] = []
+
+    def paste_started(self) -> None:
+        self.events.append("paste_started")
+
+    def send_pressed(self) -> None:
+        self.events.append("send_pressed")
+
+    def sent(self) -> None:
+        self.events.append("sent")
 
 
 def test_windows_input_struct_matches_win32_abi() -> None:
@@ -66,3 +81,41 @@ def test_wecom_window_selector_fails_closed_without_unique_main_window() -> None
                 _WeComWindowCandidate(12, 102, "企业微信", 1_200_000),
             ]
         )
+
+
+def test_send_is_confirmed_immediately_after_post_send_visual_change(monkeypatch) -> None:
+    """发送画面已变化后，其他应用抢焦点不应再造成结果不明。"""
+
+    gateway = object.__new__(WindowsWeComGateway)
+    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
+    foreground_checks = 0
+    visual_checks = 0
+
+    def require_foreground(*, ambiguous: bool = False) -> tuple[int, int]:
+        nonlocal foreground_checks
+        foreground_checks += 1
+        return 11, 101
+
+    def wait_for_change(*args, **kwargs) -> None:
+        nonlocal visual_checks
+        visual_checks += 1
+
+    monkeypatch.setattr(gateway, "_activate_wecom_foreground", lambda: (11, 101))
+    monkeypatch.setattr(gateway, "_require_wecom_foreground", require_foreground)
+    monkeypatch.setattr(gateway, "_raise_if_security_window", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_raise_if_escape", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_hotkey", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_tap", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_sleep_range", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_snapshot", lambda *args, **kwargs: object())
+    monkeypatch.setattr(gateway, "_wait_for_change", wait_for_change)
+    monkeypatch.setattr(gateway, "_type_unicode", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_type_multiline_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr(gateway, "_restore_previous_window", lambda *args: None)
+
+    hooks = _HookRecorder()
+    gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
+
+    assert hooks.events == ["paste_started", "send_pressed", "sent"]
+    assert visual_checks == 3
+    assert foreground_checks == 2

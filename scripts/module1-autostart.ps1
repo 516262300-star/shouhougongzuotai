@@ -132,7 +132,10 @@ function Get-AutostartConfiguration {
     if (-not (Test-Path -LiteralPath $configFile)) {
         throw "缺少本机启动配置，请先执行：& .\scripts\module1-autostart.ps1 -Action Install"
     }
-    return Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+    # 安装动作可能由 PowerShell 7 执行，其 UTF-8 输出默认不带 BOM。
+    # Windows PowerShell 5.1 守护进程若按系统代码页读取，中文项目路径会
+    # 乱码并让 JSON 中的反斜杠转义失效，因此读取时必须显式指定 UTF-8。
+    return Get-Content -LiteralPath $configFile -Raw -Encoding utf8 | ConvertFrom-Json
 }
 
 function Restore-MySqlDefaultsFile {
