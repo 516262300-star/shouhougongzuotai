@@ -447,6 +447,15 @@ class Module2ExceptionTodoService:
         self.session = session
 
     @staticmethod
+    def _idempotency_key(order: AfterSalesOrder) -> str:
+        action = (
+            "ERP_CREATE_REFUND_APPEAL_TODO"
+            if Module2ErpIntakeService._platform_refunded(order)
+            else "ERP_CREATE_MANUAL_TODO"
+        )
+        return f"module2:{order.after_sales_sn}:{action}"
+
+    @staticmethod
     def _build_todo_payload(
         *,
         order: AfterSalesOrder,
@@ -455,7 +464,10 @@ class Module2ExceptionTodoService:
         reason: str,
     ) -> dict[str, Any]:
         """业务员只看处理所需信息，内部编号和核对明细保留在结构化载荷。"""
+        platform_refunded = Module2ErpIntakeService._platform_refunded(order)
         marker = f"平台订单号：{order.platform_order_sn}"
+        if platform_refunded:
+            marker += "；事项：退款后退货异常申诉"
         expected = "、".join(
             f"{item.sku_code}/{item.color or '颜色待核'}×{item.applied_quantity}"
             for item in order.items
@@ -465,8 +477,8 @@ class Module2ExceptionTodoService:
             for item in warehouse_return.items
         )
         handling = (
-            "平台款项已经退回，请核对仓库实物并处理少退、错退或追责。"
-            if Module2ErpIntakeService._platform_refunded(order)
+            "平台款项已经退回，请立即向平台发起申诉，并跟进少退、错退或未收到商品的申诉结果。"
+            if platform_refunded
             else "请核对仓库实物和退货明细，确认后人工决定是否退款。"
         )
         content = (
@@ -475,7 +487,11 @@ class Module2ExceptionTodoService:
         )
         return {
             "origin": "module2",
-            "reason_code": "RETURN_ITEM_MISMATCH",
+            "reason_code": (
+                "POST_REFUND_RETURN_MISMATCH_APPEAL"
+                if platform_refunded
+                else "RETURN_ITEM_MISMATCH"
+            ),
             "reason_text": reason,
             "assignee": str(order.erp_sales_owner).strip(),
             "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -531,10 +547,10 @@ class Module2ExceptionTodoService:
         rows = list(self.session.execute(statement).all())
         result = Module2ExceptionTodoRunResult(dry_run=dry_run, scanned=len(rows))
         for order, shop_name, warehouse_return in rows:
+            idempotency_key = self._idempotency_key(order)
             existing = self.session.scalar(
                 select(AftersalesActionTask).where(
-                    AftersalesActionTask.idempotency_key
-                    == f"module2:{order.after_sales_sn}:ERP_CREATE_MANUAL_TODO"
+                    AftersalesActionTask.idempotency_key == idempotency_key
                 )
             )
             if existing is not None:
@@ -564,9 +580,7 @@ class Module2ExceptionTodoService:
                     after_sales_sn=order.after_sales_sn,
                     action_type=AutomationActionType.ERP_CREATE_MANUAL_TODO,
                     action_status=AutomationTaskStatus.PENDING,
-                    idempotency_key=(
-                        f"module2:{order.after_sales_sn}:ERP_CREATE_MANUAL_TODO"
-                    ),
+                    idempotency_key=idempotency_key,
                     payload=payload,
                     attempts=0,
                 )

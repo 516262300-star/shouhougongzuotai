@@ -216,10 +216,15 @@ def test_module2_todo_keeps_visible_text_short_and_audit_fields_structured() -> 
     )
 
     content = payload["content"]
-    assert payload["marker"] == "平台订单号：260825-226502919812340"
+    assert payload["marker"] == (
+        "平台订单号：260825-226502919812340；事项：退款后退货异常申诉"
+    )
     assert payload["marker"] in content
     assert "LEEDIS官方旗舰店" in content
     assert "退货实收数量不一致" in content
+    assert "立即向平台发起申诉" in content
+    assert "跟进少退、错退或未收到商品的申诉结果" in content
+    assert payload["reason_code"] == "POST_REFUND_RETURN_MISMATCH_APPEAL"
     assert "M2:" not in content
     assert "22366960361618" not in content
     assert "SF5118592516150" not in content
@@ -231,3 +236,25 @@ def test_module2_todo_keeps_visible_text_short_and_audit_fields_structured() -> 
     assert payload["erp_return_order_sn"] == "TH-18540629-2026-09-02"
     assert payload["expected_items_summary"] == "8166-128/铜本色×1"
     assert payload["received_items_summary"] == "8166-128/铜本色×10"
+
+
+def test_module2_todo_uses_a_distinct_key_after_platform_refund() -> None:
+    refunded = SimpleNamespace(
+        after_sales_sn="refund-1",
+        refund_financial_status="SUCCESS",
+        platform_after_sales_status=10,
+        platform_order_refund_status=4,
+    )
+    pending = SimpleNamespace(
+        after_sales_sn="refund-2",
+        refund_financial_status="PENDING",
+        platform_after_sales_status=3,
+        platform_order_refund_status=2,
+    )
+
+    assert Module2ExceptionTodoService._idempotency_key(refunded) == (
+        "module2:refund-1:ERP_CREATE_REFUND_APPEAL_TODO"
+    )
+    assert Module2ExceptionTodoService._idempotency_key(pending) == (
+        "module2:refund-2:ERP_CREATE_MANUAL_TODO"
+    )
