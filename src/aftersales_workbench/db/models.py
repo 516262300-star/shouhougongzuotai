@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy import (
     BigInteger,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -281,6 +282,94 @@ class ReturnScrapRecord(Base):
     operator: Mapped[str] = mapped_column(String(50), nullable=False)
     created_at: Mapped[datetime | None] = mapped_column(
         DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
+class ErpReturnRowRecord(Base):
+    """ERP 退货单的最小只读镜像；不落库寄件人、电话和运单号。"""
+
+    __tablename__ = "erp_return_rows"
+    __table_args__ = (
+        UniqueConstraint("source_row_id", name="uk_erp_return_rows_source"),
+        Index("idx_erp_return_rows_period", "completed_on", "source_active"),
+        Index(
+            "idx_erp_return_rows_scrap_model",
+            "is_scrap",
+            "product_model",
+            "completed_on",
+        ),
+        Index("idx_erp_return_rows_order", "return_order_sn"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_row_id: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_status: Mapped[str | None] = mapped_column(String(50))
+    return_order_sn: Mapped[str] = mapped_column(String(100), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    completed_on: Mapped[date] = mapped_column(Date, nullable=False)
+    handler: Mapped[str | None] = mapped_column(String(50))
+    product_model: Mapped[str] = mapped_column(String(100), nullable=False)
+    raw_color: Mapped[str] = mapped_column(String(100), nullable=False)
+    normalized_color: Mapped[str | None] = mapped_column(String(100))
+    is_scrap: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=0, server_default=text("0")
+    )
+    quantity: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    raw_unit_price: Mapped[Decimal | None] = mapped_column(Numeric(12, 5))
+    source_active: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default=text("1")
+    )
+    first_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP")
+    )
+    scrap_decision: Mapped[ErpReturnScrapDecision | None] = relationship(
+        back_populates="erp_return_row", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class ErpReturnScrapDecision(Base):
+    """报废原因与损失的人工核定层，和 ERP 原始值分离。"""
+
+    __tablename__ = "erp_return_scrap_decisions"
+    __table_args__ = (
+        UniqueConstraint("erp_return_row_id", name="uk_erp_scrap_decision_row"),
+        Index("idx_erp_scrap_decision_reason", "scrap_reason"),
+        Index("idx_erp_scrap_decision_responsibility", "responsibility"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    erp_return_row_id: Mapped[int] = mapped_column(
+        ForeignKey("erp_return_rows.id", ondelete="CASCADE"), nullable=False
+    )
+    scrap_reason: Mapped[str | None] = mapped_column(String(100))
+    responsibility: Mapped[str | None] = mapped_column(String(50))
+    confirmed_unit_cost: Mapped[Decimal | None] = mapped_column(Numeric(12, 4))
+    loss_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+    cost_source: Mapped[str | None] = mapped_column(String(100))
+    reviewer: Mapped[str | None] = mapped_column(String(50))
+    evidence_urls: Mapped[list[str] | None] = mapped_column(JSON)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+    )
+    erp_return_row: Mapped[ErpReturnRowRecord] = relationship(
+        back_populates="scrap_decision"
+    )
+
+
+class ErpScrapSyncState(Base):
+    __tablename__ = "erp_scrap_sync_states"
+
+    state_key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    last_run_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_reconcile_on: Mapped[date | None] = mapped_column(Date)
+    last_successful_on: Mapped[date | None] = mapped_column(Date)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
     )
 
 

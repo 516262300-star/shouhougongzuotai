@@ -6,7 +6,7 @@ Before making substantial visual changes, use the Product Design plugin's `get-c
 
 When implementing from a selected generated mock, treat that image as the source of truth for layout, component anatomy, density, spacing, color, typography, visible content, and hierarchy.
 
-The selected visual source for this prototype is the first displayed ideation option: a dense aftersales order table with a persistent right-side order detail and audit timeline. Preserve that information hierarchy in future iterations unless the user explicitly chooses a new direction.
+The selected visual source for the new Module 5 return-scrap view is the third displayed ideation option: a model-diagnostics dashboard with company summary metrics, ranked model analysis, cause distribution, trend charts, and a persistent right-side model detail. Preserve that information hierarchy for Module 5 unless the user explicitly chooses a new direction. Existing modules keep their established layouts.
 
 The "人工待办" navigation and the order summary's "待人工" metric must remain clickable. The manual-todo view must expose whether the ERP todo was actually sent, the exact assignee, the business trigger reason, the full message content, remote todo ID, timestamps, retry count, and any failure or cancellation reason in a persistent right-side audit detail.
 

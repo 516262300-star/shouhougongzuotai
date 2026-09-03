@@ -16,6 +16,10 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     ErpSalesOwnerSyncService,
     get_erp_sales_owner_resolver,
 )
+from aftersales_workbench.integrations.erp.scrap import (
+    ErpScrapSyncService,
+    build_erp_scrap_client,
+)
 from aftersales_workbench.integrations.marketplace.runner import (
     enabled_marketplace_platforms,
     sync_marketplaces,
@@ -141,6 +145,7 @@ class Module1WorkerCycleResult:
     notification: WorkerStageResult | None = None
     logistics_gate: WorkerStageResult | None = None
     erp_return_matches: WorkerStageResult | None = None
+    erp_scrap_sync: WorkerStageResult | None = None
     module1_erp_refunds: WorkerStageResult | None = None
     erp_todo_tasks: WorkerStageResult | None = None
     erp_todo_publish: WorkerStageResult | None = None
@@ -261,6 +266,19 @@ class Module1WorkerCycleResult:
                     "skipped_recent",
                 ),
             ),
+            "erp_scrap_sync": self._stage_counts(
+                self.erp_scrap_sync,
+                (
+                    "days_requested",
+                    "days_synced",
+                    "rows_seen",
+                    "scrap_rows_seen",
+                    "rows_created",
+                    "rows_updated",
+                    "rows_deactivated",
+                    "skipped_recent",
+                ),
+            ),
             "module1_erp_refunds": self._stage_counts(
                 self.module1_erp_refunds,
                 (
@@ -346,6 +364,7 @@ class Module1WorkerRuntime:
         result.notification = self._capture(self._process_notifications)
         result.logistics_gate = self._capture(self._process_logistics_gate)
         result.erp_return_matches = self._capture(self._sync_erp_return_matches)
+        result.erp_scrap_sync = self._capture(self._sync_erp_scrap)
         result.module1_erp_refunds = self._capture(self._process_module1_erp_refunds)
         result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
         result.erp_todo_publish = self._capture(self._process_erp_todos)
@@ -363,6 +382,7 @@ class Module1WorkerRuntime:
             result.notification,
             result.logistics_gate,
             result.erp_return_matches,
+            result.erp_scrap_sync,
             result.module1_erp_refunds,
             result.erp_todo_tasks,
             result.erp_todo_publish,
@@ -832,6 +852,31 @@ class Module1WorkerRuntime:
                 error=f"ERP 退货闭环查询失败 {run.unavailable} 笔",
             )
         return WorkerStageResult.completed(details)
+
+    def _sync_erp_scrap(self) -> WorkerStageResult:
+        empty = {
+            "days_requested": 0,
+            "days_synced": 0,
+            "rows_seen": 0,
+            "scrap_rows_seen": 0,
+            "rows_created": 0,
+            "rows_updated": 0,
+            "rows_deactivated": 0,
+            "skipped_recent": False,
+        }
+        if not self.settings.erp_scrap_sync_enabled:
+            return WorkerStageResult.skipped("ERP 退货报废同步未启用", **empty)
+        client = build_erp_scrap_client(self.settings)
+        try:
+            with SessionLocal() as session:
+                run = ErpScrapSyncService(session, client).run_incremental(
+                    refresh_seconds=self.settings.erp_scrap_sync_refresh_seconds,
+                    lookback_days=self.settings.erp_scrap_sync_lookback_days,
+                    dry_run=False,
+                )
+        finally:
+            client.close()
+        return WorkerStageResult.completed(run.safe_dict())
 
     def _prepare_erp_todo_tasks(self) -> WorkerStageResult:
         with SessionLocal() as session:

@@ -4,7 +4,7 @@
 
 ## 当前边界
 
-- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、拼多多七店与天猫六店售后增量同步、淘宝/1688/京东/抖音官方 API 只读售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 2 仓库扫码收货与人工验货、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、模块 4 售后原因自动分类与型号归因看板、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
+- 已实现：配置加载、MySQL 连接池、Alembic 迁移、健康检查、Docker Compose、本地拼多多联调、拼多多七店与天猫六店售后增量同步、淘宝/1688/京东/抖音官方 API 只读售后增量同步、模块 1 在途拦截队列与快递 100 退款闸门、模块 2 仓库扫码收货与人工验货、模块 1/3 常驻后台运行器、模块 3 未发货 ERP 补开退款单与异常待办、模块 4 售后原因自动分类与型号归因看板、模块 5 ERP 退货报废只读同步与损失核定、已出包判定队列、企微机器人通知和受写开关保护的拼多多同意退款动作。
 - 已建立全局业务表及内部同步表：`shops`、`aftersales_orders`、`aftersales_items`、`return_scrap_records`、`negative_reviews`、`pdd_sync_cursors`、`tmall_sync_cursors`、`platform_sync_cursors`、`aftersales_action_tasks`、`warehouse_return_records`、`warehouse_return_items`。
 - ERP 未提供独立 API；模块 3 已通过受双重写开关保护的管理系统网页适配器处理“未发货、已退款、有订单但未开退款单”。已出包锁单仍保留人工回填 CLI。模块 2 当前只写售后工作台本地库，不点击 ERP、不调用拼多多退款。
 - 所有外部写入默认关闭。企微、拼多多、ERP 分别受 `QYWX_WRITE_ENABLED`、`PDD_WRITE_ENABLED`、`ERP_WRITE_ENABLED` 及对应功能开关保护。
@@ -81,6 +81,9 @@ alembic downgrade -1
 | `ERP_TODO_PUBLISH_ENABLED` | 将模块 1 人工处理任务真实发布到管理系统待办页 | `false` |
 | `ERP_TODO_MAX_ATTEMPTS` | 待办发布失败后允许安全重新入队的最大尝试次数 | `3` |
 | `ERP_RETURN_MATCH_SYNC_ENABLED` | 周期只读核对拦截退回的 ERP 退货单与客户累计应收 | `false` |
+| `ERP_SCRAP_SYNC_ENABLED` | 模块 5 周期只读同步 ERP 退货单并识别“报废+颜色” | `false` |
+| `ERP_SCRAP_SYNC_REFRESH_SECONDS` | 模块 5 两次增量同步之间的最短间隔秒数 | `1800` |
+| `ERP_SCRAP_SYNC_LOOKBACK_DAYS` | 首次回填及循环历史复核天数 | `30` |
 | `MODULE1_ERP_REFUND_EXECUTION_ENABLED` | 模块 1 拦截退回补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
@@ -712,8 +715,36 @@ cd ..
 - `GET /api/v1/aftersales/manual-todos`：模块 1/3 人工待办的发送审计、业务员与原因筛选、完整事项、远端待办 ID、失败或取消原因；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 - `GET /api/v1/attribution/overview`：模块 4 售后归因摘要、实际/申请退款金额、趋势、环比同比、数据覆盖、原因构成、型号排名、店铺分布和选中型号下钻；支持 `platform`、`shop_id`、`period_mode=MONTH|YEAR|CUSTOM`、`started_on`、`ended_on`、`model_keyword`、`reason_category` 和 `focus_model`。
+- `GET /api/v1/scrap/overview`：模块 5 退货数量、报废数量、报废率、已核定损失、型号排名、原因/颜色分布、趋势和型号明细；支持日期、型号、原因、责任、数据状态和焦点型号筛选。
+- `PATCH /api/v1/scrap/records/{source_row_id}/decision`：补录报废原因、责任归属、确认单位成本、损失金额、成本来源和复核人；仅写工作台核定层，不回写 ERP。
 
 售后订单、在途拦截和人工待办页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。仓库验货页面会写入本地 `warehouse_return_*` 表和对应售后状态，但不会触发任何外部写操作。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
+
+## 模块 5：ERP 退货报废
+
+模块 5 读取 ERP `b4refund/v2` 退货单页面，按天同步全部退货行，并以“颜色字段是否以 `报废` 开头”作为唯一自动识别规则，例如 `报废铜拉丝` 会保存原值，同时标准化为颜色 `铜拉丝`。同步只使用 ERP 行 ID、状态、退货单号、完成日期、经办人、型号、颜色、数量和原始单价；寄件人、电话、运单号等非必要个人信息不进入工作台数据库。
+
+ERP 原始退货行保存在 `erp_return_rows`，人工核定保存在 `erp_return_scrap_decisions`，两层通过 ERP 行 ID 幂等关联。原始 ERP 单价只用于追溯，不参与损失统计。数据状态按以下规则计算：
+
+- 未填写报废原因为“待补原因”；
+- 已填写原因，但缺少核定损失或复核人为“待核成本”；
+- 原因、损失和复核人齐全才是“已确认”，只有这部分进入“已核定损失”。
+
+首次接入必须先升级数据库，再按“试跑—确认—写入”执行：
+
+```powershell
+.\.venv\Scripts\alembic.exe upgrade head
+
+# 只访问 ERP 并输出数量，不写本地数据库
+.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 30
+
+# 试跑结果合理后，回填近 30 天到本地工作台
+.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 30 --apply
+```
+
+持续运行设置 `ERP_SCRAP_SYNC_ENABLED=true`。常驻后台仍每 60 秒进入一次完整周期，但同步状态会把模块 5 限制为每 `ERP_SCRAP_SYNC_REFRESH_SECONDS` 秒执行一次；每次读取今天、昨天和一个轮换历史日，在控制 ERP 页面负载的同时持续复核近 `ERP_SCRAP_SYNC_LOOKBACK_DAYS` 天。某天 ERP 行被撤销时，本地只标为非活动，不删除已有人工核定记录。ERP 页面或登录不可用时该阶段失败且不提交半批数据，修复凭据后等待下一周期即可恢复；也可以再次运行上述只读命令诊断。
+
+报废率的分母是同期 ERP 全部退货数量，分子是识别出的报废数量。原因、责任和数据状态筛选只影响报废分子；界面会明确保留待补原因记录，避免只看“已确认”而漏掉真实报废。模块 5 不需要 `ERP_WRITE_ENABLED`，也不会点击 ERP 页面按钮或写回退货单。
 
 ## 健康检查
 

@@ -21,6 +21,7 @@ import {
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
+import { ScrapWorkspace } from "./ScrapWorkspace.jsx";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
 const PLATFORM_OPTIONS = [
@@ -202,6 +203,7 @@ function Sidebar({ activeView, onNavigate }) {
     { id: "intercepts", label: "在途拦截", icon: Truck, enabled: true },
     { id: "warehouse", label: "仓库验货", icon: Package, enabled: true },
     { id: "attribution", label: "售后归因", icon: ChartBar, enabled: true },
+    { id: "scrap", label: "退货报废", icon: Trash, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: true },
     { id: "monitor", label: "运行监控", icon: ChartBar, enabled: false },
   ];
@@ -1424,10 +1426,11 @@ export function App() {
     || (activeView === "intercepts" && interceptDetailOpen)
     || activeView === "warehouse"
     || activeView === "manual"
+    || activeView === "scrap"
   );
 
   return (
-    <div className={`app-shell ${detailVisible ? "" : "without-detail"}`}>
+    <div className={`app-shell ${detailVisible ? "" : "without-detail"} ${activeView === "scrap" ? "scrap-layout" : ""}`}>
       <Sidebar activeView={activeView} onNavigate={setActiveView} />
       {activeView === "orders" ? (
         <>
@@ -1455,6 +1458,8 @@ export function App() {
         <InterceptWorkspace detailOpen={interceptDetailOpen} setDetailOpen={setInterceptDetailOpen} />
       ) : activeView === "attribution" ? (
         <AttributionWorkspace />
+      ) : activeView === "scrap" ? (
+        <ScrapWorkspace onClose={() => setActiveView("orders")} />
       ) : activeView === "manual" ? (
         <ManualTodoWorkspace />
       ) : (

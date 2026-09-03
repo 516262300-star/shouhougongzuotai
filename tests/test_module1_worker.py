@@ -85,6 +85,10 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("erp_return_matches")
         return WorkerStageResult.completed({"scanned": 1, "closed_loop": 1})
 
+    def _sync_erp_scrap(self) -> WorkerStageResult:
+        self.calls.append("erp_scrap_sync")
+        return WorkerStageResult.completed({"rows_seen": 10, "scrap_rows_seen": 2})
+
     def _process_module1_erp_refunds(self) -> WorkerStageResult:
         self.calls.append("module1_erp_refunds")
         return WorkerStageResult.completed({"scanned": 1, "applied": 1})
@@ -123,6 +127,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
         "notification",
         "logistics_gate",
         "erp_return_matches",
+        "erp_scrap_sync",
         "module1_erp_refunds",
         "erp_todo_tasks",
         "erp_todo_publish",
@@ -139,6 +144,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert summary["module3_exception_todos"]["tasks_created"] == 1
     assert summary["erp_sales_owners"]["matched"] == 1
     assert summary["erp_return_matches"]["closed_loop"] == 1
+    assert summary["erp_scrap_sync"]["scrap_rows_seen"] == 2
     assert summary["module1_erp_refunds"]["applied"] == 1
     assert summary["erp_todo_tasks"]["tasks_created"] == 1
     assert summary["erp_todo_publish"]["erp_todos"] == 1

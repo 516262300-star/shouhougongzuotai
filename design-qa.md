@@ -1,52 +1,61 @@
-# 售后订单记录中心 Design QA
+# 模块 5「退货报废」设计验收
 
-## 对比目标
+## 对比基准
 
-- Source visual truth: `C:\Users\lds\.codex\generated_images\01a04c0f-21c7-7651-a92b-c7d0560e02ee\exec-cbb7b3e3-597e-4c3b-a3dc-63387cb45caa.png`
-- Implementation screenshot: `D:\desktop\codex\售后工作台\design-qa-final.png`
-- Full comparison: `D:\desktop\codex\售后工作台\design-qa-comparison-final.png`
-- Focused table comparison: `D:\desktop\codex\售后工作台\design-qa-table-focus.png`
-- Focused detail comparison: `D:\desktop\codex\售后工作台\design-qa-detail-focus.png`
-- CSS viewport: 1536 × 1058, desktop, device scale factor 1.
-- Source pixels: 1487 × 1058.
-- Implementation capture pixels: 1536 × 1027. The in-app browser capture excludes 31 pixels of browser surface while the page reports a 1536 × 1058 CSS viewport; full-view evidence was normalized to 768 × 529 per side before judging composition.
-- State: first page, 15 records per page, first order selected, right-side detail open, default seven-day date range.
+- Source visual truth: `C:\Users\lds\.codex\generated_images\01a05ff4-9534-7610-93e6-fad2bc839a51\exec-63b755f6-cb7e-46c5-bc63-1280edb4aa3d.png`
+- Implementation screenshot: `D:\desktop\codex\售后工作台\scrap-implementation-final.png`
+- Full-view comparison: `D:\desktop\codex\售后工作台\scrap-design-comparison.png`
+- Focused ranking comparison: `D:\desktop\codex\售后工作台\scrap-focus-ranking.png`
+- Focused detail comparison: `D:\desktop\codex\售后工作台\scrap-focus-detail.png`
+- Viewport: 1487 × 1057 CSS px, device scale factor 1
+- Pixel dimensions: source 1487 × 1058；implementation 1487 × 1057。仅存在 1 px 高度差，不需要缩放归一化。
+- State: 桌面端；模块 5 已打开；默认近 30 天；全部原因、责任归属与数据状态；首个 ERP 型号自动选中；型号明细抽屉关闭。
+
+## Findings
+
+- 无待处理的 P0 / P1 / P2 问题。
+- 字体与排版：沿用现有 Noto Sans SC Variable，标题、指标、表格和小字层级与参考图一致；数字使用等宽数字特性，未发现截断或异常换行。
+- 间距与布局：概览卡、筛选区、TOP10 表格、下方双图表和 410 px 型号诊断侧栏均与参考图保持相同的信息密度与纵向节奏。
+- 色彩与视觉令牌：延续现有工作台蓝色主色，报废数量使用橙色，高风险、关注与健康报废率分别使用红、橙、绿；边框、背景和选中态与参考图一致。
+- 图表与图标：图表使用 Recharts 稳定渲染，导航与操作图标使用项目既有 Phosphor 图标库；没有使用占位图片或手绘图标替代。
+- 文案与内容：指标口径、ERP 只读状态、型号排名、原因分布、损失占比和侧栏诊断信息均完整；明确说明 ERP 单价不直接作为财务损失。
 
 ## Full-view comparison evidence
 
-The final comparison preserves the selected design's three-column hierarchy: 216-pixel navigation, dense central order workspace, and persistent 340-pixel detail/audit panel. The summary strip, two-row filter region, table start position, selected-row treatment, status colors, and detail section boundaries align with the source. Dynamic totals, shop names, order numbers, amounts, and workflow distribution intentionally come from the current MySQL data rather than the generated mock.
+全屏并排对比确认：页面区块顺序、首屏信息密度、主表与下方图表的分配、固定右侧诊断区和主色层级均匹配。现有产品保留“仓库验货、售后归因”等已有导航项，这是基于既有系统结构的有意保留，不属于设计漂移。
 
-## Focused comparison evidence
+## Focused region comparison evidence
 
-- Table: `design-qa-table-focus.png` confirms that all ten columns are visible without horizontal scrolling, row density remains equivalent to the source, selected and semantic status states are readable, and the operation column is no longer clipped.
-- Detail panel: `design-qa-detail-focus.png` confirms matching section order, label/value alignment, copy affordances, status treatment, and vertical audit timeline rhythm. The implementation contains longer live logistics copy, so it wraps more than the mock but remains within the panel.
-
-## Required fidelity surfaces
-
-- Fonts and typography: local Noto Sans SC Variable is used with compact 10.5–20 pixel hierarchy. Weights, line heights, truncation, and tabular-number behavior match the dense Chinese enterprise UI target.
-- Spacing and layout rhythm: summary height is 88 pixels; the filter region is 113.5 pixels; the table begins at y=297.5 and uses 44-pixel rows. At 1536 pixels the table client width and scroll width are both 933 pixels. At 1280 pixels the detail becomes an overlay and the table client and scroll widths are both 1043 pixels.
-- Colors and visual tokens: white and cool-gray surfaces, dark navy text, #1768d8 primary blue, and restrained green/orange/red/purple semantic states match the source intent. No gradients or decorative effects were added.
-- Image quality and asset fidelity: the source contains no photos or illustration assets. Interface icons come from one Phosphor family; no placeholder imagery, handcrafted SVG, or CSS substitute for source imagery is present.
-- Copy and content: all labels use concise Chinese business terminology. Live records expose the fields actually stored by the system; unavailable buyer nicknames are explicitly shown as “平台未返回”. Logistics timestamps written as UTC-naive values are converted to Asia/Shanghai before display, keeping the audit timeline chronological.
-- Accessibility and states: controls are semantic buttons, selects, date inputs, and labeled icon buttons. Focus styles, selected rows, loading/error/empty states, disabled pagination, copy success, collapsed detail, and responsive overlay behavior are implemented.
+- 型号排名：列顺序、行高、选中态、条形比例、风险色和合计行均匹配；实现额外保留了可点击行和筛选后的空状态。
+- 型号诊断：基础信息、颜色分布、主要原因和底部主操作保持同一结构；实现增加了可关闭按钮，并把底部按钮连接到真实 ERP 明细和人工核定表单。
 
 ## Comparison history
 
-### Iteration 1 — blocked
+### Iteration 1
 
-- [P1] The table had a 990-pixel minimum width inside a 933-pixel content area, producing horizontal scrolling and clipping “查看详情”. Fixed by reducing the table minimum to 900 pixels, making column widths total 100%, and tightening cell padding.
-- [P2] The initial filter panel was about 20 pixels taller than the source and pushed the table below the reference start position. Fixed by reducing vertical padding, label gaps, control height, and row gap; final table y-position is 297.5.
-- [P2] At 1280 pixels, the persistent detail column left too little room for the dense table. Fixed by changing the detail panel to a 320-pixel overlay at that breakpoint while preserving the selected desktop layout at 1536 pixels.
+- Earlier findings: 右侧栏初始宽度为 340 px，导致内容拥挤；全局表格 `min-width: 900px` 使侧栏小表横向溢出；图表动画造成截图时线条和环图尚未完成；筛选与排名区整体比参考图偏上约 30–50 px。
+- Fixes made: 模块 5 专用侧栏改为 410 px；小表明确覆盖 `min-width: 0`；关闭图表入场动画；接入真实 ERP 查询、加载/异常/空状态与人工核定表单，并调整筛选区、表格行高和纵向节奏。
+- Post-fix evidence: `scrap-design-comparison.png` 与 `scrap-focus-ranking.png` 显示侧栏不再截断，表格和下方图表位置与参考图对齐。
 
-### Iteration 2 — passed
+### Iteration 2
 
-- Post-fix browser evidence shows no body overflow, no table horizontal overflow at 1536 or 1280, 15 rendered rows, three detail sections, chronological timeline entries, and zero console errors.
-- Primary interactions tested: logistics filter and reset, pagination, row-to-detail selection, close/reopen detail, and copy-success feedback.
-- No actionable P0, P1, or P2 findings remain.
+- Earlier findings: 型号诊断区缺少参考图中的整体卡片边界和关闭入口；趋势线使用平滑曲线，与参考图折线表现有轻微差异。
+- Fixes made: 增加诊断卡整体边界、关闭按钮和 ERP 只读提示；趋势改为直线折线。
+- Post-fix evidence: `scrap-focus-detail.png` 显示信息结构、边界、趋势与主操作均已对齐。
 
-## Follow-up polish
+## Interaction and runtime verification
 
-- [P3] Exact row status distribution differs from the mock because the prototype intentionally renders live database state.
-- [P3] The in-app browser's viewport screenshot excludes 31 pixels from the CSS viewport; DOM bounds confirm the bottom action bar is inside the declared viewport, and this does not affect normal browser rendering.
+- 已测试：进入“退货报废”、加载真实 ERP 汇总、切换型号、打开型号报废明细、进入和取消人工核定表单。
+- 当前 30 天真实汇总显示退货数量 68,463、报废数量 603、报废率 0.88%；未核定记录全部进入“待补原因”，已核定损失为 0。
+- 选中 `2608-96` 后，侧栏、颜色分布和 ERP 报废明细同步更新。
+- 浏览器控制台未发现 error 或 warning。
+
+## Implementation checklist
+
+- [x] 方案 3 的主界面结构落地
+- [x] 筛选、选中、说明、下钻交互可用
+- [x] ERP 真实数据、加载/异常/空状态和人工核定入口可用
+- [x] 1487 px 桌面视口视觉对比完成
+- [x] P0 / P1 / P2 问题清零
 
 final result: passed
