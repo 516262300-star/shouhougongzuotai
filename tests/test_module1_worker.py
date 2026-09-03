@@ -78,6 +78,9 @@ class FakeRuntime(Module1WorkerRuntime):
                 "inspections_passed": 0,
                 "inspections_failed": 1,
                 "not_found": 0,
+                "post_refund_waiting_tracking": 0,
+                "post_refund_waiting_receipt": 0,
+                "post_refund_verified": 0,
                 "ambiguous": 0,
                 "unavailable": 0,
             }

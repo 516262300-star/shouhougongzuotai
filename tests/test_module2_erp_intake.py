@@ -84,8 +84,12 @@ class _CapturingSession:
         self.statement = statement
         return _EmptyRows()
 
+    def scalars(self, statement):
+        self.statement = statement
+        return []
 
-def test_candidates_exclude_platform_refunded_orders() -> None:
+
+def test_candidates_include_platform_refunded_orders_for_post_refund_audit() -> None:
     session = _CapturingSession()
     service = Module2ErpIntakeService(session, SimpleNamespace())
 
@@ -96,5 +100,57 @@ def test_candidates_exclude_platform_refunded_orders() -> None:
         compile_kwargs={"literal_binds": True},
     )
     sql = str(compiled)
-    assert "platform_after_sales_status IN (2, 3)" in sql
-    assert "platform_order_refund_status != 4" in sql
+    assert "platform_after_sales_status IN (2, 3, 10)" in sql
+    assert "platform_order_refund_status = 4" in sql
+
+
+def test_refunded_without_tracking_are_listed_for_follow_up() -> None:
+    session = _CapturingSession()
+    service = Module2ErpIntakeService(session, SimpleNamespace())
+
+    assert (
+        service._list_refunded_without_tracking(
+            shop_codes=None,
+            min_order_id=0,
+            limit=20,
+        )
+        == []
+    )
+
+    sql = str(
+        session.statement.compile(
+            dialect=mysql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "platform_after_sales_status = 10" in sql
+    assert "platform_order_refund_status = 4" in sql
+
+
+def test_mismatch_note_explicitly_reports_short_return_and_wrong_color() -> None:
+    order = SimpleNamespace(
+        platform_after_sales_status=10,
+        platform_order_refund_status=4,
+        items=[
+            SimpleNamespace(
+                sku_code="2640-单孔#亮镍",
+                color=None,
+                applied_quantity=22,
+            )
+        ],
+    )
+
+    note = Module2ErpIntakeService._mismatch_note(
+        order,
+        (
+            SimpleNamespace(
+                product_code="2640-单孔",
+                color="铜拉丝",
+                quantity=21,
+            ),
+        ),
+    )
+
+    assert "平台款项已退" in note
+    assert "少退或未收到：2640-单孔/亮镍×22" in note
+    assert "多退或错退：2640-单孔/铜拉丝×21" in note

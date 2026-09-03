@@ -1010,6 +1010,9 @@ const MONITOR_DETAIL_LABELS = {
   receipts_created: "登记收货",
   inspections_passed: "验货通过",
   inspections_failed: "验货异常",
+  post_refund_waiting_tracking: "退款后待退货运单",
+  post_refund_waiting_receipt: "退款后待仓库收货",
+  post_refund_verified: "退款后验收一致",
   unavailable: "核对失败",
   ambiguous: "运单冲突",
   skipped_missing_owner: "缺少负责人",
@@ -1030,9 +1033,11 @@ const formatAge = (seconds) => {
 function monitorStageSummary(stage) {
   if (stage.error) return stage.error;
   if (stage.reason) return stage.reason;
-  const details = Object.entries(stage)
-    .filter(([key, value]) => !["id", "status", "error", "reason"].includes(key) && value !== null && value !== undefined && MONITOR_DETAIL_LABELS[key])
-    .slice(0, 4)
+  const entries = Object.entries(stage)
+    .filter(([key, value]) => !["id", "status", "error", "reason"].includes(key) && value !== null && value !== undefined && MONITOR_DETAIL_LABELS[key]);
+  const details = entries
+    .filter(([, value]) => value !== 0 && value !== false)
+    .slice(0, 6)
     .map(([key, value]) => `${MONITOR_DETAIL_LABELS[key]} ${value}`);
   return details.join(" · ") || "本周期已完成";
 }

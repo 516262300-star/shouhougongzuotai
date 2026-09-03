@@ -33,6 +33,7 @@ from aftersales_workbench.workflows.module2 import (
     InspectWarehouseReturnCommand,
     SqlAlchemyWarehouseReturnRepository,
     WarehouseInspectionStatus,
+    WarehouseReturnConflictError,
     WarehouseReturnDestination,
     WarehouseReturnService,
     split_sku_color,
@@ -47,6 +48,9 @@ class Module2ErpIntakeRunResult:
     inspections_passed: int = 0
     inspections_failed: int = 0
     not_found: int = 0
+    post_refund_waiting_tracking: int = 0
+    post_refund_waiting_receipt: int = 0
+    post_refund_verified: int = 0
     ambiguous: int = 0
     unavailable: int = 0
 
@@ -104,7 +108,21 @@ class Module2ErpIntakeService:
             min_order_id=min_order_id,
             limit=limit,
         )
-        result = Module2ErpIntakeRunResult(dry_run=dry_run, scanned=len(candidates))
+        waiting_tracking = self._list_refunded_without_tracking(
+            shop_codes=shop_codes,
+            min_order_id=min_order_id,
+            limit=limit,
+        )
+        result = Module2ErpIntakeRunResult(
+            dry_run=dry_run,
+            scanned=len(candidates) + len(waiting_tracking),
+            post_refund_waiting_tracking=len(waiting_tracking),
+        )
+        if not dry_run and waiting_tracking:
+            for order in waiting_tracking:
+                order.workflow_status = WorkflowStatus.RETURN_WAITING_SCAN
+                order.exception_type = "平台已退款，等待客户提供退货运单"
+            self.session.commit()
         tracking_counts = Counter(order.return_tracking_number for order, _ in candidates)
         for order, _shop_name in candidates:
             tracking = str(order.return_tracking_number or "").strip()
@@ -119,6 +137,12 @@ class Module2ErpIntakeService:
             if lookup.status not in self._RECEIVED_STATUSES:
                 if lookup.status is ErpReturnMatchStatus.NOT_FOUND:
                     result.not_found += 1
+                    if self._platform_refunded(order):
+                        result.post_refund_waiting_receipt += 1
+                        if not dry_run:
+                            order.workflow_status = WorkflowStatus.RETURN_WAITING_SCAN
+                            order.exception_type = "平台已退款，等待仓库收到退货包裹"
+                            self.session.commit()
                 else:
                     result.unavailable += 1
                 continue
@@ -141,12 +165,14 @@ class Module2ErpIntakeService:
                     result.inspections_passed += 1
                 continue
             try:
-                self._record(order, lookup, actual_items, inspection)
-                result.receipts_created += 1
+                if self._record(order, lookup, actual_items, inspection):
+                    result.receipts_created += 1
                 if inspection is WarehouseInspectionStatus.FAIL:
                     result.inspections_failed += 1
                 else:
                     result.inspections_passed += 1
+                    if self._platform_refunded(order):
+                        result.post_refund_verified += 1
             except Exception:
                 self.session.rollback()
                 result.unavailable += 1
@@ -170,10 +196,9 @@ class Module2ErpIntakeService:
                 AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
                 AfterSalesOrder.return_tracking_number.is_not(None),
                 AfterSalesOrder.return_tracking_number != "",
-                AfterSalesOrder.platform_after_sales_status.in_((2, 3)),
                 or_(
-                    AfterSalesOrder.platform_order_refund_status.is_(None),
-                    AfterSalesOrder.platform_order_refund_status != 4,
+                    AfterSalesOrder.platform_after_sales_status.in_((2, 3, 10)),
+                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
             )
             .order_by(AfterSalesOrder.id.desc())
@@ -182,6 +207,44 @@ class Module2ErpIntakeService:
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
         return list(self.session.execute(statement).all())
+
+    def _list_refunded_without_tracking(
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        min_order_id: int,
+        limit: int,
+    ) -> list[AfterSalesOrder]:
+        statement = (
+            select(AfterSalesOrder)
+            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .where(
+                Shop.platform == Platform.PDD,
+                AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
+                AfterSalesOrder.id >= min_order_id,
+                AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
+                or_(
+                    AfterSalesOrder.return_tracking_number.is_(None),
+                    AfterSalesOrder.return_tracking_number == "",
+                ),
+                or_(
+                    AfterSalesOrder.platform_after_sales_status == 10,
+                    AfterSalesOrder.platform_order_refund_status == 4,
+                ),
+            )
+            .order_by(AfterSalesOrder.id.desc())
+            .limit(limit)
+        )
+        if shop_codes:
+            statement = statement.where(Shop.shop_code.in_(shop_codes))
+        return list(self.session.scalars(statement))
+
+    @staticmethod
+    def _platform_refunded(order: AfterSalesOrder) -> bool:
+        return (
+            order.platform_after_sales_status == 10
+            or order.platform_order_refund_status == 4
+        )
 
     @staticmethod
     def _expected_items(order: AfterSalesOrder) -> tuple[ExpectedReturnItem, ...]:
@@ -225,7 +288,7 @@ class Module2ErpIntakeService:
         lookup: ErpReturnMatchLookup,
         actual_items: tuple[ActualReturnItem, ...],
         inspection: WarehouseInspectionStatus,
-    ) -> None:
+    ) -> bool:
         assert lookup.return_order_sn is not None
         destination = (
             WarehouseReturnDestination.STAGING
@@ -245,26 +308,32 @@ class Module2ErpIntakeService:
             if lookup.source_location == "staging"
             else "客户退货单"
         )
-        warehouse.create(
-            CreateWarehouseReturnCommand(
-                receipt_sn=lookup.return_order_sn,
-                return_tracking_number=str(order.return_tracking_number),
-                destination=destination,
-                after_sales_sn=order.after_sales_sn,
-                customer_reference=customer_reference,
-                customer_name=(lookup.customer_name if customer_reference else None),
-                operator="ERP自动同步",
-                note=(
-                    f"来源：ERP{source_label}；"
-                    "系统按退货运单关联模块2售后。"
-                ),
-                items=actual_items,
+        tracking = str(order.return_tracking_number)
+        recorded_receipt_sn = warehouse.lookup(tracking).recorded_receipt_sn
+        created = recorded_receipt_sn is None
+        if recorded_receipt_sn is not None:
+            if recorded_receipt_sn != lookup.return_order_sn:
+                raise WarehouseReturnConflictError(
+                    "退货运单已登记，但本地收货单号与 ERP 退货单号不一致"
+                )
+        else:
+            warehouse.create(
+                CreateWarehouseReturnCommand(
+                    receipt_sn=lookup.return_order_sn,
+                    return_tracking_number=tracking,
+                    destination=destination,
+                    after_sales_sn=order.after_sales_sn,
+                    customer_reference=customer_reference,
+                    customer_name=(lookup.customer_name if customer_reference else None),
+                    operator="ERP自动同步",
+                    note=(
+                        f"来源：ERP{source_label}；"
+                        "系统按退货运单关联模块2售后。"
+                    ),
+                    items=actual_items,
+                )
             )
-        )
-        mismatch_note = (
-            "ERP退货单实收型号、颜色或数量与平台退款申请不一致，"
-            "禁止自动退款并转人工处理。"
-        )
+        mismatch_note = self._mismatch_note(order, actual_items)
         warehouse.inspect(
             InspectWarehouseReturnCommand(
                 receipt_sn=lookup.return_order_sn,
@@ -284,12 +353,53 @@ class Module2ErpIntakeService:
             )
         )
         if refreshed is not None:
-            refreshed.exception_type = (
-                mismatch_note
-                if inspection is WarehouseInspectionStatus.FAIL
-                else None
-            )
+            if inspection is WarehouseInspectionStatus.FAIL:
+                refreshed.exception_type = (
+                    "平台已退款后退货实收异常"
+                    if self._platform_refunded(refreshed)
+                    else "ERP退货实收与平台申请不一致"
+                )
+            else:
+                refreshed.exception_type = None
             self.session.commit()
+        return created
+
+    @classmethod
+    def _mismatch_note(
+        cls,
+        order: AfterSalesOrder,
+        actual_items: tuple[ActualReturnItem, ...],
+    ) -> str:
+        expected: Counter[tuple[str, str]] = Counter()
+        for item in cls._expected_items(order):
+            expected[(item.product.strip(), item.color.strip())] += item.quantity
+        actual: Counter[tuple[str, str]] = Counter()
+        for item in actual_items:
+            actual[(item.product_code.strip(), item.color.strip())] += Decimal(
+                item.quantity
+            )
+        missing = expected - actual
+        extra = actual - expected
+
+        def describe(values: Counter[tuple[str, str]]) -> str:
+            return "、".join(
+                f"{product}/{color or '无颜色'}×{quantity}"
+                for (product, color), quantity in sorted(values.items())
+            )
+
+        details: list[str] = []
+        if missing:
+            details.append(f"少退或未收到：{describe(missing)}")
+        if extra:
+            details.append(f"多退或错退：{describe(extra)}")
+        if not details:
+            details.append("型号、颜色或数量无法形成唯一一致关系")
+        prefix = (
+            "平台款项已退，退货实收异常"
+            if cls._platform_refunded(order)
+            else "退货实收异常，已冻结平台退款"
+        )
+        return f"{prefix}；{'；'.join(details)}；已转人工处理。"
 
 
 class Module2ExceptionTodoService:
@@ -349,8 +459,8 @@ class Module2ExceptionTodoService:
             if dry_run:
                 continue
             reason = str(
-                order.exception_type
-                or warehouse_return.inspection_note
+                warehouse_return.inspection_note
+                or order.exception_type
                 or "ERP退货单与平台退款申请明细不一致"
             ).strip()
             marker = f"【售后工作台 M2:{order.after_sales_sn}】"
@@ -369,7 +479,11 @@ class Module2ExceptionTodoService:
                 f"退货运单：{order.return_tracking_number}；"
                 f"ERP退货单：{warehouse_return.receipt_sn}；"
                 f"平台申请：{expected}；ERP实收：{received}。"
-                "请核对仓库实物和退货单，确认后人工决定是否退款。"
+                + (
+                    "平台款项已经退回，请核对仓库实物并处理少退、错退或追责。"
+                    if Module2ErpIntakeService._platform_refunded(order)
+                    else "请核对仓库实物和退货单，确认后人工决定是否退款。"
+                )
             )
             self.session.add(
                 AftersalesActionTask(
