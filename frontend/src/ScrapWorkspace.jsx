@@ -172,11 +172,11 @@ export function ScrapWorkspace({ onClose }) {
         </form>
 
         <section className="scrap-ranking-card">
-          <div className="scrap-card-heading"><div><h2>型号报废数量 TOP10</h2><p>优先显示报废数量较多的型号，点击行查看 ERP 明细和补录核定信息。</p></div><Info size={15} /></div>
+          <div className="scrap-card-heading"><div><h2>全部型号报废情况（{data.models.length}）</h2><p>包含报废数量为 0 的型号；按报废数量优先排序，点击行查看 ERP 明细。</p></div><Info size={15} /></div>
           <div className="scrap-table-wrap"><table className="scrap-ranking-table"><thead><tr><th>排名</th><th>型号/规格</th><th>退货数量</th><th>报废数量</th><th>报废率</th><th>已核定损失</th><th>损失占比</th><th aria-label="查看" /></tr></thead><tbody>
             {data.models.map((row, index) => <tr key={row.model} className={selected?.model === row.model ? "selected" : ""} onClick={() => selectRow(row.model)}><td>{index + 1}</td><td><strong>{row.model}</strong><span className="model-bar"><i style={{ width: `${Math.max(8, Math.min(100, row.scrap_rate * 40))}%` }} /></span></td><td>{quantity(row.return_quantity)}</td><td>{quantity(row.scrap_quantity)}</td><td className={row.scrap_rate >= 1 ? "risk-high" : row.scrap_rate >= .6 ? "risk-mid" : "risk-low"}>{row.scrap_rate.toFixed(2)}%</td><td>{money(row.confirmed_loss)}</td><td>{row.loss_share.toFixed(2)}%</td><td><CaretRight size={15} /></td></tr>)}
           </tbody><tfoot><tr><td /><td>合计</td><td>{quantity(data.summary.return_quantity)}</td><td>{quantity(data.summary.scrap_quantity)}</td><td>{Number(data.summary.scrap_rate).toFixed(2)}%</td><td>{money(data.summary.confirmed_loss)}</td><td>{data.summary.confirmed_loss ? "100.00%" : "—"}</td><td /></tr></tfoot></table></div>
-          {!loading && !data.models.length && <div className="scrap-empty">当前条件下没有 ERP 报废记录</div>}
+          {!loading && !data.models.length && <div className="scrap-empty">当前条件下没有 ERP 退货型号</div>}
           {loading && <div className="scrap-empty">正在读取 ERP 报废数据…</div>}
         </section>
 

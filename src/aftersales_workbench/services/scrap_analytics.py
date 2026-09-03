@@ -95,7 +95,13 @@ class ScrapAnalyticsService:
             by_model_scrap[row.product_model].append(row)
 
         models = []
-        for model, model_scrap_rows in by_model_scrap.items():
+        model_names = (
+            by_model_scrap.keys()
+            if reason or responsibility or data_status
+            else by_model_returns.keys()
+        )
+        for model in model_names:
+            model_scrap_rows = by_model_scrap.get(model, [])
             scrap_quantity = sum((row.quantity for row in model_scrap_rows), Decimal())
             loss = sum(
                 (
@@ -125,7 +131,11 @@ class ScrapAnalyticsService:
                     "responsibility": max(responsibilities, key=responsibilities.get)
                     if responsibilities
                     else "待确认",
-                    "data_status": max(status_counts, key=status_counts.get),
+                    "data_status": (
+                        max(status_counts, key=status_counts.get)
+                        if status_counts
+                        else "NO_SCRAP"
+                    ),
                     "status_counts": dict(status_counts),
                 }
             )
@@ -164,7 +174,7 @@ class ScrapAnalyticsService:
                 "scrap_orders": len({row.return_order_sn for row in scrap_rows}),
                 "scrap_rows": len(scrap_rows),
             },
-            "models": models[:10],
+            "models": models,
             "reasons": reasons,
             "trend": trends,
             "focus": self._focus(

@@ -715,7 +715,7 @@ cd ..
 - `GET /api/v1/aftersales/manual-todos`：模块 1/3 人工待办的发送审计、业务员与原因筛选、完整事项、远端待办 ID、失败或取消原因；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 - `GET /api/v1/attribution/overview`：模块 4 售后归因摘要、实际/申请退款金额、趋势、环比同比、数据覆盖、原因构成、型号排名、店铺分布和选中型号下钻；支持 `platform`、`shop_id`、`period_mode=MONTH|YEAR|CUSTOM`、`started_on`、`ended_on`、`model_keyword`、`reason_category` 和 `focus_model`。
-- `GET /api/v1/scrap/overview`：模块 5 退货数量、报废数量、报废率、已核定损失、型号排名、原因/颜色分布、趋势和型号明细；支持日期、型号、原因、责任、数据状态和焦点型号筛选。
+- `GET /api/v1/scrap/overview`：模块 5 退货数量、报废数量、报废率、已核定损失、全部退货型号（含零报废型号）、原因/颜色分布、趋势和型号明细；支持日期、型号、原因、责任、数据状态和焦点型号筛选。
 - `PATCH /api/v1/scrap/records/{source_row_id}/decision`：补录报废原因、责任归属、确认单位成本、损失金额、成本来源和复核人；仅写工作台核定层，不回写 ERP。
 
 售后订单、在途拦截和人工待办页面都只读，不会直接调用拼多多退款、企微发送或 ERP 写接口。在途拦截页没有“发送”或“退款”按钮，真实外部动作仍只能由后台运行器在对应总开关打开后执行。仓库验货页面会写入本地 `warehouse_return_*` 表和对应售后状态，但不会触发任何外部写操作。数据库暂未保存买家昵称时，详情明确显示“平台未返回”，不会虚构客户信息。
