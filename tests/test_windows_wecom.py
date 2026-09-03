@@ -10,6 +10,7 @@ from aftersales_workbench.workflows.windows_wecom import (
     _INPUT,
     _INPUT_UNION,
     WindowsWeComGateway,
+    _is_key_currently_down,
     _select_wecom_window,
     _WeComWindowCandidate,
 )
@@ -81,6 +82,15 @@ def test_wecom_window_selector_fails_closed_without_unique_main_window() -> None
                 _WeComWindowCandidate(12, 102, "企业微信", 1_200_000),
             ]
         )
+
+
+def test_escape_state_ignores_stale_pressed_since_last_query_bit() -> None:
+    """低位只表示曾发生过按键事件，不能据此声称用户当前按下 ESC。"""
+
+    assert _is_key_currently_down(0x0001) is False
+    assert _is_key_currently_down(0x0000) is False
+    assert _is_key_currently_down(0x8000) is True
+    assert _is_key_currently_down(-0x8000) is True
 
 
 def test_send_is_confirmed_immediately_after_post_send_visual_change(monkeypatch) -> None:

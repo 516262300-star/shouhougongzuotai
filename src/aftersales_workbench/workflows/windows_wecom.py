@@ -60,6 +60,12 @@ def _select_wecom_window(
     return ordered[0]
 
 
+def _is_key_currently_down(state: int) -> bool:
+    """只读取 GetAsyncKeyState 的当前按下位，忽略不可靠的历史事件位。"""
+
+    return bool(state & 0x8000)
+
+
 class _KEYBDINPUT(ctypes.Structure):
     _fields_ = (
         ("wVk", wintypes.WORD),
@@ -548,7 +554,7 @@ class WindowsWeComGateway:
         raise DesktopBeforePasteError(error)
 
     def _raise_if_escape(self, *, ambiguous: bool = False) -> None:
-        if self.user32.GetAsyncKeyState(VK_ESCAPE) & 0x8001:
+        if _is_key_currently_down(self.user32.GetAsyncKeyState(VK_ESCAPE)):
             if ambiguous:
                 raise DesktopAmbiguousSendError("用户按下 ESC，已停止后续所有操作")
             raise DesktopBeforePasteError("用户按下 ESC，已停止后续所有操作")
