@@ -1,6 +1,6 @@
 # 利德仕电商自动化售后工作台
 
-面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步、天猫六店只读售后同步、淘宝/1688/京东/抖音可配置多店只读售后同步，以及模块 1–4 的核心流程。
+面向利德仕多平台、多店铺的售后中台。当前仓库已完成 Phase 1 工程骨架、全量数据库初始化、拼多多七店同步、天猫六店售后同步及模块 1/2/3 安全试运行、淘宝/1688/京东/抖音可配置多店只读售后同步，以及模块 1–4 的核心流程。
 
 ## 当前边界
 
@@ -126,6 +126,8 @@ alembic downgrade -1
 | `TMALL_SHOP_1_SESSION_KEY` … `TMALL_SHOP_6_SESSION_KEY` | 天猫六店各自的卖家授权 SessionKey | 无 |
 | `TMALL_SHOP_1_CODE` … `TMALL_SHOP_6_CODE` | 天猫六店的本地稳定代号 | `tmall-shop-01` … `tmall-shop-06` |
 | `TMALL_SYNC_ENABLED` | 将天猫只读售后同步接入常驻后台周期 | `false` |
+| `TMALL_MODULE123_TRIAL_ENABLED` | 将天猫新售后接入模块 1/2/3 试运行；天猫平台退款仍由人工审核 | `false` |
+| `TMALL_MODULE123_MIN_ORDER_ID` | 天猫模块 1/2/3 独立上线水位，只处理本地 ID 不小于该值的记录 | `0` |
 | `TMALL_SYNC_INITIAL_LOOKBACK_HOURS` | 天猫新店铺无游标时的首次回溯小时数 | `72` |
 | `TMALL_SYNC_OVERLAP_SECONDS` | 天猫增量续传时向前重叠秒数 | `300` |
 | `TMALL_SYNC_WINDOW_HOURS` | 天猫单个修改时间窗口小时数 | `24` |
@@ -202,11 +204,13 @@ alembic upgrade head
 
 同步器只向本地 MySQL 写入店铺和售后数据，不会调用拼多多写接口。任一店铺 Token 过期或接口异常时会被单店标记失败，不影响其他店铺。
 
-## 天猫六店售后只读同步
+## 天猫六店售后同步与模块 1/2/3 试运行
 
-天猫接入直接调用淘宝开放平台正式 HTTPS 网关，不依赖旧管理系统网页或旧代码运行环境。六个店铺共用 `TMALL_APP_KEY` / `TMALL_APP_SECRET`，每店使用独立的 `TMALL_SHOP_N_SESSION_KEY`。同步器调用 `taobao.user.seller.get` 校验卖家身份，按修改时间分页读取 `taobao.refunds.receive.get`，再用 `taobao.refund.get` 和 `taobao.trade.fullinfo.get` 补齐退款原因、留言、商品、SKU、订单状态和退货运单。结果与拼多多共用 `shops`、`aftersales_orders`、`aftersales_items`，进度单独保存在 `tmall_sync_cursors`。
+天猫接入直接调用淘宝开放平台正式 HTTPS 网关，不依赖旧管理系统网页或旧代码运行环境。六个店铺共用 `TMALL_APP_KEY` / `TMALL_APP_SECRET`，每店使用独立的 `TMALL_SHOP_N_SESSION_KEY`。同步器调用 `taobao.user.seller.get` 校验卖家身份，按修改时间分页读取 `taobao.refunds.receive.get`，再用 `taobao.refund.get` 和 `taobao.trade.fullinfo.get` 补齐退款原因、留言、商品、SKU、订单状态和退货运单。对已发货仅退款，另外调用 `taobao.logistics.orders.get` 读取原发货运单和物流公司；多包裹、无运单或物流接口失败时不猜测，记录失败关闭。结果与拼多多共用 `shops`、`aftersales_orders`、`aftersales_items`，进度单独保存在 `tmall_sync_cursors`。
 
-当前天猫接入为只读记录层：天猫售后会进入“售后订单”和“售后归因”，页面会显示“天猫”平台标识；不会生成拼多多拦截通知、拼多多退款或模块 3 动作。模块 1、模块 3 的数据库候选查询也强制限定 `Shop.platform=PDD`，即使店铺名或订单状态相同也不会误处理天猫订单。天猫退款审核、同意退款和物流拦截需另行设计平台状态机及写入保护，不能复用拼多多写接口。
+默认仍是只读记录层。只有同时设置 `TMALL_SYNC_ENABLED=true`、`TMALL_MODULE123_TRIAL_ENABLED=true` 并配置独立上线水位后，水位之后的新天猫售后才进入模块 1/2/3：模块 1 对已发货全额仅退款执行物流预检和企业微信快递群拦截；模块 2 按客户退货运单核对 ERP 客户退货单或退货暂存列表，并逐项比较型号、颜色和数量；模块 3 对平台已经退款的未发货订单执行 ERP 取消履约及补开退款单。任一天猫店当轮同步失败时，该轮不放入天猫候选。
+
+天猫平台退款在试运行期始终失败关闭：物流满足退款条件或模块 2 验货完全一致时，只将订单标记为“等待人工审核退款”，不会创建 `PDD_AGREE_REFUND` / `PDD_AGREE_RETURN_REFUND`，也不会调用任何拼多多写接口。原因是淘宝开放平台的天猫退款链路要求先审核再同意，且同意退款接口受授权子账号、短信验证及聚石塔调用环境约束；在这些条件完成真实验收前，不能把拼多多退款执行器复用于天猫。官方参考：[退款业务流程](https://developer.alibaba.com/docs/doc.htm?articleId=102594&docType=1&source=search&treeId=1)、[`taobao.rp.refunds.agree`](https://developer.alibaba.com/docs/api.htm?apiId=22465&scopeId=11527)、[`taobao.logistics.orders.get`](https://developer.alibaba.com/docs/api.htm?apiId=235)。
 
 首次接入先升级数据库并校验六店授权：
 
@@ -267,7 +271,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 
 售后订单页采用“平台 → 店铺”两级联动筛选：可先选拼多多、天猫、淘宝、1688、京东或抖音，再从该平台已经接入的店铺中选择具体店铺；未选平台时店铺框保持禁用，避免跨平台同名店铺造成误选。平台条件和店铺条件都会由后端执行，不只是前端隐藏。
 
-这四个平台当前严格限于“售后事实同步”：页面会显示对应平台订单，但不会生成企业微信拦截、平台退款、模块 2、模块 3 或 ERP 写入动作。只有拼多多订单能够进入现有模块 1/2/3 自动化状态机；其他平台需要逐个平台完成写接口权限、金额口径和物流安全闸门验收后才能另行开启自动处理。
+淘宝、1688、京东、抖音当前严格限于“售后事实同步”：页面会显示对应平台订单，但不会生成企业微信拦截、平台退款、模块 2、模块 3 或 ERP 写入动作。拼多多运行完整自动化；天猫仅在独立开关和水位保护下进入模块 1/2/3 试运行，平台退款仍由人工审核；其余平台需逐个平台完成写接口权限、金额口径和物流安全闸门验收后才能另行开启自动处理。
 
 ## 模块 1：在途拦截与退款
 
@@ -320,7 +324,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 .\.venv\Scripts\aftersales-confirm-intercept.exe --after-sales-sn "售后单号" --result FAILED --note "快递拦截失败"
 ```
 
-配置快递 100 后先只读预览物流闸门，再写入本地状态和待办。`KUAIDI100_CARRIER_MAP` 示例为 `{"拼多多物流公司ID":"kuaidi100公司代码"}`，真实映射应以当前订单数据为准：
+配置快递 100 后先只读预览物流闸门，再写入本地状态和待办。`KUAIDI100_CARRIER_MAP` 示例为 `{"拼多多物流公司ID":"kuaidi100公司代码"}`，真实映射应以当前订单数据为准。天猫返回快递公司名称时，桌面发送器先转换成同一快递 100 公司代码，再复用已经验收过的数字 ID 企业微信群白名单；无法转换或出现同一公司映射多个群时失败关闭：
 
 2026-08-31 已使用真实近期售后运单完成只读联调：旧系统现有快递 100 授权可正常返回轨迹；通过拼多多官方物流公司列表确认 `85` 对应圆通 `yuantong`、`131` 对应德邦 `debangwuliu`、`384` 对应极兔 `jtexpress`。授权值只允许保存在被 Git 忽略的本机 `.env`，不得写入 README、`.env.example` 或提交记录；其他快递公司映射须逐一用真实订单确认，不能猜测。
 
@@ -356,7 +360,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 
 后台运行器沿用历史入口名 `aftersales-run-module1` 和脚本名 `module1-worker.ps1`，但现在同时承载模块 1、模块 2 与模块 3。固定周期顺序为：
 
-1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；已开启的平台再独立读取天猫、淘宝、1688、京东、抖音售后记录，所有非拼多多同步均不进入后续拼多多动作链。京东 `serviceAndRefund` 返回的纯服务单没有退款对象，明确跳过；一旦存在退款对象但金额缺失或异常，仍失败关闭；
+1. 按同步游标增量读取指定拼多多店铺的状态 `2/3/10` 售后；已开启的平台再独立读取天猫、淘宝、1688、京东、抖音售后记录。天猫只有在试运行开关、水位和当轮同步成功三重条件满足时进入模块 1/2/3，且不进入拼多多退款执行器；其余非拼多多平台不进入后续动作链。京东 `serviceAndRefund` 返回的纯服务单没有退款对象，明确跳过；一旦存在退款对象但金额缺失或异常，仍失败关闭；
 2. 启用归属同步时，小批量只读查询 ERP 客户档案并更新本地业务员缓存；
 3. `MODULE2_WORKER_ENABLED=true` 时，按买家退货运单依次只读查询 ERP 客户名下退货单和“退货暂存列表”，将仓库已开具的退货单同步为模块 2 收货事实；型号、颜色、数量完全一致时验货通过，不一致时冻结退款并生成业务员人工待办；
 4. `MODULE3_WORKER_ENABLED=true` 时，小批量生成模块 3 幂等待办；同时开启 `MODULE3_ERP_REFUND_EXECUTION_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 后，严格核验并补开未发货 ERP 退款单；

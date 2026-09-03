@@ -189,7 +189,14 @@ class Module1WorkerCycleResult:
             },
             "tmall_sync": self._stage_counts(
                 self.tmall_sync,
-                ("shops_ok", "shops_failed", "records_seen", "records_created"),
+                (
+                    "shops_ok",
+                    "shops_failed",
+                    "records_seen",
+                    "records_created",
+                    "logistics_unavailable",
+                    "logistics_ambiguous_or_missing",
+                ),
             ),
             "marketplace_sync": self._stage_counts(
                 self.marketplace_sync,
@@ -206,6 +213,7 @@ class Module1WorkerCycleResult:
                     "post_refund_waiting_tracking",
                     "post_refund_waiting_receipt",
                     "post_refund_verified",
+                    "tmall_refunds_held",
                     "ambiguous",
                     "unavailable",
                 ),
@@ -283,6 +291,7 @@ class Module1WorkerCycleResult:
                     "notices_ready",
                     "notices_cancelled",
                     "logistics_query_failed",
+                    "tmall_refunds_held",
                 ),
             ),
             "notification": self._stage_counts(
@@ -291,7 +300,13 @@ class Module1WorkerCycleResult:
             ),
             "logistics_gate": self._stage_counts(
                 self.logistics_gate,
-                ("scanned", "allowed_refunds", "blocked_delivery", "failed"),
+                (
+                    "scanned",
+                    "allowed_refunds",
+                    "tmall_refunds_held",
+                    "blocked_delivery",
+                    "failed",
+                ),
             ),
             "erp_return_matches": self._stage_counts(
                 self.erp_return_matches,
@@ -384,15 +399,24 @@ class Module1WorkerRuntime:
         self.settings = settings
         self.options = options
         self.shops = self._selected_shops()
-        self.shop_codes = tuple(shop.shop_code for shop in self.shops)
+        self.pdd_shop_codes = tuple(shop.shop_code for shop in self.shops)
+        self.tmall_shops = (
+            load_configured_tmall_shops(self.settings, require_all=False)
+            if self.settings.tmall_module123_trial_enabled
+            else []
+        )
+        self.tmall_shop_codes = tuple(shop.shop_code for shop in self.tmall_shops)
+        self.shop_codes = self.pdd_shop_codes + self.tmall_shop_codes
         self._notification_preflight_completed = False
         self._pdd_sync_completed = False
+        self._tmall_sync_completed = False
 
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
         self._pdd_sync_completed = result.sync.status == "completed"
         result.tmall_sync = self._capture(self._sync_tmall)
+        self._tmall_sync_completed = result.tmall_sync.status == "completed"
         result.marketplace_sync = self._capture(self._sync_marketplaces)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.module2_erp_intake = self._capture(self._sync_module2_erp_returns)
@@ -460,6 +484,7 @@ class Module1WorkerRuntime:
                 post_refund_waiting_tracking=0,
                 post_refund_waiting_receipt=0,
                 post_refund_verified=0,
+                tmall_refunds_held=0,
                 ambiguous=0,
                 unavailable=0,
             )
@@ -474,6 +499,7 @@ class Module1WorkerRuntime:
                 post_refund_waiting_tracking=0,
                 post_refund_waiting_receipt=0,
                 post_refund_verified=0,
+                tmall_refunds_held=0,
                 ambiguous=0,
                 unavailable=0,
             )
@@ -483,6 +509,8 @@ class Module1WorkerRuntime:
                 run = Module2ErpIntakeService(session, matcher).run(
                     shop_codes=self.shop_codes,
                     min_order_id=self.settings.module2_erp_intake_min_order_id,
+                    include_tmall=self._tmall_trial_active,
+                    tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                     limit=self.options.task_limit,
                     dry_run=False,
                 )
@@ -535,6 +563,8 @@ class Module1WorkerRuntime:
         with SessionLocal() as session:
             run = Module2ExceptionTodoService(session).run(
                 shop_codes=self.shop_codes,
+                include_tmall=self._tmall_trial_active,
+                tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.options.task_limit,
                 dry_run=False,
             )
@@ -555,6 +585,8 @@ class Module1WorkerRuntime:
                 SqlAlchemyModule3Repository(session)
             ).run(
                 shop_codes=self.shop_codes,
+                include_tmall=self._tmall_trial_active,
+                tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.settings.module3_worker_batch_limit,
                 dry_run=False,
             )
@@ -647,6 +679,13 @@ class Module1WorkerRuntime:
             raise ValueError(f"后台运行店铺缺少有效配置: {missing}")
         return shops
 
+    @property
+    def _tmall_trial_active(self) -> bool:
+        return (
+            self.settings.tmall_module123_trial_enabled
+            and self._tmall_sync_completed
+        )
+
     def _sync(self) -> WorkerStageResult:
         with SessionLocal() as session:
             sync_results = PddRefundSyncService(
@@ -679,7 +718,9 @@ class Module1WorkerRuntime:
                 records_seen=0,
                 records_created=0,
             )
-        shops = load_configured_tmall_shops(self.settings, require_all=False)
+        shops = self.tmall_shops or load_configured_tmall_shops(
+            self.settings, require_all=False
+        )
         with SessionLocal() as session:
             sync_results = TmallRefundSyncService(
                 SqlAlchemyTmallSyncRepository(session),
@@ -695,6 +736,12 @@ class Module1WorkerRuntime:
             "shops_failed": sum(not item.ok for item in sync_results),
             "records_seen": sum(item.records_seen for item in sync_results),
             "records_created": sum(item.records_created for item in sync_results),
+            "logistics_unavailable": sum(
+                item.logistics_unavailable for item in sync_results
+            ),
+            "logistics_ambiguous_or_missing": sum(
+                item.logistics_ambiguous_or_missing for item in sync_results
+            ),
         }
         if not all(item.ok for item in sync_results):
             failures = [
@@ -765,6 +812,8 @@ class Module1WorkerRuntime:
             ).sync_stale(
                 limit=self.settings.erp_sales_owner_sync_batch_size,
                 refresh_seconds=self.settings.erp_sales_owner_refresh_seconds,
+                include_tmall=self._tmall_trial_active,
+                tmall_min_order_id=self.settings.tmall_module123_min_order_id,
             )
         return WorkerStageResult.completed(result.safe_dict())
 
@@ -772,6 +821,8 @@ class Module1WorkerRuntime:
         with SessionLocal() as session:
             run = Module1InterceptService(SqlAlchemyModule1Repository(session)).run(
                 shop_codes=self.shop_codes,
+                include_tmall=self._tmall_trial_active,
+                tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.options.task_limit,
                 dry_run=False,
             )
@@ -843,7 +894,10 @@ class Module1WorkerRuntime:
             with SessionLocal() as session:
                 preview = DesktopNoticePreviewService(
                     session,
-                    DesktopNoticePlanner(self.settings.module1_desktop_group_map),
+                    DesktopNoticePlanner(
+                        self.settings.module1_desktop_group_map,
+                        self.settings.kuaidi100_carrier_map,
+                    ),
                     notification_min_task_id=(
                         self.settings.module1_notification_min_task_id
                     ),

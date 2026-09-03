@@ -42,6 +42,17 @@ def test_desktop_notice_rejects_unmapped_carrier() -> None:
         DesktopNoticePlanner({"384": "精确极兔群名"}).build(_candidate("44"))
 
 
+def test_tmall_carrier_name_reuses_verified_pdd_group_mapping() -> None:
+    planner = DesktopNoticePlanner(
+        {"384": "精确极兔群名"},
+        {"384": "jtexpress"},
+    )
+
+    plan = planner.build(_candidate("极兔速递"))
+
+    assert plan.target_group == "精确极兔群名"
+
+
 def test_desktop_notice_safe_output_masks_order_identifiers() -> None:
     plan = DesktopNoticePlanner({"384": "精确极兔群名"}).build(_candidate())
 

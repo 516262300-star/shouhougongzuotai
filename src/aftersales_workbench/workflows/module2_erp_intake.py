@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.db.models import (
@@ -38,6 +38,7 @@ from aftersales_workbench.workflows.module2 import (
     WarehouseReturnService,
     split_sku_color,
 )
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 
 @dataclass(slots=True)
@@ -51,6 +52,7 @@ class Module2ErpIntakeRunResult:
     post_refund_waiting_tracking: int = 0
     post_refund_waiting_receipt: int = 0
     post_refund_verified: int = 0
+    tmall_refunds_held: int = 0
     ambiguous: int = 0
     unavailable: int = 0
 
@@ -96,6 +98,8 @@ class Module2ErpIntakeService:
         *,
         shop_codes: tuple[str, ...] | None = None,
         min_order_id: int = 0,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
         limit: int = 20,
         dry_run: bool = True,
     ) -> Module2ErpIntakeRunResult:
@@ -106,11 +110,15 @@ class Module2ErpIntakeService:
         candidates = self._list_candidates(
             shop_codes=shop_codes,
             min_order_id=min_order_id,
+            include_tmall=include_tmall,
+            tmall_min_order_id=tmall_min_order_id,
             limit=limit,
         )
         waiting_tracking = self._list_refunded_without_tracking(
             shop_codes=shop_codes,
             min_order_id=min_order_id,
+            include_tmall=include_tmall,
+            tmall_min_order_id=tmall_min_order_id,
             limit=limit,
         )
         result = Module2ErpIntakeRunResult(
@@ -123,8 +131,8 @@ class Module2ErpIntakeService:
                 order.workflow_status = WorkflowStatus.RETURN_WAITING_SCAN
                 order.exception_type = "平台已退款，等待客户提供退货运单"
             self.session.commit()
-        tracking_counts = Counter(order.return_tracking_number for order, _ in candidates)
-        for order, _shop_name in candidates:
+        tracking_counts = Counter(order.return_tracking_number for order, _, _ in candidates)
+        for order, _shop_name, platform in candidates:
             tracking = str(order.return_tracking_number or "").strip()
             if tracking_counts[tracking] != 1:
                 result.ambiguous += 1
@@ -173,6 +181,13 @@ class Module2ErpIntakeService:
                     result.inspections_passed += 1
                     if self._platform_refunded(order):
                         result.post_refund_verified += 1
+                    elif platform is Platform.TMALL:
+                        result.tmall_refunds_held += 1
+                        if not dry_run:
+                            order.exception_type = (
+                                "天猫试运行：验货通过，等待人工审核退款"
+                            )
+                            self.session.commit()
             except Exception:
                 self.session.rollback()
                 result.unavailable += 1
@@ -184,22 +199,36 @@ class Module2ErpIntakeService:
         shop_codes: tuple[str, ...] | None,
         min_order_id: int,
         limit: int,
-    ) -> list[tuple[AfterSalesOrder, str]]:
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
+    ) -> list[tuple[AfterSalesOrder, str, Platform]]:
         statement = (
-            select(AfterSalesOrder, Shop.shop_name)
+            select(AfterSalesOrder, Shop.shop_name, Shop.platform)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .options(selectinload(AfterSalesOrder.items))
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    and_(
+                        Shop.platform == Platform.PDD,
+                        AfterSalesOrder.id >= min_order_id,
+                        or_(
+                            AfterSalesOrder.platform_after_sales_status.in_((2, 3, 10)),
+                            AfterSalesOrder.platform_order_refund_status == 4,
+                        ),
+                    ),
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                        AfterSalesOrder.platform_after_sales_status_text.in_(
+                            ("WAIT_SELLER_CONFIRM_GOODS", "SUCCESS")
+                        ),
+                    ),
+                ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
-                AfterSalesOrder.id >= min_order_id,
                 AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
                 AfterSalesOrder.return_tracking_number.is_not(None),
                 AfterSalesOrder.return_tracking_number != "",
-                or_(
-                    AfterSalesOrder.platform_after_sales_status.in_((2, 3, 10)),
-                    AfterSalesOrder.platform_order_refund_status == 4,
-                ),
             )
             .order_by(AfterSalesOrder.id.desc())
             .limit(limit)
@@ -214,22 +243,34 @@ class Module2ErpIntakeService:
         shop_codes: tuple[str, ...] | None,
         min_order_id: int,
         limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[AfterSalesOrder]:
         statement = (
             select(AfterSalesOrder)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    and_(
+                        Shop.platform == Platform.PDD,
+                        AfterSalesOrder.id >= min_order_id,
+                        or_(
+                            AfterSalesOrder.platform_after_sales_status == 10,
+                            AfterSalesOrder.platform_order_refund_status == 4,
+                        ),
+                    ),
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                        AfterSalesOrder.refund_financial_status == "SUCCESS",
+                    ),
+                ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
-                AfterSalesOrder.id >= min_order_id,
                 AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
                 or_(
                     AfterSalesOrder.return_tracking_number.is_(None),
                     AfterSalesOrder.return_tracking_number == "",
-                ),
-                or_(
-                    AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
             )
             .order_by(AfterSalesOrder.id.desc())
@@ -241,10 +282,7 @@ class Module2ErpIntakeService:
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:
-        return (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-        )
+        return platform_refund_completed(order)
 
     @staticmethod
     def _expected_items(order: AfterSalesOrder) -> tuple[ExpectedReturnItem, ...]:
@@ -412,6 +450,8 @@ class Module2ExceptionTodoService:
         self,
         *,
         shop_codes: tuple[str, ...] | None = None,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
         limit: int = 20,
         dry_run: bool = True,
     ) -> Module2ExceptionTodoRunResult:
@@ -429,7 +469,14 @@ class Module2ExceptionTodoService:
                 selectinload(WarehouseReturnRecord.items),
             )
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    Shop.platform == Platform.PDD,
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                    ),
+                ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
                 AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_FAIL,
             )

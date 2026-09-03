@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from aftersales_workbench.db.models import AutomationActionType, ShippingStatus
+from aftersales_workbench.db.models import AutomationActionType, Platform, ShippingStatus
 from aftersales_workbench.workflows.module3 import (
     Module3Candidate,
     Module3UnshippedRefundService,
+    SqlAlchemyModule3Repository,
 )
 
 
@@ -85,3 +86,35 @@ def test_apply_creates_idempotent_erp_actions() -> None:
         AutomationActionType.ERP_LOCK_PACKING,
     ]
     assert repository.commits == 2
+
+
+class _EmptyRows:
+    @staticmethod
+    def all() -> list[object]:
+        return []
+
+
+class _CaptureSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_module3_repository_can_include_tmall_success_above_watermark() -> None:
+    session = _CaptureSession()
+
+    SqlAlchemyModule3Repository(session).list_candidates(
+        shop_codes=None,
+        platform_order_sn=None,
+        limit=20,
+        include_tmall=True,
+        tmall_min_order_id=4321,
+    )
+
+    sql = str(session.statement.compile(compile_kwargs={"literal_binds": True}))
+    assert Platform.TMALL.value in sql
+    assert "4321" in sql
+    assert "refund_financial_status" in sql

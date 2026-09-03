@@ -6,6 +6,7 @@ from typing import Any
 from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     ShippingStatus,
     WorkflowStatus,
 )
@@ -61,6 +62,7 @@ class TestCoordinator(ActionCoordinator):
 def _order() -> Any:
     return SimpleNamespace(
         after_sales_sn="after-1",
+        platform=Platform.PDD,
         order_shipping_status=ShippingStatus.UNSHIPPED,
         workflow_status=WorkflowStatus.PENDING_CHECK,
         exception_type=None,
@@ -222,6 +224,24 @@ def test_module1_returned_queues_pdd_refund() -> None:
     assert order.workflow_status is WorkflowStatus.INTERCEPT_CONFIRMED
     assert order.logistics_state == "RETURNED"
     assert coordinator.enqueued[0][0] is AutomationActionType.PDD_AGREE_REFUND
+
+
+def test_module1_tmall_returned_holds_refund_for_manual_review() -> None:
+    order = _order()
+    order.platform = Platform.TMALL
+    order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+    coordinator = TestCoordinator(
+        _task(AutomationActionType.QYWX_INTERCEPT_NOTIFY), order
+    )
+
+    changed = coordinator.confirm_intercept_result(
+        after_sales_sn="after-1",
+        result=InterceptResult.RETURNED,
+    )
+
+    assert changed is False
+    assert coordinator.enqueued == []
+    assert "天猫试运行" in order.exception_type
 
 
 def test_module1_returned_skips_pdd_when_platform_already_refunded() -> None:

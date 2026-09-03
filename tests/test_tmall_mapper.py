@@ -69,3 +69,35 @@ def test_normalize_only_refund_without_shipping_is_unshipped() -> None:
     assert refund.after_sales_type is AfterSalesType.ONLY_REFUND
     assert refund.order_shipping_status is ShippingStatus.UNSHIPPED
     assert refund.item.sku_code == "7002"
+
+
+def test_normalize_only_refund_uses_unique_forward_logistics_package() -> None:
+    record = {
+        "refund_id": "9003",
+        "tid": 8003,
+        "oid": 7003,
+        "refund_fee": "19.90",
+        "payment": "19.90",
+        "has_good_return": False,
+        "num": 1,
+        "order_status": "WAIT_BUYER_CONFIRM_GOODS",
+        "status": "WAIT_SELLER_AGREE",
+    }
+    logistics = {
+        "logistics_orders_get_response": {
+            "shippings": {
+                "shipping": [
+                    {
+                        "out_sid": "JT123456",
+                        "company_name": "极兔速递",
+                        "status": "ACCEPTED_BY_RECEIVER",
+                    }
+                ]
+            }
+        }
+    }
+
+    refund = normalize_refund(record, record, record, logistics)
+
+    assert refund.forward_tracking_number == "JT123456"
+    assert refund.carrier_code == "极兔速递"

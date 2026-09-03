@@ -149,6 +149,9 @@ class Settings(BaseSettings):
     tmall_sync_overlap_seconds: int = Field(default=300, ge=0, le=3600)
     tmall_sync_page_size: int = Field(default=100, ge=1, le=100)
     tmall_sync_window_hours: int = Field(default=24, ge=1, le=24 * 30)
+    # 模块 1/2/3 的天猫试运行总开关及独立订单水位。真实天猫退款仍保持人工。
+    tmall_module123_trial_enabled: bool = False
+    tmall_module123_min_order_id: int = Field(default=0, ge=0)
 
     tmall_shop_1_code: str = "tmall-shop-01"
     tmall_shop_1_session_key: SecretStr | None = None

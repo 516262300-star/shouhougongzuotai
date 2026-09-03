@@ -218,6 +218,7 @@ class Module1ErpRefundService:
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 or_(
+                    AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
                     AfterSalesOrder.platform_order_refund_status == 4,
                 ),

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
-from sqlalchemy import exists, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -26,6 +26,7 @@ class Module1Candidate:
     shop_name: str
     tracking_number: str
     carrier_code: str | None
+    platform: Platform = Platform.PDD
     platform_refund_completed: bool = False
 
 
@@ -42,7 +43,12 @@ class Module1RunResult:
 
 class Module1Repository(Protocol):
     def list_candidates(
-        self, *, shop_codes: tuple[str, ...] | None, limit: int
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[Module1Candidate]: ...
 
     def enqueue_notice(self, candidate: Module1Candidate) -> bool: ...
@@ -57,7 +63,12 @@ class SqlAlchemyModule1Repository:
         self.session = session
 
     def list_candidates(
-        self, *, shop_codes: tuple[str, ...] | None, limit: int
+        self,
+        *,
+        shop_codes: tuple[str, ...] | None,
+        limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[Module1Candidate]:
         notice_already_queued = exists().where(
             AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
@@ -68,14 +79,26 @@ class SqlAlchemyModule1Repository:
                 AfterSalesOrder.after_sales_sn,
                 AfterSalesOrder.platform_order_sn,
                 Shop.shop_name,
+                Shop.platform,
                 AfterSalesOrder.forward_tracking_number,
                 AfterSalesOrder.carrier_code,
                 AfterSalesOrder.platform_after_sales_status,
                 AfterSalesOrder.platform_order_refund_status,
+                AfterSalesOrder.refund_financial_status,
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    Shop.platform == Platform.PDD,
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                        AfterSalesOrder.platform_after_sales_status_text.in_(
+                            ("WAIT_SELLER_AGREE", "SUCCESS")
+                        ),
+                    ),
+                ),
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
@@ -99,8 +122,10 @@ class SqlAlchemyModule1Repository:
                 shop_name=row.shop_name,
                 tracking_number=row.forward_tracking_number,
                 carrier_code=row.carrier_code,
+                platform=Platform(row.platform),
                 platform_refund_completed=(
-                    row.platform_after_sales_status == 10
+                    row.refund_financial_status == "SUCCESS"
+                    or row.platform_after_sales_status == 10
                     or row.platform_order_refund_status == 4
                 ),
             )
@@ -130,6 +155,7 @@ class SqlAlchemyModule1Repository:
                     "shop_name": candidate.shop_name,
                     "tracking_number": candidate.tracking_number,
                     "carrier_code": candidate.carrier_code,
+                    "platform": candidate.platform.value,
                 },
                 attempts=0,
             )
@@ -153,12 +179,20 @@ class Module1InterceptService:
         shop_codes: tuple[str, ...] | None = None,
         limit: int = 500,
         dry_run: bool = True,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> Module1RunResult:
         if limit < 1 or limit > 5000:
             raise ValueError("limit 必须在 1–5000 之间")
         result = Module1RunResult(dry_run=dry_run)
         try:
-            candidates = self.repository.list_candidates(shop_codes=shop_codes, limit=limit)
+            query = {"shop_codes": shop_codes, "limit": limit}
+            if include_tmall:
+                query.update(
+                    include_tmall=True,
+                    tmall_min_order_id=tmall_min_order_id,
+                )
+            candidates = self.repository.list_candidates(**query)
             result.scanned = len(candidates)
             if dry_run:
                 return result

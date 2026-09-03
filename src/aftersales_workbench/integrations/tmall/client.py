@@ -15,6 +15,7 @@ TAOBAO_USER_SELLER_GET = "taobao.user.seller.get"
 TAOBAO_REFUNDS_RECEIVE_GET = "taobao.refunds.receive.get"
 TAOBAO_REFUND_GET = "taobao.refund.get"
 TAOBAO_TRADE_FULLINFO_GET = "taobao.trade.fullinfo.get"
+TAOBAO_LOGISTICS_ORDERS_GET = "taobao.logistics.orders.get"
 
 _RESERVED_PARAMETERS = {
     "app_key",
@@ -254,3 +255,14 @@ class TmallClient:
             "orders.outer_sku_id,orders.sku_properties_name,orders.title,orders.num"
         )
         return self.execute_read(TAOBAO_TRADE_FULLINFO_GET, fields=fields, tid=tid)
+
+    def get_logistics_orders(self, *, tid: int) -> dict[str, Any]:
+        if tid < 1:
+            raise ValueError("tid 必须大于 0")
+        return self.execute_read(
+            TAOBAO_LOGISTICS_ORDERS_GET,
+            fields="tid,out_sid,company_name,status,seller_confirm,mails",
+            tid=tid,
+            page_no=1,
+            page_size=40,
+        )

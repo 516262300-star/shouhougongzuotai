@@ -23,6 +23,7 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 
 class ErpReturnMatchConfigurationError(ValueError):
@@ -677,6 +678,7 @@ class ErpReturnMatchSyncService:
                     )
                 ),
                 or_(
+                    AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
                     AfterSalesOrder.platform_order_refund_status == 4,
                 ),
@@ -746,6 +748,7 @@ class ErpReturnMatchSyncService:
                 AfterSalesOrder.forward_tracking_number == tracking_number,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 or_(
+                    AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
                     AfterSalesOrder.platform_order_refund_status == 4,
                 ),
@@ -800,10 +803,7 @@ class ErpReturnMatchSyncService:
             raise ValueError("只有 ERP 已匹配且累计应收归零的订单才能补记闭环")
         if AfterSalesType(order.after_sales_type) is not AfterSalesType.ONLY_REFUND:
             raise ValueError("历史闭环补记只支持模块1发货后仅退款订单")
-        if not (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-        ):
+        if not platform_refund_completed(order):
             raise ValueError("平台退款尚未明确完成，不能补记 ERP 闭环")
         task = self.session.scalar(
             select(AftersalesActionTask).where(

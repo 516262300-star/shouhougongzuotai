@@ -15,6 +15,7 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     ShippingStatus,
     Shop,
     WarehouseInspectionStatus,
@@ -34,6 +35,7 @@ from aftersales_workbench.workflows.module1_logistics import (
 from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
 )
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 
 class WorkflowTransitionError(ValueError):
@@ -229,6 +231,12 @@ class ActionCoordinator:
             platform_refunded = self._platform_refund_completed(order) or (
                 current is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
             )
+            platform = self._get_order_platform(order)
+            if not platform_refunded and platform is Platform.TMALL:
+                order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+                order.exception_type = "天猫试运行：物流已退回，等待人工审核退款"
+                self.session.commit()
+                return False
             next_action = (
                 AutomationActionType.ERP_MATCH_RETURN_ORDER
                 if platform_refunded
@@ -365,10 +373,20 @@ class ActionCoordinator:
 
     @staticmethod
     def _platform_refund_completed(order: AfterSalesOrder) -> bool:
-        return (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
+        return platform_refund_completed(order)
+
+    def _get_order_platform(self, order: AfterSalesOrder) -> Platform:
+        explicit = getattr(order, "platform", None)
+        if explicit is not None:
+            return Platform(explicit)
+        if getattr(order, "shop_id", None) is None:
+            return Platform.PDD
+        value = self.session.scalar(
+            select(Shop.platform).where(Shop.shop_id == order.shop_id)
         )
+        if value is None:
+            raise WorkflowTransitionError("关联售后单店铺平台不存在")
+        return Platform(value)
 
     def _enqueue(
         self,
@@ -775,7 +793,7 @@ class ExternalActionExecutor:
             is not WarehouseInspectionStatus.PASS
         ):
             raise WorkflowTransitionError("收货记录未验货通过，已阻止模块 2 自动退款")
-        if order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4:
+        if platform_refund_completed(order):
             return True
         if order.platform_after_sales_status not in {2, 3}:
             raise WorkflowTransitionError("平台售后状态不属于可退款状态，已阻止模块 2 自动退款")

@@ -115,7 +115,9 @@ class SqlAlchemyTmallSyncRepository:
         order.platform_created_at = refund.platform_created_at
         order.platform_updated_at = refund.platform_updated_at
         order.return_tracking_number = refund.return_tracking_number
-        order.carrier_code = refund.carrier_code
+        if refund.forward_tracking_number:
+            order.forward_tracking_number = refund.forward_tracking_number
+            order.carrier_code = refund.carrier_code
         order.platform_after_sales_status = None
         order.platform_order_refund_status = None
         order.platform_after_sales_status_text = (

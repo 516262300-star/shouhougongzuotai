@@ -11,6 +11,7 @@ from aftersales_workbench.db.models import (
     AfterSalesOrder,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.module1_logistics import (
@@ -22,7 +23,9 @@ from aftersales_workbench.workflows.module1_logistics import (
     query_logistics_cached,
     record_logistics_query_failure,
     record_logistics_query_success,
+    resolve_logistics_carrier,
 )
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 
 @dataclass(slots=True)
@@ -41,6 +44,7 @@ class NotificationPreflightResult:
     erp_match_ready: int = 0
     logistics_query_failed: int = 0
     manual_review_required: int = 0
+    tmall_refunds_held: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
         return asdict(self)
@@ -126,13 +130,13 @@ class Module1NotificationPreflightService:
                     state, latest_context = self._inspect(order, query_cache)
                 except Exception as exc:
                     result.logistics_query_failed += 1
-                    self._count(result, order, LogisticsState.UNKNOWN)
+                    self._count(result, order, LogisticsState.UNKNOWN, task.payload)
                     if not dry_run:
                         failures = self._apply_query_failure(task, order, exc)
                         if failures >= self.polling_policy.manual_after_failures:
                             result.manual_review_required += 1
                     continue
-                self._count(result, order, state)
+                self._count(result, order, state, task.payload)
                 if not dry_run:
                     checked_at = _utcnow_naive()
                     record_logistics_query_success(
@@ -157,9 +161,7 @@ class Module1NotificationPreflightService:
         query_cache: LogisticsQueryCache,
     ) -> tuple[LogisticsState, str]:
         raw_carrier = str(order.carrier_code or "").strip()
-        carrier_code = self.carrier_map.get(raw_carrier, raw_carrier).strip()
-        if not carrier_code or carrier_code.isdigit():
-            raise ValueError("物流公司代码未映射")
+        carrier_code = resolve_logistics_carrier(raw_carrier, self.carrier_map)
         events = query_logistics_cached(
             self.query,
             query_cache,
@@ -171,13 +173,14 @@ class Module1NotificationPreflightService:
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:
-        return order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4
+        return platform_refund_completed(order)
 
     def _count(
         self,
         result: NotificationPreflightResult,
         order: AfterSalesOrder,
         state: LogisticsState,
+        payload: dict[str, object] | None,
     ) -> None:
         if state is LogisticsState.IN_TRANSIT:
             result.notices_ready += 1
@@ -195,14 +198,20 @@ class Module1NotificationPreflightService:
             result.notices_cancelled += 1
             result.returning_skipped += 1
             if not self._platform_refunded(order):
-                result.refund_ready += 1
+                if self._platform(payload) is Platform.TMALL:
+                    result.tmall_refunds_held += 1
+                else:
+                    result.refund_ready += 1
         elif state is LogisticsState.RETURNED:
             result.notices_cancelled += 1
             result.returned_skipped += 1
             if self._platform_refunded(order):
                 result.erp_match_ready += 1
             else:
-                result.refund_ready += 1
+                if self._platform(payload) is Platform.TMALL:
+                    result.tmall_refunds_held += 1
+                else:
+                    result.refund_ready += 1
 
     def _apply(
         self,
@@ -243,16 +252,13 @@ class Module1NotificationPreflightService:
 
         order.logistics_return_detected_at = checked_at
         platform_refunded = self._platform_refunded(order)
+        platform = self._platform(payload)
         if state is LogisticsState.RETURNING:
             if platform_refunded:
                 order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
             else:
                 order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-                self._enqueue(
-                    order.after_sales_sn,
-                    AutomationActionType.PDD_AGREE_REFUND,
-                    {"origin": "module1", "refund_gate": state.value},
-                )
+                self._route_platform_refund(order, platform, state)
             return
 
         if platform_refunded:
@@ -264,11 +270,29 @@ class Module1NotificationPreflightService:
             )
         else:
             order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-            self._enqueue(
-                order.after_sales_sn,
-                AutomationActionType.PDD_AGREE_REFUND,
-                {"origin": "module1", "refund_gate": state.value},
-            )
+            self._route_platform_refund(order, platform, state)
+
+    @staticmethod
+    def _platform(payload: dict[str, object] | None) -> Platform:
+        try:
+            return Platform(str((payload or {}).get("platform") or Platform.PDD.value))
+        except ValueError:
+            return Platform.PDD
+
+    def _route_platform_refund(
+        self,
+        order: AfterSalesOrder,
+        platform: Platform,
+        state: LogisticsState,
+    ) -> None:
+        if platform is Platform.TMALL:
+            order.exception_type = "天猫试运行：物流已满足条件，等待人工审核退款"
+            return
+        self._enqueue(
+            order.after_sales_sn,
+            AutomationActionType.PDD_AGREE_REFUND,
+            {"origin": "module1", "refund_gate": state.value},
+        )
 
     def _apply_query_failure(
         self,

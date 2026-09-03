@@ -13,6 +13,10 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
     Shop,
 )
+from aftersales_workbench.integrations.logistics.kuaidi100 import (
+    Kuaidi100ConfigurationError,
+)
+from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
 from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
 )
@@ -78,19 +82,42 @@ class DesktopNoticePreviewResult:
 
 
 class DesktopNoticePlanner:
-    def __init__(self, group_map: dict[str, str]) -> None:
+    def __init__(
+        self,
+        group_map: dict[str, str],
+        carrier_map: dict[str, str] | None = None,
+    ) -> None:
+        self.carrier_map = carrier_map or {}
         self.group_map = {
             str(carrier_id).strip(): str(group_name).strip()
             for carrier_id, group_name in group_map.items()
             if str(carrier_id).strip() and str(group_name).strip()
         }
+        self.canonical_group_map: dict[str, str] = {}
+        for carrier_id, group_name in self.group_map.items():
+            try:
+                canonical = resolve_logistics_carrier(carrier_id, self.carrier_map)
+            except Kuaidi100ConfigurationError:
+                continue
+            existing = self.canonical_group_map.get(canonical)
+            if existing is not None and existing != group_name:
+                raise DesktopNoticeConfigurationError(
+                    f"快递公司 {canonical} 同时映射到多个企业微信群"
+                )
+            self.canonical_group_map[canonical] = group_name
 
     def build(self, candidate: DesktopNoticeCandidate) -> DesktopNoticePlan:
         carrier_id = candidate.carrier_id.strip()
         target_group = self.group_map.get(carrier_id)
         if not target_group:
+            try:
+                canonical = resolve_logistics_carrier(carrier_id, self.carrier_map)
+            except Kuaidi100ConfigurationError:
+                canonical = ""
+            target_group = self.canonical_group_map.get(canonical)
+        if not target_group:
             raise DesktopNoticeConfigurationError(
-                f"拼多多物流公司 ID {carrier_id or '<empty>'} 未配置企业微信群白名单"
+                f"物流公司 {carrier_id or '<empty>'} 未配置企业微信群白名单"
             )
         message = "\n".join(
             (

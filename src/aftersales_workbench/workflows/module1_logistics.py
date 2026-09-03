@@ -17,6 +17,8 @@ from aftersales_workbench.db.models import (
     AfterSalesOrder,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
+    Shop,
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.logistics.kuaidi100 import (
@@ -25,6 +27,40 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100Credentials,
     LogisticsEvent,
 )
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
+
+_CARRIER_ALIASES = {
+    "极兔速递": "jtexpress",
+    "极兔": "jtexpress",
+    "圆通速递": "yuantong",
+    "圆通": "yuantong",
+    "中通快递": "zhongtong",
+    "中通": "zhongtong",
+    "申通快递": "shentong",
+    "申通": "shentong",
+    "韵达速递": "yunda",
+    "韵达": "yunda",
+    "顺丰速运": "shunfeng",
+    "顺丰": "shunfeng",
+    "德邦快递": "debangwuliu",
+    "德邦物流": "debangwuliu",
+    "邮政快递包裹": "youzhengguonei",
+    "中国邮政": "youzhengguonei",
+    "EMS": "ems",
+}
+
+
+def resolve_logistics_carrier(
+    raw_code: str,
+    carrier_map: dict[str, str] | None = None,
+) -> str:
+    value = str(raw_code or "").strip()
+    resolved = (carrier_map or {}).get(value, _CARRIER_ALIASES.get(value, value)).strip()
+    if not resolved or resolved.isdigit() or any("\u4e00" <= char <= "\u9fff" for char in resolved):
+        raise Kuaidi100ConfigurationError(
+            f"物流公司 {value or '空'} 缺少快递100公司代码映射"
+        )
+    return resolved
 
 
 class LogisticsState(StrEnum):
@@ -172,6 +208,7 @@ class LogisticsGateRunResult:
     blocked_delivery: int = 0
     return_detected: int = 0
     waiting_erp_match: int = 0
+    tmall_refunds_held: int = 0
     failed: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
@@ -339,11 +376,12 @@ class Module1LogisticsGateService:
                     AfterSalesOrder.logistics_next_check_at <= now,
                 )
             )
-        orders = self.session.scalars(statement).all()
+        orders = list(self.session.scalars(statement).all())
         result = LogisticsGateRunResult(dry_run=dry_run, scanned=len(orders))
         query_cache: LogisticsQueryCache = {}
         for order in orders:
             try:
+                platform = self._get_order_platform(order)
                 carrier_code = self._resolve_carrier(str(order.carrier_code))
                 events = query_logistics_cached(
                     self.query,
@@ -358,6 +396,7 @@ class Module1LogisticsGateService:
                     result,
                     order,
                     state,
+                    platform=platform,
                     business_open=business_open,
                 )
                 if not dry_run:
@@ -365,6 +404,7 @@ class Module1LogisticsGateService:
                         order,
                         state,
                         events[0].context,
+                        platform=platform,
                         checked_at=now,
                         business_open=business_open,
                     )
@@ -384,16 +424,25 @@ class Module1LogisticsGateService:
         return result
 
     def _resolve_carrier(self, raw_code: str) -> str:
-        resolved = self.carrier_map.get(raw_code, raw_code).strip()
-        if not resolved or resolved.isdigit():
-            raise Kuaidi100ConfigurationError(
-                f"拼多多物流公司 ID {raw_code} 缺少快递 100 公司代码映射"
-            )
-        return resolved
+        return resolve_logistics_carrier(raw_code, self.carrier_map)
+
+    def _get_order_platform(self, order: AfterSalesOrder) -> Platform:
+        explicit = getattr(order, "platform", None)
+        if explicit is not None:
+            return Platform(explicit)
+        shop_id = getattr(order, "shop_id", None)
+        if shop_id is None:
+            return Platform.PDD
+        value = self.session.scalar(
+            select(Shop.platform).where(Shop.shop_id == shop_id)
+        )
+        if value is None:
+            raise ValueError("售后单关联店铺平台不存在")
+        return Platform(value)
 
     @staticmethod
     def _platform_refund_completed(order: AfterSalesOrder) -> bool:
-        return order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4
+        return platform_refund_completed(order)
 
     def _count_decision(
         self,
@@ -401,6 +450,7 @@ class Module1LogisticsGateService:
         order: AfterSalesOrder,
         state: LogisticsState,
         *,
+        platform: Platform,
         business_open: bool,
     ) -> None:
         platform_refunded = self._platform_refund_completed(order) or (
@@ -416,7 +466,10 @@ class Module1LogisticsGateService:
                 result.waiting_erp_match += 1
             elif not platform_refunded:
                 if business_open:
-                    result.allowed_refunds += 1
+                    if platform is Platform.TMALL:
+                        result.tmall_refunds_held += 1
+                    else:
+                        result.allowed_refunds += 1
                 else:
                     result.held_outside_business_hours += 1
             else:
@@ -427,7 +480,10 @@ class Module1LogisticsGateService:
             and not waiting_return_latched
         ):
             if business_open:
-                result.allowed_refunds += 1
+                if platform is Platform.TMALL:
+                    result.tmall_refunds_held += 1
+                else:
+                    result.allowed_refunds += 1
             else:
                 result.held_outside_business_hours += 1
         else:
@@ -439,6 +495,7 @@ class Module1LogisticsGateService:
         state: LogisticsState,
         latest_context: str,
         *,
+        platform: Platform,
         checked_at: datetime,
         business_open: bool,
     ) -> None:
@@ -486,11 +543,7 @@ class Module1LogisticsGateService:
                 order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
             else:
                 order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-                self._enqueue(
-                    order.after_sales_sn,
-                    AutomationActionType.PDD_AGREE_REFUND,
-                    {"origin": "module1", "refund_gate": state.value},
-                )
+                self._route_platform_refund(order, platform, state)
             return
         if state is LogisticsState.RETURNED:
             order.logistics_return_detected_at = checked_at
@@ -503,11 +556,7 @@ class Module1LogisticsGateService:
                 )
             else:
                 order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-                self._enqueue(
-                    order.after_sales_sn,
-                    AutomationActionType.PDD_AGREE_REFUND,
-                    {"origin": "module1", "refund_gate": state.value},
-                )
+                self._route_platform_refund(order, platform, state)
             return
         if platform_refunded:
             order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
@@ -517,15 +566,27 @@ class Module1LogisticsGateService:
             return
         if state is LogisticsState.IN_TRANSIT:
             order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-            self._enqueue(
-                order.after_sales_sn,
-                AutomationActionType.PDD_AGREE_REFUND,
-                {"origin": "module1", "refund_gate": state.value},
-            )
+            self._route_platform_refund(order, platform, state)
             return
         # 派件、已签收但没有退回记录，以及未知状态，一律冻结自动退款。
         order.workflow_status = WorkflowStatus.INTERCEPT_WAITING_RETURN
         self._cancel_pending_refund(order.after_sales_sn)
+
+    def _route_platform_refund(
+        self,
+        order: AfterSalesOrder,
+        platform: Platform,
+        state: LogisticsState,
+    ) -> None:
+        order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+        if platform is Platform.TMALL:
+            order.exception_type = "天猫试运行：物流已满足条件，等待人工审核退款"
+            return
+        self._enqueue(
+            order.after_sales_sn,
+            AutomationActionType.PDD_AGREE_REFUND,
+            {"origin": "module1", "refund_gate": state.value},
+        )
 
     def _enqueue(
         self,

@@ -127,6 +127,29 @@ def test_refunded_without_tracking_are_listed_for_follow_up() -> None:
     assert "platform_order_refund_status = 4" in sql
 
 
+def test_candidates_can_include_tmall_above_trial_watermark() -> None:
+    session = _CapturingSession()
+    service = Module2ErpIntakeService(session, SimpleNamespace())
+
+    service._list_candidates(
+        shop_codes=None,
+        min_order_id=0,
+        limit=20,
+        include_tmall=True,
+        tmall_min_order_id=4321,
+    )
+
+    sql = str(
+        session.statement.compile(
+            dialect=mysql.dialect(),
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "'TMALL'" in sql
+    assert "4321" in sql
+    assert "WAIT_SELLER_CONFIRM_GOODS" in sql
+
+
 def test_mismatch_note_explicitly_reports_short_return_and_wrong_color() -> None:
     order = SimpleNamespace(
         platform_after_sales_status=10,

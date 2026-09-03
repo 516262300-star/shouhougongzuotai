@@ -59,7 +59,10 @@ def main(argv: list[str] | None = None) -> int:
         with SessionLocal() as session:
             preview = DesktopNoticePreviewService(
                 session,
-                DesktopNoticePlanner(settings.module1_desktop_group_map),
+                DesktopNoticePlanner(
+                    settings.module1_desktop_group_map,
+                    settings.kuaidi100_carrier_map,
+                ),
                 notification_min_task_id=settings.module1_notification_min_task_id,
             ).run(limit=args.limit)
             print(json.dumps(preview.safe_dict(), ensure_ascii=False, indent=2))
@@ -136,7 +139,10 @@ def main(argv: list[str] | None = None) -> int:
             with SessionLocal() as session:
                 preview = DesktopNoticePreviewService(
                     session,
-                    DesktopNoticePlanner(settings.module1_desktop_group_map),
+                    DesktopNoticePlanner(
+                        settings.module1_desktop_group_map,
+                        settings.kuaidi100_carrier_map,
+                    ),
                     notification_min_task_id=(
                         settings.module1_notification_min_task_id
                     ),

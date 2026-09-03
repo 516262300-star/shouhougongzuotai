@@ -44,6 +44,8 @@ class Module3Repository(Protocol):
         *,
         shop_codes: tuple[str, ...] | None,
         platform_order_sn: str | None,
+        include_tmall: bool,
+        tmall_min_order_id: int,
         limit: int,
     ) -> list[Module3Candidate]: ...
 
@@ -70,6 +72,8 @@ class SqlAlchemyModule3Repository:
         shop_codes: tuple[str, ...] | None,
         platform_order_sn: str | None,
         limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[Module3Candidate]:
         action_already_queued = exists().where(
             AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
@@ -88,15 +92,25 @@ class SqlAlchemyModule3Repository:
             select(AfterSalesOrder.after_sales_sn, AfterSalesOrder.order_shipping_status)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    and_(
+                        Shop.platform == Platform.PDD,
+                        or_(
+                            AfterSalesOrder.platform_after_sales_status == 10,
+                            AfterSalesOrder.platform_order_refund_status == 4,
+                        ),
+                    ),
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                        AfterSalesOrder.refund_financial_status == "SUCCESS",
+                    ),
+                ),
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.order_shipping_status.in_(
                     (ShippingStatus.UNSHIPPED, ShippingStatus.PACKED_NOT_SHIPPED)
-                ),
-                or_(
-                    AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
                 ~action_already_queued,
             )
@@ -161,6 +175,8 @@ class Module3UnshippedRefundService:
         *,
         shop_codes: tuple[str, ...] | None = None,
         platform_order_sn: str | None = None,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
         limit: int = 500,
         dry_run: bool = True,
     ) -> Module3RunResult:
@@ -168,11 +184,17 @@ class Module3UnshippedRefundService:
             raise ValueError("limit 必须在 1–5000 之间")
         result = Module3RunResult(dry_run=dry_run)
         try:
-            candidates = self.repository.list_candidates(
-                shop_codes=shop_codes,
-                platform_order_sn=platform_order_sn,
-                limit=limit,
-            )
+            query = {
+                "shop_codes": shop_codes,
+                "platform_order_sn": platform_order_sn,
+                "limit": limit,
+            }
+            if include_tmall:
+                query.update(
+                    include_tmall=True,
+                    tmall_min_order_id=tmall_min_order_id,
+                )
+            candidates = self.repository.list_candidates(**query)
             result.scanned = len(candidates)
             for candidate in candidates:
                 shipping_status = ShippingStatus(candidate.order_shipping_status)

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.core.config import Settings
@@ -174,9 +174,10 @@ class Module3ErpRefundService:
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.order_shipping_status == ShippingStatus.UNSHIPPED,
-                (
-                    (AfterSalesOrder.platform_after_sales_status == 10)
-                    | (AfterSalesOrder.platform_order_refund_status == 4)
+                or_(
+                    AfterSalesOrder.refund_financial_status == "SUCCESS",
+                    AfterSalesOrder.platform_after_sales_status == 10,
+                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
             )
             .order_by(AftersalesActionTask.id)

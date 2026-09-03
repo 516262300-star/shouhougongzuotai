@@ -23,6 +23,7 @@ _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 _MODULE_STAGES = {
     "module1": (
         "sync",
+        "tmall_sync",
         "intercept_tasks",
         "notification_preflight",
         "notification",
@@ -178,6 +179,12 @@ class RuntimeMonitorService:
                 "desktop_send_enabled": self.settings.module1_desktop_send_enabled,
                 "qywx_write_enabled": self.settings.qywx_write_enabled,
                 "module1_refund_enabled": self.settings.module1_pdd_refund_execution_enabled,
+                "tmall_module123_trial_enabled": (
+                    self.settings.tmall_module123_trial_enabled
+                ),
+                "tmall_module123_min_order_id": (
+                    self.settings.tmall_module123_min_order_id
+                ),
                 "module2_worker_enabled": self.settings.module2_worker_enabled,
                 "module2_refund_enabled": (
                     self.settings.module2_pdd_refund_execution_enabled

@@ -981,6 +981,7 @@ function ManualTodoWorkspace() {
 
 const MONITOR_STAGE_LABELS = {
   sync: "拼多多同步",
+  tmall_sync: "天猫同步与物流补全",
   intercept_tasks: "生成拦截任务",
   notification_preflight: "发送前物流复核",
   notification: "企业微信发送",
@@ -1013,10 +1014,13 @@ const MONITOR_DETAIL_LABELS = {
   post_refund_waiting_tracking: "退款后待退货运单",
   post_refund_waiting_receipt: "退款后待仓库收货",
   post_refund_verified: "退款后验收一致",
+  tmall_refunds_held: "天猫待人工退款",
   unavailable: "核对失败",
   ambiguous: "运单冲突",
   skipped_missing_owner: "缺少负责人",
   records_created: "新增记录",
+  logistics_unavailable: "天猫物流接口失败",
+  logistics_ambiguous_or_missing: "天猫发货运单不唯一",
   shops_ok: "店铺正常",
   shops_failed: "店铺失败",
 };

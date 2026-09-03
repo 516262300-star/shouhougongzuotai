@@ -92,3 +92,20 @@ def test_module1_repository_only_selects_only_refund() -> None:
         "aftersales_orders.refund_amount = aftersales_orders.platform_order_amount"
         in str(session.statement)
     )
+
+
+def test_module1_repository_can_include_tmall_above_trial_watermark() -> None:
+    session = _CaptureSession()
+
+    SqlAlchemyModule1Repository(session).list_candidates(
+        shop_codes=None,
+        limit=100,
+        include_tmall=True,
+        tmall_min_order_id=4321,
+    )
+
+    compiled = session.statement.compile(compile_kwargs={"literal_binds": True})
+    sql = str(compiled)
+    assert "'TMALL'" in sql
+    assert "4321" in sql
+    assert "WAIT_SELLER_AGREE" in sql

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from types import SimpleNamespace
 
-from aftersales_workbench.db.models import AutomationActionType, WorkflowStatus
+from aftersales_workbench.db.models import AutomationActionType, Platform, WorkflowStatus
 from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
 from aftersales_workbench.workflows.module1_logistics import (
     LogisticsState,
@@ -71,9 +71,10 @@ class FakeQuery:
         return self.events
 
 
-def _order(*, platform_refunded=False):
+def _order(*, platform_refunded=False, platform=Platform.PDD):
     return SimpleNamespace(
         id=1,
+        platform=platform,
         after_sales_sn="after-1",
         workflow_status=WorkflowStatus.INTERCEPT_CONFIRMED,
         forward_tracking_number="YT123",
@@ -182,6 +183,24 @@ def test_normal_transit_queues_platform_refund() -> None:
 
     assert result.allowed_refunds == 1
     assert session.added[0].action_type is AutomationActionType.PDD_AGREE_REFUND
+
+
+def test_tmall_transit_holds_platform_refund_for_manual_review() -> None:
+    order = _order(platform=Platform.TMALL)
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["快件运输中"]),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.tmall_refunds_held == 1
+    assert session.added == []
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_CONFIRMED
+    assert "天猫试运行" in order.exception_type
 
 
 def test_qywx_pushed_order_enters_logistics_gate_without_manual_confirmation() -> None:

@@ -30,6 +30,8 @@ class TmallReadClient(Protocol):
 
     def get_trade_fullinfo(self, *, tid: int) -> dict[str, Any]: ...
 
+    def get_logistics_orders(self, *, tid: int) -> dict[str, Any]: ...
+
 
 class TmallSyncRepository(Protocol):
     def upsert_shop(
@@ -63,6 +65,8 @@ class TmallShopSyncResult:
     records_created: int = 0
     records_updated: int = 0
     trade_details_unavailable: int = 0
+    logistics_unavailable: int = 0
+    logistics_ambiguous_or_missing: int = 0
     error: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -208,6 +212,7 @@ class TmallRefundSyncService:
         page = 1
         page_size = self.settings.tmall_sync_page_size
         trade_cache: dict[int, dict[str, Any]] = {}
+        logistics_cache: dict[int, dict[str, Any] | None] = {}
         while True:
             body = client.get_refunds(
                 start_modified=_as_local_datetime(start_modified_at),
@@ -242,6 +247,26 @@ class TmallRefundSyncService:
                         trade_cache[tid] = {}
                         result.trade_details_unavailable += 1
                 refund = normalize_refund(list_record, detail, trade_cache[tid])
+                if (
+                    refund.after_sales_type.value == "ONLY_REFUND"
+                    and refund.order_shipping_status.value == "IN_TRANSIT"
+                ):
+                    if tid not in logistics_cache:
+                        try:
+                            logistics_cache[tid] = client.get_logistics_orders(tid=tid)
+                        except TmallApiError:
+                            logistics_cache[tid] = None
+                            result.logistics_unavailable += 1
+                    logistics = logistics_cache[tid]
+                    if logistics is not None:
+                        refund = normalize_refund(
+                            list_record,
+                            detail,
+                            trade_cache[tid],
+                            logistics,
+                        )
+                        if not refund.forward_tracking_number:
+                            result.logistics_ambiguous_or_missing += 1
                 if self.repository.upsert_refund(shop_id, refund):
                     result.records_created += 1
                 else:

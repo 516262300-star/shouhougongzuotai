@@ -9,7 +9,7 @@ from time import monotonic
 from typing import Protocol
 
 import httpx
-from sqlalchemy import Engine, bindparam, create_engine, func, or_, select, text
+from sqlalchemy import Engine, and_, bindparam, create_engine, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -341,6 +341,8 @@ class ErpSalesOwnerSyncService:
         *,
         limit: int,
         refresh_seconds: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> SalesOwnerSyncResult:
         if limit < 1:
             raise ValueError("limit 必须大于 0")
@@ -353,12 +355,20 @@ class ErpSalesOwnerSyncService:
             AfterSalesOrder.erp_sales_owner_synced_at.is_(None),
             AfterSalesOrder.erp_sales_owner_synced_at < stale_before,
         )
+        platform_scope = or_(
+            Shop.platform == Platform.PDD,
+            and_(
+                include_tmall,
+                Shop.platform == Platform.TMALL,
+                AfterSalesOrder.id >= tmall_min_order_id,
+            ),
+        )
         stale_total = int(
             self.session.scalar(
                 select(func.count())
                 .select_from(AfterSalesOrder)
                 .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
-                .where(Shop.platform == Platform.PDD, stale_filter)
+                .where(platform_scope, stale_filter)
             )
             or 0
         )
@@ -366,7 +376,7 @@ class ErpSalesOwnerSyncService:
             self.session.scalars(
                 select(AfterSalesOrder)
                 .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
-                .where(Shop.platform == Platform.PDD, stale_filter)
+                .where(platform_scope, stale_filter)
                 .order_by(
                     AfterSalesOrder.erp_sales_owner_synced_at.asc(),
                     AfterSalesOrder.id.desc(),

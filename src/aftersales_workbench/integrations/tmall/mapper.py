@@ -31,6 +31,7 @@ class NormalizedTmallRefund:
     product_name: str | None
     platform_created_at: datetime | None
     platform_updated_at: datetime | None
+    forward_tracking_number: str | None
     return_tracking_number: str | None
     carrier_code: str | None
     platform_after_sales_status_text: str | None
@@ -135,10 +136,43 @@ def _shipping_status(refund: dict[str, Any], trade: dict[str, Any]) -> ShippingS
     return ShippingStatus.UNSHIPPED
 
 
+def normalize_forward_logistics(body: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    response = (body or {}).get("logistics_orders_get_response")
+    shippings_node = response.get("shippings") if isinstance(response, dict) else None
+    shippings = shippings_node.get("shipping") if isinstance(shippings_node, dict) else None
+    if not isinstance(shippings, list):
+        return None, None
+    packages: set[tuple[str, str]] = set()
+    for shipping in shippings:
+        if not isinstance(shipping, dict):
+            continue
+        status = _nonempty(shipping.get("status")) or ""
+        if status in {"CANCELLED", "CLOSED"}:
+            continue
+        tracking = _nonempty(shipping.get("out_sid"))
+        company = _nonempty(shipping.get("company_name")) or ""
+        if tracking:
+            packages.add((tracking, company))
+        mails_node = shipping.get("mails")
+        mails = mails_node.get("mail") if isinstance(mails_node, dict) else None
+        if isinstance(mails, list):
+            for mail in mails:
+                if not isinstance(mail, dict):
+                    continue
+                mail_tracking = _nonempty(mail.get("out_sid"))
+                mail_company = _nonempty(mail.get("company_name")) or company
+                if mail_tracking:
+                    packages.add((mail_tracking, mail_company))
+    if len(packages) != 1:
+        return None, None
+    return next(iter(packages))
+
+
 def normalize_refund(
     list_record: dict[str, Any],
     detail: dict[str, Any],
     trade: dict[str, Any],
+    logistics: dict[str, Any] | None = None,
 ) -> NormalizedTmallRefund:
     merged = {**list_record, **detail}
     refund_id = _required_text(merged.get("refund_id"), field="refund_id")
@@ -157,6 +191,7 @@ def normalize_refund(
         or oid
     )
     quantity = merged.get("num") or trade_order.get("num") or 1
+    forward_tracking, forward_carrier = normalize_forward_logistics(logistics)
     return NormalizedTmallRefund(
         after_sales_sn=refund_id,
         platform_order_sn=tid,
@@ -177,8 +212,9 @@ def normalize_refund(
         product_name=_nonempty(merged.get("title")) or _nonempty(trade_order.get("title")),
         platform_created_at=_date(merged.get("created"), field="created"),
         platform_updated_at=_date(merged.get("modified"), field="modified"),
+        forward_tracking_number=forward_tracking,
         return_tracking_number=_nonempty(merged.get("sid")),
-        carrier_code=_nonempty(merged.get("company_name")),
+        carrier_code=forward_carrier,
         platform_after_sales_status_text=_nonempty(merged.get("status")),
         platform_order_status_text=(
             _nonempty(merged.get("order_status")) or _nonempty(trade.get("status"))
