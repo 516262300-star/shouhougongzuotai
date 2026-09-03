@@ -3,6 +3,8 @@ from __future__ import annotations
 from decimal import Decimal
 from types import SimpleNamespace
 
+from sqlalchemy.dialects import mysql
+
 from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchLookup,
     ErpReturnMatchStatus,
@@ -66,3 +68,33 @@ def test_expected_items_split_combined_platform_sku_and_color() -> None:
     assert items[0].product == "6602-20直径"
     assert items[0].color == "铬"
     assert items[0].quantity == Decimal("1")
+
+
+class _EmptyRows:
+    @staticmethod
+    def all() -> list[object]:
+        return []
+
+
+class _CapturingSession:
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return _EmptyRows()
+
+
+def test_candidates_exclude_platform_refunded_orders() -> None:
+    session = _CapturingSession()
+    service = Module2ErpIntakeService(session, SimpleNamespace())
+
+    assert service._list_candidates(shop_codes=None, min_order_id=0, limit=20) == []
+
+    compiled = session.statement.compile(
+        dialect=mysql.dialect(),
+        compile_kwargs={"literal_binds": True},
+    )
+    sql = str(compiled)
+    assert "platform_after_sales_status IN (2, 3)" in sql
+    assert "platform_order_refund_status != 4" in sql

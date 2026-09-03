@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.db.models import (
@@ -35,6 +35,7 @@ from aftersales_workbench.workflows.module2 import (
     WarehouseInspectionStatus,
     WarehouseReturnDestination,
     WarehouseReturnService,
+    split_sku_color,
 )
 
 
@@ -169,6 +170,11 @@ class Module2ErpIntakeService:
                 AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
                 AfterSalesOrder.return_tracking_number.is_not(None),
                 AfterSalesOrder.return_tracking_number != "",
+                AfterSalesOrder.platform_after_sales_status.in_((2, 3)),
+                or_(
+                    AfterSalesOrder.platform_order_refund_status.is_(None),
+                    AfterSalesOrder.platform_order_refund_status != 4,
+                ),
             )
             .order_by(AfterSalesOrder.id.desc())
             .limit(limit)
@@ -181,10 +187,7 @@ class Module2ErpIntakeService:
     def _expected_items(order: AfterSalesOrder) -> tuple[ExpectedReturnItem, ...]:
         expected: list[ExpectedReturnItem] = []
         for item in order.items:
-            product = str(item.sku_code or "").strip()
-            color = str(item.color or "").strip()
-            if not color and "#" in product:
-                product, color = (part.strip() for part in product.split("#", 1))
+            product, color = split_sku_color(item.sku_code, item.color)
             expected.append(
                 ExpectedReturnItem(
                     product=product,

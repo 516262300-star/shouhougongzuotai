@@ -21,6 +21,7 @@ from aftersales_workbench.workflows.module2 import (
     WarehouseReturnOutcome,
     WarehouseReturnService,
     WarehouseReturnValidationError,
+    split_sku_color,
 )
 
 
@@ -167,6 +168,14 @@ def create_command(
         destination=WarehouseReturnDestination.STAGING,
         operator="仓库员A",
         items=items or (ActualReturnItem("6805-96", "黑", 2),),
+    )
+
+
+def test_split_sku_color_supports_combined_pdd_sku() -> None:
+    assert split_sku_color("6050-单孔#古铜色", None) == ("6050-单孔", "古铜色")
+    assert split_sku_color("6050-单孔#古铜色", "亮镍") == (
+        "6050-单孔#古铜色",
+        "亮镍",
     )
 
 

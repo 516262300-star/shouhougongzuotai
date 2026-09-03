@@ -39,6 +39,17 @@ class WarehouseReturnValidationError(WarehouseReturnError):
     pass
 
 
+def split_sku_color(product_code: str, color: str | None) -> tuple[str, str]:
+    """兼容拼多多把“型号#颜色”合并保存在 SKU 字段的历史记录。"""
+    normalized_product = str(product_code or "").strip()
+    normalized_color = str(color or "").strip()
+    if not normalized_color and "#" in normalized_product:
+        normalized_product, normalized_color = (
+            part.strip() for part in normalized_product.split("#", 1)
+        )
+    return normalized_product, normalized_color
+
+
 @dataclass(frozen=True, slots=True)
 class ExpectedReturnItem:
     product_code: str
@@ -228,8 +239,8 @@ class SqlAlchemyWarehouseReturnRepository:
                 sales_owner=order.erp_sales_owner,
                 expected_items=tuple(
                     ExpectedReturnItem(
-                        product_code=item.sku_code,
-                        color=item.color or "",
+                        product_code=split_sku_color(item.sku_code, item.color)[0],
+                        color=split_sku_color(item.sku_code, item.color)[1],
                         applied_quantity=item.applied_quantity,
                     )
                     for item in sorted(order.items, key=lambda row: (row.sku_code, row.color or ""))
