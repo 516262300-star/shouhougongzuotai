@@ -109,6 +109,10 @@ export function ScrapWorkspace({ onClose }) {
 
   const applyFilters = (event) => {
     event.preventDefault();
+    if (draft.start > draft.end) {
+      setError("开始日期不能晚于结束日期");
+      return;
+    }
     setFilters(draft); setSelectedModel(""); setShowRecords(false); load(draft, "");
   };
   const reset = () => {
@@ -161,7 +165,7 @@ export function ScrapWorkspace({ onClose }) {
         <div className="scrap-official-note">报废数量包含 ERP 已识别记录；财务损失只包含【数据状态 = 已确认】的记录。</div>
 
         <form className="scrap-filters" onSubmit={applyFilters}>
-          <label className="scrap-date"><span>日期范围</span><div><CalendarBlank size={15} /><input type="date" value={draft.start} onChange={(event) => setDraft({ ...draft, start: event.target.value })} /><b>~</b><input type="date" value={draft.end} onChange={(event) => setDraft({ ...draft, end: event.target.value })} /></div></label>
+          <label className="scrap-date"><span>日期范围（可选择）</span><div><CalendarBlank size={15} /><input type="date" required aria-label="开始日期" title="选择开始日期" max={draft.end || initialFilters.end} value={draft.start} onClick={(event) => event.currentTarget.showPicker?.()} onChange={(event) => setDraft({ ...draft, start: event.target.value })} /><b>至</b><input type="date" required aria-label="结束日期" title="选择结束日期" min={draft.start} max={initialFilters.end} value={draft.end} onClick={(event) => event.currentTarget.showPicker?.()} onChange={(event) => setDraft({ ...draft, end: event.target.value })} /></div></label>
           <label><span>型号/规格</span><input value={draft.keyword} onChange={(event) => setDraft({ ...draft, keyword: event.target.value })} placeholder="搜索型号" /></label>
           <label><span>原因分类</span><select value={draft.reason} onChange={(event) => setDraft({ ...draft, reason: event.target.value })}><option value="">全部</option>{data.options.reasons.map((item) => <option key={item}>{item}</option>)}</select></label>
           <label><span>责任归属</span><select value={draft.responsibility} onChange={(event) => setDraft({ ...draft, responsibility: event.target.value })}><option value="">全部</option>{data.options.responsibilities.map((item) => <option key={item}>{item}</option>)}</select></label>

@@ -368,14 +368,14 @@ th:nth-child(5) { width: 13%; } th:nth-child(6) { width: 9%; } th:nth-child(7) {
 .scrap-official-note { min-height: 17px; margin: -2px 1px -2px; color: #7e8999; font-size: 9px; line-height: 17px; }
 .scrap-filters { min-height: 76px; flex: 0 0 auto; display: flex; align-items: flex-end; gap: 9px; padding: 11px 11px 12px; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(32,45,63,.03); }
 .scrap-filters label { width: 135px; min-width: 0; }
-.scrap-filters label.scrap-date { width: 205px; }
+.scrap-filters label.scrap-date { width: 270px; }
 .scrap-filters label > span { display: block; margin-bottom: 5px; color: #556175; font-size: 10px; font-weight: 650; }
 .scrap-filters input, .scrap-filters select { width: 100%; height: 31px; padding: 0 8px; border: 1px solid #d3dbe6; border-radius: 4px; outline: 0; background: #fff; color: #354258; font-size: 10px; }
 .scrap-filters input:focus, .scrap-filters select:focus { border-color: #5793e6; box-shadow: 0 0 0 2px rgba(45,124,232,.1); }
-.scrap-date > div { height: 31px; display: grid; grid-template-columns: 15px 1fr 11px 1fr; align-items: center; padding: 0 6px; border: 1px solid #d3dbe6; border-radius: 4px; color: #778398; }
+.scrap-date > div { height: 31px; display: grid; grid-template-columns: 15px minmax(100px, 1fr) 16px minmax(100px, 1fr); align-items: center; padding: 0 6px; border: 1px solid #d3dbe6; border-radius: 4px; color: #778398; }
 .scrap-date > div:focus-within { border-color: #5793e6; box-shadow: 0 0 0 2px rgba(45,124,232,.1); }
-.scrap-date input { min-width: 0; height: 29px; padding: 0 2px; border: 0; box-shadow: none !important; font-size: 9px; }
-.scrap-date input::-webkit-calendar-picker-indicator { display: none; }.scrap-date b { text-align: center; font-size: 9px; font-weight: 500; }
+.scrap-date input { min-width: 0; height: 29px; padding: 0 2px; border: 0; box-shadow: none !important; font-size: 10px; cursor: pointer; }
+.scrap-date input::-webkit-calendar-picker-indicator { display: block; cursor: pointer; opacity: .72; }.scrap-date b { text-align: center; font-size: 9px; font-weight: 500; }
 .button.compact { height: 31px; min-width: auto; padding: 0 11px; white-space: nowrap; font-size: 10px; }
 .scrap-ranking-card, .scrap-chart-card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #fff; box-shadow: 0 1px 2px rgba(32,45,63,.03); overflow: hidden; }
 .scrap-card-heading { min-height: 48px; padding: 9px 12px 8px; border-bottom: 1px solid var(--line-soft); display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
