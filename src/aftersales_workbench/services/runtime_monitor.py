@@ -16,6 +16,12 @@ from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
 )
+from aftersales_workbench.services.desktop_notice_recovery import resolve_project_path
+from aftersales_workbench.workflows.desktop_sender import (
+    DesktopLedgerState,
+    DesktopNoticeLedger,
+    DesktopNoticeSendError,
+)
 
 _STILL_ACTIVE = 259
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -174,6 +180,7 @@ class RuntimeMonitorService:
                 ),
             ],
             "notification_queue": queue,
+            "desktop_notification_recovery": self._desktop_notification_recovery(),
             "configuration": {
                 "notification_transport": self.settings.module1_notification_transport,
                 "desktop_send_enabled": self.settings.module1_desktop_send_enabled,
@@ -197,6 +204,56 @@ class RuntimeMonitorService:
                 "module3_erp_refund_enabled": self.settings.module3_erp_refund_execution_enabled,
                 "erp_write_enabled": self.settings.erp_write_enabled,
             },
+        }
+
+    def _desktop_notification_recovery(self) -> dict[str, Any]:
+        if self.settings.module1_notification_transport != "desktop":
+            return {
+                "blocking_task_id": None,
+                "blocking_state": None,
+                "can_retry": False,
+                "requires_manual_verification": False,
+                "message": None,
+                "error": None,
+            }
+        ledger = DesktopNoticeLedger(
+            resolve_project_path(
+                self.project_root,
+                self.settings.module1_desktop_ledger_path,
+            )
+        )
+        try:
+            blocking = ledger.blocking_entry()
+        except DesktopNoticeSendError as exc:
+            return {
+                "blocking_task_id": None,
+                "blocking_state": None,
+                "can_retry": False,
+                "requires_manual_verification": True,
+                "message": "桌面发送账本无法读取",
+                "error": str(exc),
+            }
+        if blocking is None:
+            return {
+                "blocking_task_id": None,
+                "blocking_state": None,
+                "can_retry": False,
+                "requires_manual_verification": False,
+                "message": None,
+                "error": None,
+            }
+        can_retry = blocking.state is DesktopLedgerState.PAUSED_BEFORE_PASTE
+        return {
+            "blocking_task_id": blocking.task_id,
+            "blocking_state": blocking.state.value,
+            "can_retry": can_retry,
+            "requires_manual_verification": not can_retry,
+            "message": (
+                "发送前失败，确认企业微信可用后可以安全重试"
+                if can_retry
+                else "任务可能已经输入或发送，请先到同一快递群人工核验"
+            ),
+            "error": blocking.error,
         }
 
     @staticmethod

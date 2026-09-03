@@ -1050,6 +1050,9 @@ function MonitorWorkspace() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [actionError, setActionError] = useState("");
+  const [actionMessage, setActionMessage] = useState("");
+  const [retryingTaskId, setRetryingTaskId] = useState(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
   const load = useCallback(async () => {
@@ -1072,21 +1075,60 @@ function MonitorWorkspace() {
     return () => window.clearInterval(timer);
   }, [load, refreshKey]);
 
+  const retryDesktopNotification = async (taskId) => {
+    const confirmed = window.confirm(
+      `确认任务 ${taskId} 尚未在企业微信中输入消息，并重新进入发送队列？后台将在下一个周期尝试发送。`,
+    );
+    if (!confirmed) return;
+    setRetryingTaskId(taskId);
+    setActionError("");
+    setActionMessage("");
+    try {
+      const response = await fetch(`/api/v1/monitor/desktop-notifications/${taskId}/retry`, { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.detail ?? `服务返回 ${response.status}`);
+      setActionMessage(payload.message ?? `任务 ${taskId} 已重新进入发送队列`);
+      setRefreshKey((key) => key + 1);
+    } catch (requestError) {
+      setActionError(`重试失败：${requestError.message}`);
+    } finally {
+      setRetryingTaskId(null);
+    }
+  };
+
   const queue = data?.notification_queue ?? {};
+  const recovery = data?.desktop_notification_recovery ?? {};
   const config = data?.configuration ?? {};
   const worker = data?.worker ?? {};
   return (
     <main className="workspace monitor-workspace">
       <header className="topbar">
-        <div className="page-title"><ChartBar size={22} /><h1>运行监控</h1><span className="read-only-badge">只读</span></div>
+        <div className="page-title"><ChartBar size={22} /><h1>运行监控</h1><span className="read-only-badge">安全重试</span></div>
         <div className={`sync-status monitor-sync monitor-${data?.state ?? "starting"}`}><span />{data?.state_label ?? "正在读取运行状态"}</div>
       </header>
       <div className="monitor-body">
         {error && <div className="monitor-alert monitor-alert-danger"><WarningCircle size={18} />{error}</div>}
+        {actionError && <div className="monitor-alert monitor-alert-danger"><WarningCircle size={18} />{actionError}</div>}
+        {actionMessage && <div className="monitor-alert monitor-alert-success"><CheckCircle size={18} />{actionMessage}</div>}
+        {recovery.blocking_task_id && (
+          <section className={`monitor-recovery ${recovery.can_retry ? "monitor-recovery-safe" : "monitor-recovery-verify"}`}>
+            <WarningCircle size={22} weight="fill" />
+            <div>
+              <strong>企业微信发送已暂停 · 任务 {recovery.blocking_task_id}</strong>
+              <span>{recovery.message}{recovery.error ? `；失败原因：${recovery.error}` : ""}</span>
+            </div>
+            {recovery.can_retry ? (
+              <button type="button" className="button primary" disabled={retryingTaskId === recovery.blocking_task_id} onClick={() => retryDesktopNotification(recovery.blocking_task_id)}>
+                <ArrowsClockwise className={retryingTaskId === recovery.blocking_task_id ? "spin" : ""} size={16} />
+                {retryingTaskId === recovery.blocking_task_id ? "重新入队中" : "重新尝试发送"}
+              </button>
+            ) : <small>为防止重复发送，工作台不会提供直接重试。</small>}
+          </section>
+        )}
         <section className={`monitor-overview monitor-overview-${data?.state ?? "starting"}`}>
           <div>
             {data?.state === "healthy" ? <CheckCircle size={26} weight="fill" /> : <WarningCircle size={26} weight="fill" />}
-            <div><strong>{data?.state_label ?? "正在读取运行状态"}</strong><span>每 15 秒自动刷新；这里只读取状态，不会触发退款或重复发送。</span></div>
+            <div><strong>{data?.state_label ?? "正在读取运行状态"}</strong><span>每 15 秒自动刷新；只有明确停在发送前的任务允许人工重新入队。</span></div>
           </div>
           <button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />立即刷新</button>
         </section>
