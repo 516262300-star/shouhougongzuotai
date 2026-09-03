@@ -12,6 +12,7 @@ from aftersales_workbench.integrations.erp.return_match import (
 )
 from aftersales_workbench.workflows.module2_erp_intake import (
     Module2ErpIntakeService,
+    Module2ExceptionTodoService,
 )
 
 
@@ -177,3 +178,56 @@ def test_mismatch_note_explicitly_reports_short_return_and_wrong_color() -> None
     assert "平台款项已退" in note
     assert "少退或未收到：2640-单孔/亮镍×22" in note
     assert "多退或错退：2640-单孔/铜拉丝×21" in note
+
+
+def test_module2_todo_keeps_visible_text_short_and_audit_fields_structured() -> None:
+    order = SimpleNamespace(
+        after_sales_sn="22366960361618",
+        platform_order_sn="260825-226502919812340",
+        return_tracking_number="SF5118592516150",
+        erp_sales_owner="金博敏",
+        refund_financial_status="SUCCESS",
+        platform_after_sales_status=10,
+        platform_order_refund_status=4,
+        items=[
+            SimpleNamespace(
+                sku_code="8166-128",
+                color="铜本色",
+                applied_quantity=1,
+            )
+        ],
+    )
+    warehouse_return = SimpleNamespace(
+        receipt_sn="TH-18540629-2026-09-02",
+        items=[
+            SimpleNamespace(
+                product_code="8166-128",
+                color="铜本色",
+                quantity=10,
+            )
+        ],
+    )
+
+    payload = Module2ExceptionTodoService._build_todo_payload(
+        order=order,
+        shop_name="LEEDIS官方旗舰店",
+        warehouse_return=warehouse_return,
+        reason="平台款项已退，退货实收数量不一致",
+    )
+
+    content = payload["content"]
+    assert payload["marker"] == "平台订单号：260825-226502919812340"
+    assert payload["marker"] in content
+    assert "LEEDIS官方旗舰店" in content
+    assert "退货实收数量不一致" in content
+    assert "M2:" not in content
+    assert "22366960361618" not in content
+    assert "SF5118592516150" not in content
+    assert "TH-18540629-2026-09-02" not in content
+    assert "售后单号" not in content
+    assert "退货运单" not in content
+    assert "ERP退货单" not in content
+    assert payload["tracking_number"] == "SF5118592516150"
+    assert payload["erp_return_order_sn"] == "TH-18540629-2026-09-02"
+    assert payload["expected_items_summary"] == "8166-128/铜本色×1"
+    assert payload["received_items_summary"] == "8166-128/铜本色×10"

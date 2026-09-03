@@ -446,6 +446,49 @@ class Module2ExceptionTodoService:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    @staticmethod
+    def _build_todo_payload(
+        *,
+        order: AfterSalesOrder,
+        shop_name: str,
+        warehouse_return: WarehouseReturnRecord,
+        reason: str,
+    ) -> dict[str, Any]:
+        """业务员只看处理所需信息，内部编号和核对明细保留在结构化载荷。"""
+        marker = f"平台订单号：{order.platform_order_sn}"
+        expected = "、".join(
+            f"{item.sku_code}/{item.color or '颜色待核'}×{item.applied_quantity}"
+            for item in order.items
+        )
+        received = "、".join(
+            f"{item.product_code}/{item.color or '颜色待核'}×{item.quantity}"
+            for item in warehouse_return.items
+        )
+        handling = (
+            "平台款项已经退回，请核对仓库实物并处理少退、错退或追责。"
+            if Module2ErpIntakeService._platform_refunded(order)
+            else "请核对仓库实物和退货明细，确认后人工决定是否退款。"
+        )
+        content = (
+            f"店铺：{shop_name}；{marker}；退货验收异常。"
+            f"原因：{reason}；{handling}"
+        )
+        return {
+            "origin": "module2",
+            "reason_code": "RETURN_ITEM_MISMATCH",
+            "reason_text": reason,
+            "assignee": str(order.erp_sales_owner).strip(),
+            "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "marker": marker,
+            "content": content,
+            "platform_order_sn": order.platform_order_sn,
+            "shop_name": shop_name,
+            "tracking_number": order.return_tracking_number,
+            "erp_return_order_sn": warehouse_return.receipt_sn,
+            "expected_items_summary": expected,
+            "received_items_summary": received,
+        }
+
     def run(
         self,
         *,
@@ -510,27 +553,11 @@ class Module2ExceptionTodoService:
                 or order.exception_type
                 or "ERP退货单与平台退款申请明细不一致"
             ).strip()
-            marker = f"【售后工作台 M2:{order.after_sales_sn}】"
-            expected = "、".join(
-                f"{item.sku_code}/{item.color or '颜色待核'}×{item.applied_quantity}"
-                for item in order.items
-            )
-            received = "、".join(
-                f"{item.product_code}/{item.color or '颜色待核'}×{item.quantity}"
-                for item in warehouse_return.items
-            )
-            content = (
-                f"{marker} 模块2退货验收异常，需人工处理；原因：{reason}；"
-                f"店铺：{shop_name}；平台订单号：{order.platform_order_sn}；"
-                f"售后单号：{order.after_sales_sn}；"
-                f"退货运单：{order.return_tracking_number}；"
-                f"ERP退货单：{warehouse_return.receipt_sn}；"
-                f"平台申请：{expected}；ERP实收：{received}。"
-                + (
-                    "平台款项已经退回，请核对仓库实物并处理少退、错退或追责。"
-                    if Module2ErpIntakeService._platform_refunded(order)
-                    else "请核对仓库实物和退货单，确认后人工决定是否退款。"
-                )
+            payload = self._build_todo_payload(
+                order=order,
+                shop_name=shop_name,
+                warehouse_return=warehouse_return,
+                reason=reason,
             )
             self.session.add(
                 AftersalesActionTask(
@@ -540,19 +567,7 @@ class Module2ExceptionTodoService:
                     idempotency_key=(
                         f"module2:{order.after_sales_sn}:ERP_CREATE_MANUAL_TODO"
                     ),
-                    payload={
-                        "origin": "module2",
-                        "reason_code": "RETURN_ITEM_MISMATCH",
-                        "reason_text": reason,
-                        "assignee": str(order.erp_sales_owner).strip(),
-                        "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "marker": marker,
-                        "content": content,
-                        "platform_order_sn": order.platform_order_sn,
-                        "shop_name": shop_name,
-                        "tracking_number": order.return_tracking_number,
-                        "erp_return_order_sn": warehouse_return.receipt_sn,
-                    },
+                    payload=payload,
                     attempts=0,
                 )
             )
