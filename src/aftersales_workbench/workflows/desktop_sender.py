@@ -51,6 +51,10 @@ AMBIGUOUS_LEDGER_STATES = {
     DesktopLedgerState.PASTE_STARTED,
     DesktopLedgerState.SEND_PRESSED,
 }
+CONFIRMABLE_SENT_LEDGER_STATES = {
+    *AMBIGUOUS_LEDGER_STATES,
+    DesktopLedgerState.PAUSED_BEFORE_PASTE,
+}
 BLOCKING_LEDGER_STATES = {
     *AMBIGUOUS_LEDGER_STATES,
     DesktopLedgerState.PAUSED_BEFORE_PASTE,
@@ -165,12 +169,12 @@ class DesktopNoticeLedger:
         )
 
     def confirm_sent(self, task_id: int) -> DesktopLedgerEntry:
-        """操作员在目标群确认消息已出现后，解除结果不明阻塞。"""
+        """操作员在目标群确认消息已出现后，解除桌面发送阻塞。"""
 
         latest = self.latest(task_id)
-        if latest is None or latest.state not in AMBIGUOUS_LEDGER_STATES:
+        if latest is None or latest.state not in CONFIRMABLE_SENT_LEDGER_STATES:
             raise DesktopNoticeSendError(
-                "只有 PasteStarted 或 SendPressed 状态可以人工确认已发送"
+                "只有 PausedBeforePaste、PasteStarted 或 SendPressed 状态可以人工确认已发送"
             )
         return self.append(
             task_id=task_id,

@@ -208,7 +208,7 @@ def test_ambiguous_task_can_only_be_confirmed_after_manual_send_check(tmp_path) 
 
     assert confirmed.state is DesktopLedgerState.SENT
     assert ledger.blocking_entry() is None
-    with pytest.raises(DesktopNoticeSendError, match="只有 PasteStarted"):
+    with pytest.raises(DesktopNoticeSendError, match="只有 PausedBeforePaste"):
         ledger.confirm_sent(61)
 
 
@@ -254,6 +254,20 @@ def test_manual_handled_task_reconciles_without_claiming_another_send(tmp_path) 
     assert service.reconcile_confirmed_sent(61) is True
     assert session.task.action_status is AutomationTaskStatus.SUCCEEDED
     assert session.order.workflow_status is WorkflowStatus.INTERCEPT_PUSHED
+
+
+def test_manually_sent_paused_before_paste_task_can_be_confirmed(tmp_path) -> None:
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
+        plan_hash=desktop_notice_plan_hash(_plan()),
+    )
+
+    confirmed = ledger.confirm_sent(61)
+
+    assert confirmed.state is DesktopLedgerState.SENT
+    assert ledger.blocking_entry() is None
 
 
 def test_successful_desktop_send_updates_ledger_and_workflow(tmp_path) -> None:

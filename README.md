@@ -466,7 +466,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 
 如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。完成单笔真实验收后，才允许同时设置 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true` 并重启后台运行器；后台每个完整周期只处理 `MODULE1_DESKTOP_BATCH_LIMIT` 条，当前安全默认值为 1。任一桌面任务暂停或结果不明时，本周期立即失败停止发送，后续周期只读取账本并继续失败关闭，不会再次按键。
 
-若人工核验后明确看到消息已经出现在正确群聊中，可用以下命令将结果不明任务记为 `Sent` 并回写本地任务状态；该命令不会再次控制企业微信，也不会再次发送消息。没有看到已发消息时禁止执行：
+若人工核验后明确看到消息已经出现在正确群聊中，可用以下命令将 `PausedBeforePaste`、`PasteStarted` 或 `SendPressed` 任务记为 `Sent` 并回写本地任务状态；这也覆盖“自动发送在输入前暂停、随后由操作员在正确群手工发送”的恢复场景。该命令不会再次控制企业微信，也不会再次发送消息。没有看到已发消息时禁止执行：
 
 ```powershell
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --confirm-sent 任务ID --apply
