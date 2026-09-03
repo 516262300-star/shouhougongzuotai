@@ -295,3 +295,27 @@ def test_module1_pdd_success_while_returning_waits_for_arrival() -> None:
 
     assert order.workflow_status is WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
     assert coordinator.enqueued == []
+
+
+def test_module2_pdd_success_preserves_inspection_pass_and_audit_payload() -> None:
+    order = _order()
+    order.workflow_status = WorkflowStatus.RETURN_INSPECTED_PASS
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.PDD_AGREE_RETURN_REFUND,
+            status=AutomationTaskStatus.RUNNING,
+            origin="module2",
+        ),
+        order,
+    )
+
+    coordinator.record_external_success(
+        1,
+        result_payload={"platform_already_refunded": False},
+    )
+
+    assert coordinator.task.action_status is AutomationTaskStatus.SUCCEEDED
+    assert order.workflow_status is WorkflowStatus.RETURN_INSPECTED_PASS
+    assert coordinator.task.payload["platform_already_refunded"] is False
+    assert coordinator.task.payload["platform_request_completed_at"]
+    assert coordinator.enqueued == []

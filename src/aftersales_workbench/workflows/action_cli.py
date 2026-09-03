@@ -25,13 +25,14 @@ def _print_ok(**details: object) -> None:
 
 
 def execute_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="预览或执行模块 1/3 的外部动作队列。")
+    parser = argparse.ArgumentParser(description="预览或执行模块 1/2/3 的外部动作队列。")
     parser.add_argument(
         "--types",
         nargs="*",
         choices=(
             "QYWX_INTERCEPT_NOTIFY",
             "PDD_AGREE_REFUND",
+            "PDD_AGREE_RETURN_REFUND",
             "ERP_CREATE_MANUAL_TODO",
         ),
         help="限定动作类型；默认扫描企微、退款与 ERP 人工待办",
@@ -57,7 +58,7 @@ def execute_main(argv: list[str] | None = None) -> int:
 
 
 def list_main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="列出模块 1/3 动作任务。")
+    parser = argparse.ArgumentParser(description="列出模块 1/2/3 动作任务。")
     parser.add_argument("--status", choices=[item.value for item in AutomationTaskStatus])
     parser.add_argument("--type", choices=[item.value for item in AutomationActionType])
     parser.add_argument("--limit", type=int, default=50)

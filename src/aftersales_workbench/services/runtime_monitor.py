@@ -30,6 +30,10 @@ _MODULE_STAGES = {
         "module1_erp_refunds",
         "pdd_refund",
     ),
+    "module2": (
+        "module2_refund_tasks",
+        "module2_pdd_refunds",
+    ),
     "module3": (
         "module3_tasks",
         "module3_erp_refunds",
@@ -126,7 +130,15 @@ class RuntimeMonitorService:
         elif not bool(latest_cycle.get("ok")):
             state, state_label = "warning", "后台运行中，最近周期存在失败"
         else:
-            state, state_label = "healthy", "模块 1 和模块 3 正常运行"
+            enabled_module_labels = ["模块 1"]
+            if self.settings.module2_worker_enabled:
+                enabled_module_labels.append("模块 2")
+            if self.settings.module3_worker_enabled:
+                enabled_module_labels.append("模块 3")
+            state, state_label = (
+                "healthy",
+                f"{'、'.join(enabled_module_labels)} 正常运行",
+            )
 
         queue = self._notification_queue()
         return {
@@ -144,6 +156,13 @@ class RuntimeMonitorService:
             "modules": [
                 self._module_status("module1", True, running, cycle_stale, latest_cycle),
                 self._module_status(
+                    "module2",
+                    self.settings.module2_worker_enabled,
+                    running,
+                    cycle_stale,
+                    latest_cycle,
+                ),
+                self._module_status(
                     "module3",
                     self.settings.module3_worker_enabled,
                     running,
@@ -157,6 +176,12 @@ class RuntimeMonitorService:
                 "desktop_send_enabled": self.settings.module1_desktop_send_enabled,
                 "qywx_write_enabled": self.settings.qywx_write_enabled,
                 "module1_refund_enabled": self.settings.module1_pdd_refund_execution_enabled,
+                "module2_worker_enabled": self.settings.module2_worker_enabled,
+                "module2_refund_enabled": (
+                    self.settings.module2_pdd_refund_execution_enabled
+                    and self.settings.pdd_write_enabled
+                ),
+                "module2_refund_min_return_id": self.settings.module2_refund_min_return_id,
                 "module3_erp_refund_enabled": self.settings.module3_erp_refund_execution_enabled,
                 "erp_write_enabled": self.settings.erp_write_enabled,
             },

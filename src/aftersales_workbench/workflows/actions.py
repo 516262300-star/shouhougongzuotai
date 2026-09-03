@@ -12,10 +12,13 @@ from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AfterSalesOrder,
+    AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
     ShippingStatus,
     Shop,
+    WarehouseInspectionStatus,
+    WarehouseReturnRecord,
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.todo import ErpTodoClient, ErpTodoRequest
@@ -294,6 +297,19 @@ class ActionCoordinator:
                         AutomationActionType.ERP_CREATE_REFUND_RECORD,
                         {"origin": origin},
                     )
+            elif action_type is AutomationActionType.PDD_AGREE_RETURN_REFUND:
+                if str((task.payload or {}).get("origin") or "") != "module2":
+                    raise WorkflowTransitionError("模块 2 平台退款动作缺少有效 origin")
+                if (
+                    WorkflowStatus(order.workflow_status)
+                    is not WorkflowStatus.RETURN_INSPECTED_PASS
+                ):
+                    raise WorkflowTransitionError("模块 2 退款成功回写时订单已不在验货通过状态")
+                task.payload = {
+                    **(task.payload or {}),
+                    **(result_payload or {}),
+                    "platform_request_completed_at": datetime.now(UTC).isoformat(),
+                }
             elif action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
                 external_todo_id = str(
                     (result_payload or {}).get("external_todo_id") or ""
@@ -406,6 +422,7 @@ class ExternalActionExecutor:
     _EXTERNAL_TYPES = (
         AutomationActionType.QYWX_INTERCEPT_NOTIFY,
         AutomationActionType.PDD_AGREE_REFUND,
+        AutomationActionType.PDD_AGREE_RETURN_REFUND,
         AutomationActionType.ERP_CREATE_MANUAL_TODO,
     )
 
@@ -437,7 +454,12 @@ class ExternalActionExecutor:
             task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY for task in tasks
         )
         result.pdd_refunds = sum(
-            task.action_type is AutomationActionType.PDD_AGREE_REFUND for task in tasks
+            task.action_type
+            in {
+                AutomationActionType.PDD_AGREE_REFUND,
+                AutomationActionType.PDD_AGREE_RETURN_REFUND,
+            }
+            for task in tasks
         )
         result.erp_todos = sum(
             task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO
@@ -465,7 +487,11 @@ class ExternalActionExecutor:
                 for task in tasks
             )
             result.pdd_refunds = sum(
-                task.action_type is AutomationActionType.PDD_AGREE_REFUND
+                task.action_type
+                in {
+                    AutomationActionType.PDD_AGREE_REFUND,
+                    AutomationActionType.PDD_AGREE_RETURN_REFUND,
+                }
                 for task in tasks
             )
             result.erp_todos = sum(
@@ -476,7 +502,10 @@ class ExternalActionExecutor:
         self._validate_write_gates(present_types)
 
         configured_shops = {}
-        if AutomationActionType.PDD_AGREE_REFUND in present_types:
+        if {
+            AutomationActionType.PDD_AGREE_REFUND,
+            AutomationActionType.PDD_AGREE_RETURN_REFUND,
+        }.intersection(present_types):
             configured_shops = {
                 shop.shop_code: shop
                 for shop in load_configured_pdd_shops(self.settings, require_all=False)
@@ -499,7 +528,10 @@ class ExternalActionExecutor:
                     if task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
                         self._send_qywx(qywx_client, task)
                         result_payload = None
-                    elif task.action_type is AutomationActionType.PDD_AGREE_REFUND:
+                    elif task.action_type in {
+                        AutomationActionType.PDD_AGREE_REFUND,
+                        AutomationActionType.PDD_AGREE_RETURN_REFUND,
+                    }:
                         shop = configured_shops.get(task.shop_code)
                         if shop is None:
                             raise PddConfigurationError(
@@ -515,8 +547,17 @@ class ExternalActionExecutor:
                                 write_enabled=self.settings.pdd_write_enabled,
                             )
                             pdd_clients[task.shop_code] = client
-                        self._agree_pdd(client, task)
-                        result_payload = None
+                        already_refunded = False
+                        if (
+                            task.action_type
+                            is AutomationActionType.PDD_AGREE_RETURN_REFUND
+                        ):
+                            already_refunded = self._validate_module2_refund_task(task)
+                        if not already_refunded:
+                            self._agree_pdd(client, task)
+                        result_payload = {
+                            "platform_already_refunded": already_refunded,
+                        }
                     else:
                         if erp_todo_client is None:
                             raise WorkflowTransitionError("ERP 待办客户端未初始化")
@@ -658,7 +699,10 @@ class ExternalActionExecutor:
         ):
             raise WorkflowTransitionError("QYWX_WRITE_ENABLED=false，不能发送拦截通知")
         if (
-            AutomationActionType.PDD_AGREE_REFUND in action_types
+            {
+                AutomationActionType.PDD_AGREE_REFUND,
+                AutomationActionType.PDD_AGREE_RETURN_REFUND,
+            }.intersection(action_types)
             and not self.settings.pdd_write_enabled
         ):
             raise WorkflowTransitionError("PDD_WRITE_ENABLED=false，不能执行平台退款")
@@ -698,6 +742,44 @@ class ExternalActionExecutor:
             after_sales_id=int(task.after_sales_sn),
             order_sn=task.platform_order_sn,
         )
+
+    def _validate_module2_refund_task(self, task: ExternalTaskSnapshot) -> bool:
+        """外部写入前重新核对不可逆的仓库事实；返回平台是否已退款。"""
+        if str(task.payload.get("origin") or "") != "module2":
+            raise WorkflowTransitionError("模块 2 平台退款任务缺少有效 origin")
+        return_id = task.payload.get("warehouse_return_id")
+        try:
+            return_id = int(return_id)
+        except (TypeError, ValueError) as exc:
+            raise WorkflowTransitionError("模块 2 平台退款任务缺少有效收货记录") from exc
+        order = self.session.scalar(
+            select(AfterSalesOrder).where(
+                AfterSalesOrder.after_sales_sn == task.after_sales_sn
+            )
+        )
+        if order is None:
+            raise WorkflowTransitionError("模块 2 平台退款任务关联售后单不存在")
+        if AfterSalesType(order.after_sales_type) is not AfterSalesType.RETURN_AND_REFUND:
+            raise WorkflowTransitionError("模块 2 只允许处理退货退款")
+        if WorkflowStatus(order.workflow_status) is not WorkflowStatus.RETURN_INSPECTED_PASS:
+            raise WorkflowTransitionError("仓库验货未通过，已阻止模块 2 自动退款")
+        warehouse_return = self.session.scalar(
+            select(WarehouseReturnRecord).where(
+                WarehouseReturnRecord.id == return_id,
+                WarehouseReturnRecord.after_sales_sn == task.after_sales_sn,
+            )
+        )
+        if (
+            warehouse_return is None
+            or WarehouseInspectionStatus(warehouse_return.inspection_status)
+            is not WarehouseInspectionStatus.PASS
+        ):
+            raise WorkflowTransitionError("收货记录未验货通过，已阻止模块 2 自动退款")
+        if order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4:
+            return True
+        if order.platform_after_sales_status not in {2, 3}:
+            raise WorkflowTransitionError("平台售后状态不属于可退款状态，已阻止模块 2 自动退款")
+        return False
 
     def _build_erp_todo_client(self) -> ErpTodoClient:
         username = (

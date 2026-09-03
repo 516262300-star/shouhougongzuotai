@@ -347,7 +347,7 @@ function Start-AftersalesRuntime {
         if ($null -eq $worker) {
             throw '售后后台运行器启动后未通过进程核验'
         }
-        Write-AutostartLog "售后后台运行器（模块1+模块3）守护启动成功，PID=$($worker.Id)"
+        Write-AutostartLog "售后后台运行器（模块1+模块2+模块3）守护启动成功，PID=$($worker.Id)"
     }
 
     Start-WorkbenchWeb -Config $config | Out-Null
@@ -548,10 +548,10 @@ function Show-AutostartStatus {
     }
     $worker = Get-Module1WorkerProcess
     if ($null -eq $worker) {
-        Write-Output '售后后台运行器（模块1+模块3）：未运行'
+        Write-Output '售后后台运行器（模块1+模块2+模块3）：未运行'
     }
     else {
-        Write-Output "售后后台运行器（模块1+模块3）：运行中，PID=$($worker.Id)"
+        Write-Output "售后后台运行器（模块1+模块2+模块3）：运行中，PID=$($worker.Id)"
     }
     if (Test-Path -LiteralPath $configFile) {
         $endpoint = Get-WorkbenchWebEndpoint -Config (Get-AutostartConfiguration)

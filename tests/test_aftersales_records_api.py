@@ -172,6 +172,28 @@ def test_get_order_returns_record() -> None:
     assert response.json()["after_sales_sn"] == "AF-1"
 
 
+def test_return_refund_decision_note_waits_for_warehouse_inspection() -> None:
+    note = AftersalesRecordService._decision_note(
+        "PENDING_CHECK",
+        "IN_TRANSIT",
+        after_sales_type="RETURN_AND_REFUND",
+    )
+
+    assert "模块 2" in note
+    assert "验货通过后才会自动退款" in note
+    assert "极速拦截" not in note
+
+
+def test_return_refund_decision_note_reports_inspection_failure() -> None:
+    note = AftersalesRecordService._decision_note(
+        "RETURN_INSPECTED_FAIL",
+        "DELIVERED",
+        after_sales_type="RETURN_AND_REFUND",
+    )
+
+    assert "已阻止自动退款" in note
+
+
 def test_list_intercepts_passes_module1_filters() -> None:
     service = FakeRecordService()
     app.dependency_overrides[get_record_service] = lambda: service

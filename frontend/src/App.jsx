@@ -228,7 +228,7 @@ function Sidebar({ activeView, onNavigate }) {
       </nav>
       <div className="sidebar-foot">
         <span className="sidebar-dot" />
-        模块 1/3 状态见运行监控
+        模块 1/2/3 状态见运行监控
       </div>
     </aside>
   );
@@ -987,6 +987,8 @@ const MONITOR_STAGE_LABELS = {
   logistics_gate: "退款物流闸门",
   module1_erp_refunds: "模块1 ERP退款闭环",
   pdd_refund: "平台退款执行",
+  module2_refund_tasks: "验货通过退款入队",
+  module2_pdd_refunds: "退货退款执行",
   module3_tasks: "未发货退款识别",
   module3_erp_refunds: "模块3 ERP退款处理",
   module3_exception_todos: "异常人工待办",
@@ -1080,7 +1082,7 @@ function MonitorWorkspace() {
         <section className="monitor-modules">
           {(data?.modules ?? []).map((module) => (
             <article className="monitor-module-card" key={module.id}>
-              <header><div><strong>{module.id === "module1" ? "模块 1 · 已发货仅退款拦截" : "模块 3 · 未发货退款处理"}</strong><span>{module.id === "module1" ? "识别、企微拦截、物流闸门与退款闭环" : "ERP 履约核验、退款补单与异常待办"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
+              <header><div><strong>{{ module1: "模块 1 · 已发货仅退款拦截", module2: "模块 2 · 退货验收退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "识别、企微拦截、物流闸门与退款闭环", module2: "人工扫码验货通过后，自动提交平台退款", module3: "ERP 履约核验、退款补单与异常待办" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
               <div className="monitor-stage-list">
                 {module.stages.map((stage) => (
                   <div className="monitor-stage" key={stage.id}>
@@ -1094,7 +1096,7 @@ function MonitorWorkspace() {
           ))}
         </section>
         <section className="monitor-config">
-          <div><strong>自动化开关</strong><span>企业微信发送：{(config.notification_transport === "desktop" && config.desktop_send_enabled) || (config.notification_transport === "qywx_webhook" && config.qywx_write_enabled) ? "已开启" : "未开启"}</span><span>模块1平台退款：{config.module1_refund_enabled ? "已开启" : "未开启"}</span><span>模块3 ERP退款：{config.module3_erp_refund_enabled && config.erp_write_enabled ? "已开启" : "未开启"}</span></div>
+          <div><strong>自动化开关</strong><span>企业微信发送：{(config.notification_transport === "desktop" && config.desktop_send_enabled) || (config.notification_transport === "qywx_webhook" && config.qywx_write_enabled) ? "已开启" : "未开启"}</span><span>模块1平台退款：{config.module1_refund_enabled ? "已开启" : "未开启"}</span><span>模块2验货退款：{config.module2_worker_enabled && config.module2_refund_enabled ? "已开启" : "未开启"}</span><span>模块3 ERP退款：{config.module3_erp_refund_enabled && config.erp_write_enabled ? "已开启" : "未开启"}</span></div>
           <small>状态检查时间：{formatDateTime(data?.checked_at, true)}</small>
         </section>
       </div>

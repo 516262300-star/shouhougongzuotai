@@ -63,6 +63,12 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("erp_sales_owners")
         return WorkerStageResult.completed({"scanned": 1, "matched": 1})
 
+    def _prepare_module2_refund_tasks(self) -> WorkerStageResult:
+        self.calls.append("module2_refund_tasks")
+        return WorkerStageResult.completed(
+            {"scanned": 1, "tasks_created": 1, "tasks_existing": 0}
+        )
+
     def _process_notifications(self) -> WorkerStageResult:
         self.calls.append("notification")
         if not self._notification_preflight_completed:
@@ -109,6 +115,12 @@ class FakeRuntime(Module1WorkerRuntime):
         self.calls.append("pdd_refund")
         return WorkerStageResult.skipped("disabled", pdd_refunds=0)
 
+    def _process_module2_pdd_refunds(self) -> WorkerStageResult:
+        self.calls.append("module2_pdd_refunds")
+        return WorkerStageResult.completed(
+            {"scanned": 1, "pdd_refunds": 1, "succeeded": 1, "failed": 0}
+        )
+
 
 def test_worker_cycle_runs_stages_in_operational_order() -> None:
     runtime = FakeRuntime()
@@ -119,6 +131,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert runtime.calls == [
         "sync",
         "erp_sales_owners",
+        "module2_refund_tasks",
         "module3_tasks",
         "module3_erp_refunds",
         "module3_exception_todos",
@@ -132,6 +145,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
         "erp_todo_tasks",
         "erp_todo_publish",
         "pdd_refund",
+        "module2_pdd_refunds",
     ]
     assert result.notification is not None
     assert result.notification.status == "skipped"
@@ -143,6 +157,8 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert summary["module3_erp_refunds"]["applied"] == 1
     assert summary["module3_exception_todos"]["tasks_created"] == 1
     assert summary["erp_sales_owners"]["matched"] == 1
+    assert summary["module2_refund_tasks"]["tasks_created"] == 1
+    assert summary["module2_pdd_refunds"]["succeeded"] == 1
     assert summary["erp_return_matches"]["closed_loop"] == 1
     assert summary["erp_scrap_sync"]["scrap_rows_seen"] == 2
     assert summary["module1_erp_refunds"]["applied"] == 1
@@ -160,7 +176,7 @@ def test_worker_cycle_isolates_stage_failure_and_never_skips_later_safety_stages
     assert result.sync is not None
     assert result.sync.status == "failed"
     assert "sync failed" in str(result.sync.error)
-    assert runtime.calls[-1] == "pdd_refund"
+    assert runtime.calls[-1] == "module2_pdd_refunds"
 
 
 def test_worker_blocks_notification_when_preflight_fails() -> None:
@@ -202,6 +218,25 @@ def test_worker_rejects_shop_without_complete_credentials() -> None:
             Settings(_env_file=None),
             Module1WorkerOptions(shop_numbers=(1,)),
         )
+
+
+def test_module2_refund_stages_fail_closed_before_successful_pdd_sync() -> None:
+    runtime = Module1WorkerRuntime(
+        _settings(
+            module2_worker_enabled=True,
+            module2_pdd_refund_execution_enabled=True,
+            pdd_write_enabled=True,
+        ),
+        Module1WorkerOptions(shop_numbers=(1,)),
+    )
+
+    prepared = runtime._prepare_module2_refund_tasks()
+    executed = runtime._process_module2_pdd_refunds()
+
+    assert prepared.status == "skipped"
+    assert "同步未成功" in prepared.details["reason"]
+    assert executed.status == "skipped"
+    assert "同步未成功" in executed.details["reason"]
 
 
 class DesktopDispatchRuntime(Module1WorkerRuntime):

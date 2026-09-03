@@ -68,6 +68,10 @@ from aftersales_workbench.workflows.module1_manual_todo import (
 from aftersales_workbench.workflows.module1_preflight import (
     Module1NotificationPreflightService,
 )
+from aftersales_workbench.workflows.module2_refund import (
+    Module2RefundService,
+    SqlAlchemyModule2RefundRepository,
+)
 from aftersales_workbench.workflows.module3 import (
     Module3UnshippedRefundService,
     SqlAlchemyModule3Repository,
@@ -136,6 +140,8 @@ class Module1WorkerCycleResult:
     sync: WorkerStageResult | None = None
     tmall_sync: WorkerStageResult | None = None
     marketplace_sync: WorkerStageResult | None = None
+    module2_refund_tasks: WorkerStageResult | None = None
+    module2_pdd_refunds: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
     module3_exception_todos: WorkerStageResult | None = None
@@ -182,6 +188,14 @@ class Module1WorkerCycleResult:
             "marketplace_sync": self._stage_counts(
                 self.marketplace_sync,
                 ("shops_ok", "shops_failed", "records_seen", "records_created"),
+            ),
+            "module2_refund_tasks": self._stage_counts(
+                self.module2_refund_tasks,
+                ("scanned", "tasks_created", "tasks_existing"),
+            ),
+            "module2_pdd_refunds": self._stage_counts(
+                self.module2_pdd_refunds,
+                ("scanned", "pdd_refunds", "succeeded", "failed"),
             ),
             "module3_tasks": self._stage_counts(
                 self.module3_tasks,
@@ -333,7 +347,7 @@ def _secret_configured(value: Any) -> bool:
 
 
 class Module1WorkerRuntime:
-    """执行一个模块1/3售后周期；各阶段独立事务，失败不会越级外部写入。"""
+    """执行一个模块1/2/3售后周期；各阶段独立事务，失败不会越级外部写入。"""
 
     def __init__(self, settings: Settings, options: Module1WorkerOptions) -> None:
         options.validate()
@@ -342,13 +356,16 @@ class Module1WorkerRuntime:
         self.shops = self._selected_shops()
         self.shop_codes = tuple(shop.shop_code for shop in self.shops)
         self._notification_preflight_completed = False
+        self._pdd_sync_completed = False
 
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
+        self._pdd_sync_completed = result.sync.status == "completed"
         result.tmall_sync = self._capture(self._sync_tmall)
         result.marketplace_sync = self._capture(self._sync_marketplaces)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
+        result.module2_refund_tasks = self._capture(self._prepare_module2_refund_tasks)
         result.module3_tasks = self._capture(self._prepare_module3_tasks)
         result.module3_erp_refunds = self._capture(self._process_module3_erp_refunds)
         result.module3_exception_todos = self._capture(
@@ -369,11 +386,13 @@ class Module1WorkerRuntime:
         result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
         result.erp_todo_publish = self._capture(self._process_erp_todos)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
+        result.module2_pdd_refunds = self._capture(self._process_module2_pdd_refunds)
         stages = (
             result.sync,
             result.tmall_sync,
             result.marketplace_sync,
             result.erp_sales_owners,
+            result.module2_refund_tasks,
             result.module3_tasks,
             result.module3_erp_refunds,
             result.module3_exception_todos,
@@ -387,10 +406,37 @@ class Module1WorkerRuntime:
             result.erp_todo_tasks,
             result.erp_todo_publish,
             result.pdd_refund,
+            result.module2_pdd_refunds,
         )
         result.ok = all(stage is not None and stage.status != "failed" for stage in stages)
         result.finished_at = _utc_iso()
         return result
+
+    def _prepare_module2_refund_tasks(self) -> WorkerStageResult:
+        if not self.settings.module2_worker_enabled:
+            return WorkerStageResult.skipped(
+                "模块2后台运行未启用",
+                scanned=0,
+                tasks_created=0,
+                tasks_existing=0,
+            )
+        if not self._pdd_sync_completed:
+            return WorkerStageResult.skipped(
+                "当轮拼多多同步未成功，已阻止模块2退款任务入队",
+                scanned=0,
+                tasks_created=0,
+                tasks_existing=0,
+            )
+        with SessionLocal() as session:
+            run = Module2RefundService(
+                SqlAlchemyModule2RefundRepository(session)
+            ).run(
+                shop_codes=self.shop_codes,
+                min_return_id=self.settings.module2_refund_min_return_id,
+                limit=self.options.task_limit,
+                dry_run=False,
+            )
+        return WorkerStageResult.completed(run.safe_dict())
 
     def _prepare_module3_tasks(self) -> WorkerStageResult:
         if not self.settings.module3_worker_enabled:
@@ -814,6 +860,48 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"拼多多退款执行失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _process_module2_pdd_refunds(self) -> WorkerStageResult:
+        if not self.settings.module2_worker_enabled:
+            return WorkerStageResult.skipped(
+                "模块2后台运行未启用",
+                scanned=0,
+                pdd_refunds=0,
+                succeeded=0,
+                failed=0,
+            )
+        if not self._pdd_sync_completed:
+            return WorkerStageResult.skipped(
+                "当轮拼多多同步未成功，已阻止模块2平台退款",
+                scanned=0,
+                pdd_refunds=0,
+                succeeded=0,
+                failed=0,
+            )
+        apply = self.settings.module2_pdd_refund_execution_enabled
+        if apply and not self.settings.pdd_write_enabled:
+            raise RuntimeError(
+                "模块2退款执行已启用，但 PDD_WRITE_ENABLED=false"
+            )
+        with SessionLocal() as session:
+            run = ExternalActionExecutor(session, self.settings).run(
+                action_types=(AutomationActionType.PDD_AGREE_RETURN_REFUND,),
+                limit=self.options.task_limit,
+                dry_run=not apply,
+            )
+        details = run.safe_dict()
+        if not apply:
+            return WorkerStageResult.skipped(
+                "模块2退款执行总开关关闭，仅保留验货通过任务",
+                **details,
+            )
+        if run.failed:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"模块2平台退款执行失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)
 

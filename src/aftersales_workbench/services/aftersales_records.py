@@ -517,16 +517,28 @@ class AftersalesRecordService:
             .order_by(AfterSalesItem.id)
         ).all()
         workflow = _enum_value(order.workflow_status)
+        after_sales_type = _enum_value(order.after_sales_type)
         logistics = order.logistics_state or self._fallback_logistics(order)
         product_name = order.product_name or (
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
         )
-        decision_note = (
-            order.logistics_last_error
-            or order.logistics_latest_context
-            or self._decision_note(workflow, logistics)
-        )
+        if after_sales_type == "RETURN_AND_REFUND":
+            decision_note = self._decision_note(
+                workflow,
+                logistics,
+                after_sales_type=after_sales_type,
+            )
+        else:
+            decision_note = (
+                order.logistics_last_error
+                or order.logistics_latest_context
+                or self._decision_note(
+                    workflow,
+                    logistics,
+                    after_sales_type=after_sales_type,
+                )
+            )
         owner = self._cached_owner(order)
         if owner is None:
             owner = (
@@ -547,7 +559,7 @@ class AftersalesRecordService:
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
             "created_at": _dt(order.platform_created_at or order.created_at),
-            "after_sales_type": self._type_label(_enum_value(order.after_sales_type)),
+            "after_sales_type": self._type_label(after_sales_type),
             "refund_amount": _money(order.refund_amount),
             "platform_order_amount": (
                 _money(order.platform_order_amount)
@@ -586,7 +598,15 @@ class AftersalesRecordService:
             "buyer_memo": order.buyer_memo or "—",
             "erp_customer": serialized_owner,
             "decision": {
-                "strategy": "极速拦截（智能）" if order.forward_tracking_number else "人工规则判定",
+                "strategy": (
+                    "仓库退货验收"
+                    if after_sales_type == "RETURN_AND_REFUND"
+                    else (
+                        "极速拦截（智能）"
+                        if order.forward_tracking_number
+                        else "人工规则判定"
+                    )
+                ),
                 "status": WORKFLOW_LABELS.get(workflow, workflow),
                 "status_tone": _tone_for_workflow(workflow),
                 "handler": (
@@ -1568,7 +1588,18 @@ class AftersalesRecordService:
         }.get(_enum_value(order.order_shipping_status), "UNKNOWN")
 
     @staticmethod
-    def _decision_note(workflow: str, logistics: str) -> str:
+    def _decision_note(
+        workflow: str,
+        logistics: str,
+        *,
+        after_sales_type: str = "ONLY_REFUND",
+    ) -> str:
+        if after_sales_type == "RETURN_AND_REFUND":
+            if workflow == "RETURN_INSPECTED_PASS":
+                return "仓库验货已通过，模块 2 将自动提交平台退款。"
+            if workflow == "RETURN_INSPECTED_FAIL":
+                return "仓库验货异常，已阻止自动退款，等待人工处理。"
+            return "退货退款由模块 2 处理；仓库扫码收货并验货通过后才会自动退款。"
         if workflow == "PARTIAL_REFUND_EXCLUDED":
             return "申请金额低于优惠后实付金额，按部分退款或补偿款排除在途拦截。"
         if workflow == "INTERCEPT_WAITING_RETURN":
