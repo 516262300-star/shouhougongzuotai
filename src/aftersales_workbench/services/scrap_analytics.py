@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.db.models import (
@@ -45,39 +45,86 @@ class ScrapAnalyticsService:
     ) -> dict[str, Any]:
         end = ended_on or date.today()
         start = started_on or end - timedelta(days=29)
-        rows = list(
+        keyword = (model_keyword or "").strip().lower()
+        period_filters = [
+            ErpReturnRowRecord.source_active == 1,
+            ErpReturnRowRecord.completed_on.between(start, end),
+        ]
+        denominator_filters = list(period_filters)
+        if keyword:
+            denominator_filters.append(
+                func.lower(ErpReturnRowRecord.product_model).contains(keyword)
+            )
+
+        model_return_rows = self.session.execute(
+            select(
+                ErpReturnRowRecord.product_model,
+                func.sum(ErpReturnRowRecord.quantity),
+            )
+            .where(*denominator_filters)
+            .group_by(ErpReturnRowRecord.product_model)
+        ).all()
+        by_model_returns = {
+            model: Decimal(quantity or 0) for model, quantity in model_return_rows
+        }
+        total_return = sum(by_model_returns.values(), Decimal())
+        daily_return_rows = self.session.execute(
+            select(
+                ErpReturnRowRecord.completed_on,
+                func.sum(ErpReturnRowRecord.quantity),
+            )
+            .where(*denominator_filters)
+            .group_by(ErpReturnRowRecord.completed_on)
+        ).all()
+        by_day_returns = {
+            completed_on: Decimal(quantity or 0)
+            for completed_on, quantity in daily_return_rows
+        }
+
+        decision = ErpReturnScrapDecision
+        reason_missing = or_(
+            decision.id.is_(None),
+            func.trim(func.coalesce(decision.scrap_reason, "")) == "",
+        )
+        reviewer_missing = or_(
+            decision.loss_amount.is_(None),
+            func.trim(func.coalesce(decision.reviewer, "")) == "",
+        )
+        scrap_statement = (
+            select(ErpReturnRowRecord)
+            .options(selectinload(ErpReturnRowRecord.scrap_decision))
+            .where(*denominator_filters, ErpReturnRowRecord.is_scrap == 1)
+        )
+        if reason or responsibility or data_status:
+            scrap_statement = scrap_statement.outerjoin(
+                decision,
+                decision.erp_return_row_id == ErpReturnRowRecord.id,
+            )
+        if reason:
+            scrap_statement = scrap_statement.where(decision.scrap_reason == reason)
+        if responsibility:
+            scrap_statement = scrap_statement.where(
+                decision.responsibility == responsibility
+            )
+        if data_status == "MISSING_REASON":
+            scrap_statement = scrap_statement.where(reason_missing)
+        elif data_status == "MISSING_COST":
+            scrap_statement = scrap_statement.where(
+                and_(~reason_missing, reviewer_missing)
+            )
+        elif data_status == "CONFIRMED":
+            scrap_statement = scrap_statement.where(
+                and_(~reason_missing, ~reviewer_missing)
+            )
+        scrap_rows = list(
             self.session.scalars(
-                select(ErpReturnRowRecord)
-                .options(selectinload(ErpReturnRowRecord.scrap_decision))
-                .where(
-                    ErpReturnRowRecord.source_active == 1,
-                    ErpReturnRowRecord.completed_on.between(start, end),
+                scrap_statement.order_by(
+                    ErpReturnRowRecord.completed_on,
+                    ErpReturnRowRecord.id,
                 )
-                .order_by(ErpReturnRowRecord.completed_on, ErpReturnRowRecord.id)
             )
         )
-        keyword = (model_keyword or "").strip().lower()
-        denominator_rows = [
-            row for row in rows if not keyword or keyword in row.product_model.lower()
-        ]
-        scrap_rows = [row for row in denominator_rows if row.is_scrap]
-        if reason:
-            scrap_rows = [
-                row
-                for row in scrap_rows
-                if (row.scrap_decision.scrap_reason if row.scrap_decision else None) == reason
-            ]
-        if responsibility:
-            scrap_rows = [
-                row
-                for row in scrap_rows
-                if (row.scrap_decision.responsibility if row.scrap_decision else None)
-                == responsibility
-            ]
-        if data_status:
-            scrap_rows = [row for row in scrap_rows if _status(row) == data_status]
 
-        total_return = sum((row.quantity for row in denominator_rows), Decimal())
         total_scrap = sum((row.quantity for row in scrap_rows), Decimal())
         confirmed_loss = sum(
             (
@@ -87,9 +134,6 @@ class ScrapAnalyticsService:
             ),
             Decimal(),
         )
-        by_model_returns: dict[str, Decimal] = defaultdict(Decimal)
-        for row in denominator_rows:
-            by_model_returns[row.product_model] += row.quantity
         by_model_scrap: dict[str, list[ErpReturnRowRecord]] = defaultdict(list)
         for row in scrap_rows:
             by_model_scrap[row.product_model].append(row)
@@ -142,13 +186,14 @@ class ScrapAnalyticsService:
         models.sort(key=lambda item: (-item["scrap_quantity"], -item["scrap_rate"], item["model"]))
 
         reasons = self._distribution(scrap_rows, "reason")
+        by_day_scrap: dict[date, Decimal] = defaultdict(Decimal)
+        for row in scrap_rows:
+            by_day_scrap[row.completed_on] += row.quantity
         trends = []
         current = start
         while current <= end:
-            day_rows = [row for row in denominator_rows if row.completed_on == current]
-            day_scrap = [row for row in scrap_rows if row.completed_on == current]
-            day_return_quantity = sum((row.quantity for row in day_rows), Decimal())
-            day_scrap_quantity = sum((row.quantity for row in day_scrap), Decimal())
+            day_return_quantity = by_day_returns.get(current, Decimal())
+            day_scrap_quantity = by_day_scrap.get(current, Decimal())
             trends.append(
                 {
                     "date": current.isoformat(),
@@ -163,6 +208,15 @@ class ScrapAnalyticsService:
 
         chosen_model = focus_model or (models[0]["model"] if models else None)
         focus_rows = [row for row in scrap_rows if row.product_model == chosen_model]
+        option_rows = self.session.execute(
+            select(decision.scrap_reason, decision.responsibility)
+            .join(
+                ErpReturnRowRecord,
+                ErpReturnRowRecord.id == decision.erp_return_row_id,
+            )
+            .where(*period_filters)
+            .distinct()
+        ).all()
         state = self.session.get(ErpScrapSyncState, "erp_return_scrap")
         return {
             "period": {"start": start.isoformat(), "end": end.isoformat()},
@@ -186,16 +240,16 @@ class ScrapAnalyticsService:
             "options": {
                 "reasons": sorted(
                     {
-                        row.scrap_decision.scrap_reason
-                        for row in rows
-                        if row.scrap_decision and row.scrap_decision.scrap_reason
+                        scrap_reason
+                        for scrap_reason, _ in option_rows
+                        if scrap_reason
                     }
                 ),
                 "responsibilities": sorted(
                     {
-                        row.scrap_decision.responsibility
-                        for row in rows
-                        if row.scrap_decision and row.scrap_decision.responsibility
+                        item_responsibility
+                        for _, item_responsibility in option_rows
+                        if item_responsibility
                     }
                 ),
             },

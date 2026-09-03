@@ -69,12 +69,23 @@ function buildQuery(filters, focusModel) {
   return params.toString();
 }
 
+const overviewCache = new Map();
+const readOverviewCache = (filters, focusModel) => overviewCache.get(buildQuery(filters, focusModel));
+const writeOverviewCache = (filters, focusModel, payload) => {
+  const key = buildQuery(filters, focusModel);
+  if (!overviewCache.has(key) && overviewCache.size >= 20) {
+    overviewCache.delete(overviewCache.keys().next().value);
+  }
+  overviewCache.set(key, payload);
+};
+
 export function ScrapWorkspace({ onClose }) {
+  const initialCachedData = readOverviewCache(initialFilters, "");
   const [draft, setDraft] = useState(initialFilters);
   const [filters, setFilters] = useState(initialFilters);
   const [selectedModel, setSelectedModel] = useState("");
-  const [data, setData] = useState(emptyData);
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(initialCachedData ?? emptyData);
+  const [loading, setLoading] = useState(!initialCachedData);
   const [error, setError] = useState("");
   const [showDefinitions, setShowDefinitions] = useState(false);
   const [showRecords, setShowRecords] = useState(false);
@@ -82,11 +93,19 @@ export function ScrapWorkspace({ onClose }) {
   const [saving, setSaving] = useState(false);
 
   const load = async (activeFilters = filters, focusModel = selectedModel) => {
-    setLoading(true); setError("");
+    const cachedData = readOverviewCache(activeFilters, focusModel);
+    if (cachedData) {
+      setData(cachedData);
+      if (!focusModel && cachedData.models?.length) setSelectedModel(cachedData.models[0].model);
+    } else {
+      setLoading(true);
+    }
+    setError("");
     try {
       const response = await fetch(`/api/v1/scrap/overview?${buildQuery(activeFilters, focusModel)}`);
       if (!response.ok) throw new Error(`接口返回 ${response.status}`);
       const payload = await response.json();
+      writeOverviewCache(activeFilters, focusModel, payload);
       setData(payload);
       if (!focusModel && payload.models?.length) setSelectedModel(payload.models[0].model);
     } catch (reason) {
@@ -142,7 +161,7 @@ export function ScrapWorkspace({ onClose }) {
       };
       const response = await fetch(`/api/v1/scrap/records/${encodeURIComponent(editing.source_row_id)}/decision`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!response.ok) throw new Error(`保存失败（${response.status}）`);
-      setEditing(null); await load(filters, selectedModel);
+      overviewCache.clear(); setEditing(null); await load(filters, selectedModel);
     } catch (reason) { setError(reason.message); } finally { setSaving(false); }
   };
 

@@ -104,13 +104,37 @@ def test_scrap_overview_keeps_models_with_zero_scrap() -> None:
     ]
 
     class FakeSession:
+        def __init__(self) -> None:
+            self.execute_calls = 0
+
+        class Result:
+            def __init__(self, values: list[Any]) -> None:
+                self.values = values
+
+            def all(self) -> list[Any]:
+                return self.values
+
+        def execute(self, _statement: Any) -> Result:
+            self.execute_calls += 1
+            if self.execute_calls == 1:
+                return self.Result(
+                    [
+                        ("有报废型号", Decimal("2")),
+                        ("零报废型号", Decimal("8")),
+                    ]
+                )
+            if self.execute_calls == 2:
+                return self.Result([(date(2026, 9, 1), Decimal("10"))])
+            return self.Result([])
+
         def scalars(self, _statement: Any) -> list[Any]:
-            return rows
+            return [rows[0]]
 
         def get(self, _model: Any, _key: str) -> None:
             return None
 
-    result = ScrapAnalyticsService(FakeSession()).overview(
+    session = FakeSession()
+    result = ScrapAnalyticsService(session).overview(
         started_on=date(2026, 9, 1),
         ended_on=date(2026, 9, 1),
         model_keyword=None,
@@ -127,3 +151,4 @@ def test_scrap_overview_keeps_models_with_zero_scrap() -> None:
     assert result["models"][1]["return_quantity"] == 8
     assert result["models"][1]["scrap_quantity"] == 0
     assert result["models"][1]["scrap_rate"] == 0
+    assert session.execute_calls == 3
