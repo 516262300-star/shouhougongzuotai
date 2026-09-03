@@ -16,6 +16,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDir = Join-Path $projectRoot '.runtime'
 $configFile = Join-Path $runtimeDir 'module1-autostart.json'
+$mysqlDefaultsBackupFile = Join-Path $runtimeDir 'mysql-defaults-backup.ini'
 $logFile = Join-Path $runtimeDir 'module1-autostart.log'
 $workerScript = Join-Path $PSScriptRoot 'module1-worker.ps1'
 $webPidFile = Join-Path $runtimeDir 'workbench-web.pid'
@@ -132,6 +133,36 @@ function Get-AutostartConfiguration {
         throw "缺少本机启动配置，请先执行：& .\scripts\module1-autostart.ps1 -Action Install"
     }
     return Get-Content -LiteralPath $configFile -Raw | ConvertFrom-Json
+}
+
+function Restore-MySqlDefaultsFile {
+    param($Config)
+    $defaultsFile = [string]$Config.MySqlDefaultsFile
+    if (Test-Path -LiteralPath $defaultsFile -PathType Leaf) {
+        return
+    }
+    $backupFile = $mysqlDefaultsBackupFile
+    if (
+        $null -ne $Config.PSObject.Properties['MySqlDefaultsBackupFile'] -and
+        $Config.MySqlDefaultsBackupFile
+    ) {
+        $backupFile = [string]$Config.MySqlDefaultsBackupFile
+    }
+    if (-not (Test-Path -LiteralPath $backupFile -PathType Leaf)) {
+        throw (
+            "MySQL 配置文件不存在：$defaultsFile；本地恢复副本也不存在：$backupFile；" +
+            '请在 MySQL 运行后重新执行 Install'
+        )
+    }
+    $defaultsDirectory = Split-Path -Parent $defaultsFile
+    if (-not (Test-Path -LiteralPath $defaultsDirectory -PathType Container)) {
+        New-Item -ItemType Directory -Path $defaultsDirectory -Force | Out-Null
+    }
+    Copy-Item -LiteralPath $backupFile -Destination $defaultsFile -Force
+    if (-not (Test-Path -LiteralPath $defaultsFile -PathType Leaf)) {
+        throw "MySQL 配置文件自动恢复失败：$defaultsFile"
+    }
+    Write-AutostartLog "MySQL 配置文件缺失，已从本地副本自动恢复：$defaultsFile"
 }
 
 function Get-Module1WorkerProcess {
@@ -286,9 +317,7 @@ function Start-AftersalesRuntime {
         if (-not (Test-Path -LiteralPath $config.MySqlExe -PathType Leaf)) {
             throw "MySQL 程序不存在：$($config.MySqlExe)"
         }
-        if (-not (Test-Path -LiteralPath $config.MySqlDefaultsFile -PathType Leaf)) {
-            throw "MySQL 配置文件不存在：$($config.MySqlDefaultsFile)"
-        }
+        Restore-MySqlDefaultsFile -Config $config
         $mysqlArgument = "--defaults-file=`"$($config.MySqlDefaultsFile)`""
         Start-Process `
             -FilePath $config.MySqlExe `
@@ -391,9 +420,14 @@ function Install-AutostartTask {
     }
     $resolvedMySqlExe = (Resolve-Path -LiteralPath $MySqlExe).Path
     $resolvedDefaultsFile = (Resolve-Path -LiteralPath $MySqlDefaultsFile).Path
+    Copy-Item `
+        -LiteralPath $resolvedDefaultsFile `
+        -Destination $mysqlDefaultsBackupFile `
+        -Force
     [ordered]@{
         MySqlExe = $resolvedMySqlExe
         MySqlDefaultsFile = $resolvedDefaultsFile
+        MySqlDefaultsBackupFile = $mysqlDefaultsBackupFile
         MySqlHost = '127.0.0.1'
         MySqlPort = $MySqlPort
         WebHost = '127.0.0.1'
