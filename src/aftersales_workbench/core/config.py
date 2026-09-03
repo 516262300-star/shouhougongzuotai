@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     erp_return_match_refresh_seconds: int = Field(default=1800, ge=300, le=86400)
     erp_scrap_sync_enabled: bool = False
     erp_scrap_sync_refresh_seconds: int = Field(default=1800, ge=300, le=86400)
-    erp_scrap_sync_lookback_days: int = Field(default=30, ge=2, le=366)
+    erp_scrap_sync_lookback_days: int = Field(default=90, ge=2, le=366)
     erp_return_match_receivable_tolerance: Decimal = Field(
         default=Decimal("0.01"), ge=Decimal("0"), le=Decimal("1")
     )

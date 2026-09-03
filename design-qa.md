@@ -9,7 +9,7 @@
 - Focused detail comparison: `D:\desktop\codex\售后工作台\scrap-focus-detail.png`
 - Viewport: 1487 × 1057 CSS px, device scale factor 1
 - Pixel dimensions: source 1487 × 1058；implementation 1487 × 1057。仅存在 1 px 高度差，不需要缩放归一化。
-- State: 桌面端；模块 5 已打开；默认近 30 天；全部原因、责任归属与数据状态；首个 ERP 型号自动选中；型号明细抽屉关闭。
+- State: 桌面端；模块 5 已打开；默认近 90 天；全部原因、责任归属与数据状态；首个 ERP 型号自动选中；型号明细抽屉关闭。
 
 ## Findings
 
@@ -46,8 +46,8 @@
 ## Interaction and runtime verification
 
 - 已测试：进入“退货报废”、加载真实 ERP 汇总、切换型号、打开型号报废明细、进入和取消人工核定表单。
-- 当前 30 天真实汇总显示退货数量 68,463、报废数量 603、报废率 0.88%；未核定记录全部进入“待补原因”，已核定损失为 0。
-- 选中 `2608-96` 后，侧栏、颜色分布和 ERP 报废明细同步更新。
+- 当前 90 天真实汇总显示退货数量 224,230.01、报废数量 848.01、报废率 0.38%；未核定记录全部进入“待补原因”，已核定损失为 0。
+- 默认选中 `2639-单孔` 后，侧栏、颜色分布和 ERP 报废明细同步更新。
 - 浏览器控制台未发现 error 或 warning。
 
 ## Implementation checklist

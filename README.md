@@ -83,7 +83,7 @@ alembic downgrade -1
 | `ERP_RETURN_MATCH_SYNC_ENABLED` | 周期只读核对拦截退回的 ERP 退货单与客户累计应收 | `false` |
 | `ERP_SCRAP_SYNC_ENABLED` | 模块 5 周期只读同步 ERP 退货单并识别“报废+颜色” | `false` |
 | `ERP_SCRAP_SYNC_REFRESH_SECONDS` | 模块 5 两次增量同步之间的最短间隔秒数 | `1800` |
-| `ERP_SCRAP_SYNC_LOOKBACK_DAYS` | 首次回填及循环历史复核天数 | `30` |
+| `ERP_SCRAP_SYNC_LOOKBACK_DAYS` | 首次回填及循环历史复核天数 | `90` |
 | `MODULE1_ERP_REFUND_EXECUTION_ENABLED` | 模块 1 拦截退回补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
@@ -736,13 +736,13 @@ ERP 原始退货行保存在 `erp_return_rows`，人工核定保存在 `erp_retu
 .\.venv\Scripts\alembic.exe upgrade head
 
 # 只访问 ERP 并输出数量，不写本地数据库
-.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 30
+.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 90
 
-# 试跑结果合理后，回填近 30 天到本地工作台
-.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 30 --apply
+# 试跑结果合理后，回填近 90 天到本地工作台
+.\.venv\Scripts\aftersales-sync-erp-scrap.exe --days 90 --apply
 ```
 
-持续运行设置 `ERP_SCRAP_SYNC_ENABLED=true`。常驻后台仍每 60 秒进入一次完整周期，但同步状态会把模块 5 限制为每 `ERP_SCRAP_SYNC_REFRESH_SECONDS` 秒执行一次；每次读取今天、昨天和一个轮换历史日，在控制 ERP 页面负载的同时持续复核近 `ERP_SCRAP_SYNC_LOOKBACK_DAYS` 天。某天 ERP 行被撤销时，本地只标为非活动，不删除已有人工核定记录。ERP 页面或登录不可用时该阶段失败且不提交半批数据，修复凭据后等待下一周期即可恢复；也可以再次运行上述只读命令诊断。
+持续运行设置 `ERP_SCRAP_SYNC_ENABLED=true`。常驻后台仍每 60 秒进入一次完整周期，但同步状态会把模块 5 限制为每 `ERP_SCRAP_SYNC_REFRESH_SECONDS` 秒执行一次；每次读取今天、昨天和一个轮换历史日，在控制 ERP 页面负载的同时持续复核近 `ERP_SCRAP_SYNC_LOOKBACK_DAYS=90` 天。某天 ERP 行被撤销时，本地只标为非活动，不删除已有人工核定记录。ERP 页面或登录不可用时该阶段失败且不提交半批数据，修复凭据后等待下一周期即可恢复；也可以再次运行上述只读命令诊断。
 
 报废率的分母是同期 ERP 全部退货数量，分子是识别出的报废数量。原因、责任和数据状态筛选只影响报废分子；界面会明确保留待补原因记录，避免只看“已确认”而漏掉真实报废。模块 5 不需要 `ERP_WRITE_ENABLED`，也不会点击 ERP 页面按钮或写回退货单。
 

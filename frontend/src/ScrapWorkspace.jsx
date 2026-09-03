@@ -29,7 +29,7 @@ const isoDate = (value) => {
   return `${value.getFullYear()}-${month}-${day}`;
 };
 const initialFilters = {
-  start: isoDate(new Date(today.getTime() - 29 * DAY)),
+  start: isoDate(new Date(today.getTime() - 89 * DAY)),
   end: isoDate(today),
   reason: "",
   responsibility: "",
