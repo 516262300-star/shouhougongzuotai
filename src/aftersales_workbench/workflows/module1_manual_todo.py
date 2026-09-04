@@ -135,11 +135,17 @@ class Module1ManualTodoCandidate:
                 f"发货运单：{self.tracking_number}"
                 f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
             )
+        assignee = (
+            str(self.sales_owner or "").strip()
+            if self.sales_owner_status == "matched"
+            else ""
+        )
         payload = {
             "origin": "module1",
             "reason_code": self.reason_code,
             "reason_text": self.reason_text,
-            "assignee": str(self.sales_owner or "").strip(),
+            "assignee": assignee,
+            "assignee_status": self.sales_owner_status,
             "started_at": started_at,
             "marker": marker,
             "content": content,
@@ -362,7 +368,6 @@ class Module1ManualTodoService:
                     or not str(candidate.sales_owner or "").strip()
                 ):
                     result.skipped_missing_owner += 1
-                    continue
                 if dry_run:
                     continue
                 outcome = self.repository.enqueue_todo(

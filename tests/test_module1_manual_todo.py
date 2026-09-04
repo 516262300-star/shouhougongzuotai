@@ -61,7 +61,7 @@ class FakeRepository:
         self.rollbacks += 1
 
 
-def test_manual_todo_service_queues_owner_and_skips_missing_owner() -> None:
+def test_manual_todo_service_keeps_missing_owner_in_local_queue() -> None:
     repository = FakeRepository([_candidate(), _candidate(owner=None)])
 
     result = Module1ManualTodoService(repository).run(
@@ -71,10 +71,11 @@ def test_manual_todo_service_queues_owner_and_skips_missing_owner() -> None:
     )
 
     assert result.scanned == 2
-    assert result.tasks_created == 1
+    assert result.tasks_created == 2
     assert result.skipped_missing_owner == 1
-    assert len(repository.enqueued) == 1
+    assert len(repository.enqueued) == 2
     assert repository.enqueued[0][2] == 3
+    assert repository.enqueued[1][0].task_payload(started_at="now")["assignee"] == ""
     assert repository.commits == 1
 
 
@@ -152,7 +153,7 @@ def test_manual_todo_service_counts_safe_requeue() -> None:
     assert result.tasks_created == 0
 
 
-def test_manual_todo_service_never_assigns_conflicting_owner() -> None:
+def test_manual_todo_service_keeps_conflicting_owner_unassigned_locally() -> None:
     repository = FakeRepository(
         [_candidate(owner="归属冲突", owner_status="conflict")]
     )
@@ -160,7 +161,10 @@ def test_manual_todo_service_never_assigns_conflicting_owner() -> None:
     result = Module1ManualTodoService(repository).run(dry_run=False)
 
     assert result.skipped_missing_owner == 1
-    assert repository.enqueued == []
+    assert len(repository.enqueued) == 1
+    payload = repository.enqueued[0][0].task_payload(started_at="now")
+    assert payload["assignee"] == ""
+    assert payload["assignee_status"] == "conflict"
 
 
 class _EmptyRows:

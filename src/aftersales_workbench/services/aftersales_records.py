@@ -1421,7 +1421,11 @@ class AftersalesRecordService:
         payload = task.payload if isinstance(task.payload, dict) else {}
         status = _enum_value(task.action_status)
         origin = str(payload.get("origin") or "").strip().lower()
-        assignee = str(payload.get("assignee") or order.erp_sales_owner or "").strip()
+        assignee = (
+            str(payload.get("assignee") or "").strip()
+            if "assignee" in payload
+            else str(order.erp_sales_owner or "").strip()
+        )
         external_todo_id = str(payload.get("external_todo_id") or "").strip()
         reason_code = str(payload.get("reason_code") or "").strip().upper()
         sent = status == "SUCCEEDED"

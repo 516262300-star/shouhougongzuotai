@@ -90,6 +90,33 @@ class _CapturingSession:
         return []
 
 
+class _TodoRows:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+
+    def all(self):
+        return self.rows
+
+
+class _TodoSession:
+    def __init__(self, rows) -> None:
+        self.rows = rows
+        self.added = []
+        self.commits = 0
+
+    def execute(self, _statement):
+        return _TodoRows(self.rows)
+
+    def scalar(self, _statement):
+        return None
+
+    def add(self, task) -> None:
+        self.added.append(task)
+
+    def commit(self) -> None:
+        self.commits += 1
+
+
 def test_candidates_include_platform_refunded_orders_for_post_refund_audit() -> None:
     session = _CapturingSession()
     service = Module2ErpIntakeService(session, SimpleNamespace())
@@ -186,6 +213,7 @@ def test_module2_todo_keeps_visible_text_short_and_audit_fields_structured() -> 
         platform_order_sn="260825-226502919812340",
         return_tracking_number="SF5118592516150",
         erp_sales_owner="金博敏",
+        erp_sales_owner_status="matched",
         refund_financial_status="SUCCESS",
         platform_after_sales_status=10,
         platform_order_refund_status=4,
@@ -236,6 +264,63 @@ def test_module2_todo_keeps_visible_text_short_and_audit_fields_structured() -> 
     assert payload["erp_return_order_sn"] == "TH-18540629-2026-09-02"
     assert payload["expected_items_summary"] == "8166-128/铜本色×1"
     assert payload["received_items_summary"] == "8166-128/铜本色×10"
+
+
+def test_module2_todo_keeps_missing_owner_unassigned_locally() -> None:
+    order = SimpleNamespace(
+        after_sales_sn="after-1",
+        platform_order_sn="order-1",
+        return_tracking_number="return-1",
+        erp_sales_owner=None,
+        erp_sales_owner_status="not_found",
+        refund_financial_status="PENDING",
+        platform_after_sales_status=3,
+        platform_order_refund_status=2,
+        items=[],
+    )
+    warehouse_return = SimpleNamespace(receipt_sn="receipt-1", items=[])
+
+    payload = Module2ExceptionTodoService._build_todo_payload(
+        order=order,
+        shop_name="测试店铺",
+        warehouse_return=warehouse_return,
+        reason="退货实收异常",
+    )
+
+    assert payload["assignee"] == ""
+    assert payload["assignee_status"] == "not_found"
+
+
+def test_module2_service_creates_local_todo_without_owner() -> None:
+    order = SimpleNamespace(
+        after_sales_sn="after-1",
+        platform_order_sn="order-1",
+        return_tracking_number="return-1",
+        erp_sales_owner=None,
+        erp_sales_owner_status="not_found",
+        refund_financial_status="PENDING",
+        platform_after_sales_status=3,
+        platform_order_refund_status=2,
+        exception_type="退货实收异常",
+        items=[],
+    )
+    warehouse_return = SimpleNamespace(
+        receipt_sn="receipt-1",
+        inspection_note="颜色不一致",
+        items=[],
+    )
+    session = _TodoSession([(order, "测试店铺", warehouse_return)])
+
+    result = Module2ExceptionTodoService(session).run(  # type: ignore[arg-type]
+        dry_run=False
+    )
+
+    assert result.tasks_created == 1
+    assert result.skipped_missing_owner == 1
+    assert len(session.added) == 1
+    assert session.added[0].payload["assignee"] == ""
+    assert session.added[0].payload["reason_text"] == "颜色不一致"
+    assert session.commits == 1
 
 
 def test_module2_todo_uses_a_distinct_key_after_platform_refund() -> None:

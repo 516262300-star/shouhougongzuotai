@@ -52,11 +52,17 @@ class Module3ExceptionTodoCandidate:
             f"ERP订单号：{erp_order}。"
             "请核对商家应收、订单欠货和退款单状态，处理后回到售后工作台复查。"
         )
+        assignee = (
+            str(self.sales_owner or "").strip()
+            if self.sales_owner_status == "matched"
+            else ""
+        )
         return {
             "origin": "module3",
             "reason_code": f"ERP_REFUND_{self.exception_status.upper()}",
             "reason_text": message,
-            "assignee": str(self.sales_owner or "").strip(),
+            "assignee": assignee,
+            "assignee_status": self.sales_owner_status,
             "started_at": started_at,
             "marker": marker,
             "content": content,
@@ -283,7 +289,6 @@ class Module3ExceptionTodoService:
                     or not str(candidate.sales_owner or "").strip()
                 ):
                     result.skipped_missing_owner += 1
-                    continue
                 if dry_run:
                     continue
                 outcome = self.repository.enqueue_todo(

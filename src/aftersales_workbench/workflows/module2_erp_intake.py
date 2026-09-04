@@ -493,7 +493,12 @@ class Module2ExceptionTodoService:
                 else "RETURN_ITEM_MISMATCH"
             ),
             "reason_text": reason,
-            "assignee": str(order.erp_sales_owner).strip(),
+            "assignee": (
+                str(order.erp_sales_owner or "").strip()
+                if order.erp_sales_owner_status == "matched"
+                else ""
+            ),
+            "assignee_status": order.erp_sales_owner_status,
             "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "marker": marker,
             "content": content,
@@ -560,7 +565,6 @@ class Module2ExceptionTodoService:
                 order.erp_sales_owner or ""
             ).strip():
                 result.skipped_missing_owner += 1
-                continue
             result.tasks_created += 1
             if dry_run:
                 continue

@@ -99,12 +99,16 @@ def test_module3_exception_todo_service_enqueues_and_counts_results() -> None:
     assert repository.rollbacks == 0
 
 
-def test_module3_exception_todo_skips_missing_owner() -> None:
+def test_module3_exception_todo_keeps_missing_owner_in_local_queue() -> None:
     repository = FakeRepository(
         [
             _candidate(owner=None, owner_status="not_found"),
             _candidate(after_sales_sn="AFTER-2", owner="", owner_status="matched"),
-        ]
+        ],
+        outcomes=(
+            ManualTodoEnqueueResult.CREATED,
+            ManualTodoEnqueueResult.CREATED,
+        ),
     )
 
     result = Module3ExceptionTodoService(repository).run(  # type: ignore[arg-type]
@@ -113,5 +117,9 @@ def test_module3_exception_todo_skips_missing_owner() -> None:
     )
 
     assert result.skipped_missing_owner == 2
-    assert repository.enqueued == []
+    assert result.tasks_created == 2
+    assert len(repository.enqueued) == 2
+    payload = repository.enqueued[0].task_payload(started_at="now")
+    assert payload["assignee"] == ""
+    assert payload["assignee_status"] == "not_found"
     assert repository.commits == 1
