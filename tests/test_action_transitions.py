@@ -244,6 +244,25 @@ def test_module1_tmall_returned_holds_refund_for_manual_review() -> None:
     assert "天猫试运行" in order.exception_type
 
 
+def test_module1_tmall_returned_enabled_shop_queues_refund() -> None:
+    order = _order()
+    order.platform = Platform.TMALL
+    order.shop_code = "tmall-shop-03"
+    order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED
+    coordinator = TestCoordinator(
+        _task(AutomationActionType.QYWX_INTERCEPT_NOTIFY), order
+    )
+    coordinator.tmall_refund_shop_codes = {"tmall-shop-03"}
+
+    changed = coordinator.confirm_intercept_result(
+        after_sales_sn="after-1",
+        result=InterceptResult.RETURNED,
+    )
+
+    assert changed is True
+    assert coordinator.enqueued[0][0] is AutomationActionType.TMALL_AGREE_REFUND
+
+
 def test_module1_returned_skips_pdd_when_platform_already_refunded() -> None:
     order = _order()
     order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED

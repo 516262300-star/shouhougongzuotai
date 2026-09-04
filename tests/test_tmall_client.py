@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 
 import httpx
 import pytest
 from pydantic import SecretStr
 
 from aftersales_workbench.integrations.tmall.client import (
+    TAOBAO_REFUND_GET,
     TAOBAO_REFUNDS_RECEIVE_GET,
+    TAOBAO_RP_REFUND_REVIEW,
+    TAOBAO_RP_REFUNDS_AGREE,
     TmallApiError,
     TmallClient,
+    TmallConfigurationError,
     TmallCredentials,
     generate_sign,
 )
@@ -127,4 +132,133 @@ def test_api_error_preserves_safe_diagnostics(credentials: TmallCredentials) -> 
     assert caught.value.code == 27
     assert caught.value.request_id == "request-1"
     assert "session-key" not in str(caught.value)
+    http_client.close()
+
+
+def test_write_request_is_blocked_by_default(credentials: TmallCredentials) -> None:
+    http_client = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
+    client = TmallClient(credentials, http_client=http_client)
+
+    with pytest.raises(TmallConfigurationError, match="TMALL_WRITE_ENABLED"):
+        client.execute_write(TAOBAO_RP_REFUND_REVIEW, refund_id=1)
+
+    http_client.close()
+
+
+def test_agree_refund_uses_main_review_then_child_agree(
+    credentials: TmallCredentials,
+) -> None:
+    requests: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = dict(httpx.QueryParams(request.content.decode()))
+        requests.append(payload)
+        if payload["method"] == TAOBAO_REFUND_GET:
+            body = {
+                "refund_get_response": {
+                    "refund": {
+                        "refund_id": "9001",
+                        "status": "WAIT_SELLER_CONFIRM_GOODS",
+                        "refund_fee": "26.42",
+                        "refund_version": "10001",
+                        "refund_phase": "onsale",
+                    }
+                }
+            }
+        elif payload["method"] == TAOBAO_RP_REFUND_REVIEW:
+            body = {
+                "rp_refund_review_response": {
+                    "is_success": True,
+                    "request_id": "review-request",
+                }
+            }
+        else:
+            body = {
+                "rp_refunds_agree_response": {
+                    "succ": True,
+                    "request_id": "agree-request",
+                }
+            }
+        return httpx.Response(200, json=body, request=request)
+
+    child_credentials = TmallCredentials(
+        shop_code="tmall-shop-01",
+        app_key=credentials.app_key,
+        app_secret=credentials.app_secret,
+        session_key=SecretStr("refund-child-session"),
+    )
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    sleeps: list[float] = []
+    client = TmallClient(
+        credentials,
+        write_enabled=True,
+        http_client=http_client,
+        sleep=sleeps.append,
+    )
+
+    result = client.agree_refund(
+        refund_id=9001,
+        refund_credentials=child_credentials,
+    )
+
+    assert [request["method"] for request in requests] == [
+        TAOBAO_REFUND_GET,
+        TAOBAO_RP_REFUND_REVIEW,
+        TAOBAO_RP_REFUNDS_AGREE,
+    ]
+    assert requests[1]["session"] == "session-key"
+    assert requests[2]["session"] == "refund-child-session"
+    assert requests[2]["refund_infos"] == "9001|2642|10001|onsale"
+    assert requests[2]["ignore_code"] == "true"
+    assert sleeps == [1.0]
+    assert result["already_refunded"] is False
+    assert result["agree_request_id"] == "agree-request"
+    http_client.close()
+
+
+def test_agree_refund_blocks_amount_over_limit_before_any_write(
+    credentials: TmallCredentials,
+) -> None:
+    requests: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = dict(httpx.QueryParams(request.content.decode()))
+        requests.append(payload)
+        return httpx.Response(
+            200,
+            json={
+                "refund_get_response": {
+                    "refund": {
+                        "refund_id": "9002",
+                        "status": "WAIT_SELLER_CONFIRM_GOODS",
+                        "refund_fee": "30.01",
+                        "refund_version": "10002",
+                        "refund_phase": "onsale",
+                    }
+                }
+            },
+            request=request,
+        )
+
+    child_credentials = TmallCredentials(
+        shop_code="tmall-shop-01",
+        app_key=credentials.app_key,
+        app_secret=credentials.app_secret,
+        session_key=SecretStr("refund-child-session"),
+    )
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = TmallClient(
+        credentials,
+        write_enabled=True,
+        http_client=http_client,
+    )
+
+    with pytest.raises(TmallConfigurationError, match="超过自动退款上限"):
+        client.agree_refund(
+            refund_id=9002,
+            refund_credentials=child_credentials,
+            max_refund_amount=Decimal("30.00"),
+        )
+
+    assert [request["method"] for request in requests] == [TAOBAO_REFUND_GET]
     http_client.close()

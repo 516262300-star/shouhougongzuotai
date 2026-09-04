@@ -12,6 +12,9 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
 )
 from aftersales_workbench.db.session import SessionLocal
+from aftersales_workbench.integrations.tmall.shops import (
+    load_refund_enabled_tmall_shops,
+)
 from aftersales_workbench.workflows.actions import (
     ActionCoordinator,
     ErpResultCode,
@@ -33,6 +36,8 @@ def execute_main(argv: list[str] | None = None) -> int:
             "QYWX_INTERCEPT_NOTIFY",
             "PDD_AGREE_REFUND",
             "PDD_AGREE_RETURN_REFUND",
+            "TMALL_AGREE_REFUND",
+            "TMALL_AGREE_RETURN_REFUND",
             "ERP_CREATE_MANUAL_TODO",
         ),
         help="限定动作类型；默认扫描企微、退款与 ERP 人工待办",
@@ -126,8 +131,15 @@ def intercept_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result", required=True, choices=[item.value for item in InterceptResult])
     parser.add_argument("--note")
     args = parser.parse_args(argv)
+    settings = get_settings()
     with SessionLocal() as session:
-        changed = ActionCoordinator(session).confirm_intercept_result(
+        changed = ActionCoordinator(
+            session,
+            tmall_refund_shop_codes={
+                shop.shop_code for shop in load_refund_enabled_tmall_shops(settings)
+            },
+            tmall_min_order_id=settings.tmall_module123_min_order_id,
+        ).confirm_intercept_result(
             after_sales_sn=args.after_sales_sn,
             result=InterceptResult(args.result),
             note=args.note,

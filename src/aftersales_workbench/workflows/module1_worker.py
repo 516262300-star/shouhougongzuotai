@@ -36,7 +36,10 @@ from aftersales_workbench.integrations.pdd.sync import PddRefundSyncService
 from aftersales_workbench.integrations.tmall.repository import (
     SqlAlchemyTmallSyncRepository,
 )
-from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
+from aftersales_workbench.integrations.tmall.shops import (
+    load_configured_tmall_shops,
+    load_refund_enabled_tmall_shops,
+)
 from aftersales_workbench.integrations.tmall.sync import TmallRefundSyncService
 from aftersales_workbench.workflows.actions import ExternalActionExecutor
 from aftersales_workbench.workflows.desktop_notice import (
@@ -149,6 +152,7 @@ class Module1WorkerCycleResult:
     module2_refund_tasks: WorkerStageResult | None = None
     module2_exception_todos: WorkerStageResult | None = None
     module2_pdd_refunds: WorkerStageResult | None = None
+    module2_tmall_refunds: WorkerStageResult | None = None
     module3_tasks: WorkerStageResult | None = None
     module3_erp_refunds: WorkerStageResult | None = None
     module3_exception_todos: WorkerStageResult | None = None
@@ -163,6 +167,7 @@ class Module1WorkerCycleResult:
     erp_todo_tasks: WorkerStageResult | None = None
     erp_todo_publish: WorkerStageResult | None = None
     pdd_refund: WorkerStageResult | None = None
+    tmall_refund: WorkerStageResult | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -214,6 +219,7 @@ class Module1WorkerCycleResult:
                     "post_refund_waiting_tracking",
                     "post_refund_waiting_receipt",
                     "post_refund_verified",
+                    "tmall_refunds_ready",
                     "tmall_refunds_held",
                     "ambiguous",
                     "unavailable",
@@ -235,6 +241,10 @@ class Module1WorkerCycleResult:
             "module2_pdd_refunds": self._stage_counts(
                 self.module2_pdd_refunds,
                 ("scanned", "pdd_refunds", "succeeded", "failed"),
+            ),
+            "module2_tmall_refunds": self._stage_counts(
+                self.module2_tmall_refunds,
+                ("scanned", "tmall_refunds", "succeeded", "failed"),
             ),
             "module3_tasks": self._stage_counts(
                 self.module3_tasks,
@@ -293,6 +303,7 @@ class Module1WorkerCycleResult:
                     "notices_ready",
                     "notices_cancelled",
                     "logistics_query_failed",
+                    "tmall_refunds_ready",
                     "tmall_refunds_held",
                 ),
             ),
@@ -305,6 +316,7 @@ class Module1WorkerCycleResult:
                 (
                     "scanned",
                     "allowed_refunds",
+                    "tmall_refunds_ready",
                     "tmall_refunds_held",
                     "blocked_delivery",
                     "failed",
@@ -371,6 +383,10 @@ class Module1WorkerCycleResult:
                 self.pdd_refund,
                 ("scanned", "succeeded", "failed"),
             ),
+            "tmall_refund": self._stage_counts(
+                self.tmall_refund,
+                ("scanned", "tmall_refunds", "succeeded", "failed"),
+            ),
         }
 
     @staticmethod
@@ -408,6 +424,14 @@ class Module1WorkerRuntime:
             else []
         )
         self.tmall_shop_codes = tuple(shop.shop_code for shop in self.tmall_shops)
+        self.tmall_refund_shops = (
+            load_refund_enabled_tmall_shops(self.settings)
+            if self.settings.tmall_module123_trial_enabled
+            else []
+        )
+        self.tmall_refund_shop_codes = tuple(
+            shop.shop_code for shop in self.tmall_refund_shops
+        )
         self.shop_codes = self.pdd_shop_codes + self.tmall_shop_codes
         self._notification_preflight_completed = False
         self._pdd_sync_completed = False
@@ -446,7 +470,11 @@ class Module1WorkerRuntime:
         result.erp_todo_tasks = self._capture(self._prepare_erp_todo_tasks)
         result.erp_todo_publish = self._capture(self._process_erp_todos)
         result.pdd_refund = self._capture(self._process_pdd_refunds)
+        result.tmall_refund = self._capture(self._process_tmall_refunds)
         result.module2_pdd_refunds = self._capture(self._process_module2_pdd_refunds)
+        result.module2_tmall_refunds = self._capture(
+            self._process_module2_tmall_refunds
+        )
         stages = (
             result.sync,
             result.tmall_sync,
@@ -468,7 +496,9 @@ class Module1WorkerRuntime:
             result.erp_todo_tasks,
             result.erp_todo_publish,
             result.pdd_refund,
+            result.tmall_refund,
             result.module2_pdd_refunds,
+            result.module2_tmall_refunds,
         )
         result.ok = all(stage is not None and stage.status != "failed" for stage in stages)
         result.finished_at = _utc_iso()
@@ -486,13 +516,14 @@ class Module1WorkerRuntime:
                 post_refund_waiting_tracking=0,
                 post_refund_waiting_receipt=0,
                 post_refund_verified=0,
+                tmall_refunds_ready=0,
                 tmall_refunds_held=0,
                 ambiguous=0,
                 unavailable=0,
             )
-        if not self._pdd_sync_completed:
+        if not self._active_module12_shop_codes:
             return WorkerStageResult.skipped(
-                "当轮拼多多同步未成功，已阻止模块2 ERP退货单核对",
+                "当轮平台同步未成功，已阻止模块2 ERP退货单核对",
                 scanned=0,
                 receipts_created=0,
                 inspections_passed=0,
@@ -501,6 +532,7 @@ class Module1WorkerRuntime:
                 post_refund_waiting_tracking=0,
                 post_refund_waiting_receipt=0,
                 post_refund_verified=0,
+                tmall_refunds_ready=0,
                 tmall_refunds_held=0,
                 ambiguous=0,
                 unavailable=0,
@@ -509,7 +541,7 @@ class Module1WorkerRuntime:
         try:
             with SessionLocal() as session:
                 run = Module2ErpIntakeService(session, matcher).run(
-                    shop_codes=self.shop_codes,
+                    shop_codes=self._active_module12_shop_codes,
                     min_order_id=self.settings.module2_erp_intake_min_order_id,
                     include_tmall=self._tmall_trial_active,
                     tmall_min_order_id=self.settings.tmall_module123_min_order_id,
@@ -535,9 +567,9 @@ class Module1WorkerRuntime:
                 tasks_created=0,
                 tasks_existing=0,
             )
-        if not self._pdd_sync_completed:
+        if not self._active_module12_shop_codes:
             return WorkerStageResult.skipped(
-                "当轮拼多多同步未成功，已阻止模块2退款任务入队",
+                "当轮平台同步未成功，已阻止模块2退款任务入队",
                 scanned=0,
                 tasks_created=0,
                 tasks_existing=0,
@@ -546,8 +578,10 @@ class Module1WorkerRuntime:
             run = Module2RefundService(
                 SqlAlchemyModule2RefundRepository(session)
             ).run(
-                shop_codes=self.shop_codes,
+                shop_codes=self._active_module12_shop_codes,
                 min_return_id=self.settings.module2_refund_min_return_id,
+                include_tmall=self._tmall_trial_active,
+                tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.options.task_limit,
                 dry_run=False,
             )
@@ -688,6 +722,13 @@ class Module1WorkerRuntime:
             and self._tmall_sync_completed
         )
 
+    @property
+    def _active_module12_shop_codes(self) -> tuple[str, ...]:
+        return (
+            (self.pdd_shop_codes if self._pdd_sync_completed else ())
+            + (self.tmall_refund_shop_codes if self._tmall_trial_active else ())
+        )
+
     def _sync(self) -> WorkerStageResult:
         with SessionLocal() as session:
             sync_results = PddRefundSyncService(
@@ -821,9 +862,16 @@ class Module1WorkerRuntime:
         return WorkerStageResult.completed(result.safe_dict())
 
     def _prepare_intercept_tasks(self) -> WorkerStageResult:
+        if not self._active_module12_shop_codes:
+            return WorkerStageResult.skipped(
+                "当轮平台同步未成功，已阻止模块1拦截任务入队",
+                scanned=0,
+                tasks_created=0,
+                tasks_existing=0,
+            )
         with SessionLocal() as session:
             run = Module1InterceptService(SqlAlchemyModule1Repository(session)).run(
-                shop_codes=self.shop_codes,
+                shop_codes=self._active_module12_shop_codes,
                 include_tmall=self._tmall_trial_active,
                 tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.options.task_limit,
@@ -962,6 +1010,8 @@ class Module1WorkerRuntime:
                     carrier_map=self.settings.kuaidi100_carrier_map,
                     default_phone=default_phone,
                     polling_policy=build_logistics_polling_policy(self.settings),
+                    tmall_refund_shop_codes=set(self.tmall_refund_shop_codes),
+                    tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                     notification_min_task_id=(
                         self.settings.module1_notification_min_task_id
                     ),
@@ -991,6 +1041,8 @@ class Module1WorkerRuntime:
                     default_phone=default_phone,
                     polling_policy=build_logistics_polling_policy(self.settings),
                     business_hours=build_refund_business_hours(self.settings),
+                    tmall_refund_shop_codes=set(self.tmall_refund_shop_codes),
+                    tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 ).run(limit=self.options.task_limit, dry_run=False)
         finally:
             client.close()
@@ -1026,6 +1078,40 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"拼多多退款执行失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _process_tmall_refunds(self) -> WorkerStageResult:
+        if not self._tmall_trial_active:
+            return WorkerStageResult.skipped(
+                "当轮天猫同步未成功或模块接入未启用，已阻止模块1天猫退款",
+                scanned=0,
+                tmall_refunds=0,
+                succeeded=0,
+                failed=0,
+            )
+        apply = self.settings.module1_tmall_refund_execution_enabled
+        if apply and not self.settings.tmall_write_enabled:
+            raise RuntimeError(
+                "模块1天猫退款执行已启用，但 TMALL_WRITE_ENABLED=false"
+            )
+        with SessionLocal() as session:
+            run = ExternalActionExecutor(session, self.settings).run(
+                action_types=(AutomationActionType.TMALL_AGREE_REFUND,),
+                limit=self.options.task_limit,
+                dry_run=not apply,
+            )
+        details = run.safe_dict()
+        if not apply:
+            return WorkerStageResult.skipped(
+                "模块1天猫退款执行总开关关闭，仅预览已放行退款任务",
+                **details,
+            )
+        if run.failed:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"模块1天猫退款执行失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)
 
@@ -1068,6 +1154,48 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=f"模块2平台退款执行失败 {run.failed} 笔",
+            )
+        return WorkerStageResult.completed(details)
+
+    def _process_module2_tmall_refunds(self) -> WorkerStageResult:
+        if not self.settings.module2_worker_enabled:
+            return WorkerStageResult.skipped(
+                "模块2后台运行未启用",
+                scanned=0,
+                tmall_refunds=0,
+                succeeded=0,
+                failed=0,
+            )
+        if not self._tmall_trial_active:
+            return WorkerStageResult.skipped(
+                "当轮天猫同步未成功，已阻止模块2天猫退款",
+                scanned=0,
+                tmall_refunds=0,
+                succeeded=0,
+                failed=0,
+            )
+        apply = self.settings.module2_tmall_refund_execution_enabled
+        if apply and not self.settings.tmall_write_enabled:
+            raise RuntimeError(
+                "模块2天猫退款执行已启用，但 TMALL_WRITE_ENABLED=false"
+            )
+        with SessionLocal() as session:
+            run = ExternalActionExecutor(session, self.settings).run(
+                action_types=(AutomationActionType.TMALL_AGREE_RETURN_REFUND,),
+                limit=self.options.task_limit,
+                dry_run=not apply,
+            )
+        details = run.safe_dict()
+        if not apply:
+            return WorkerStageResult.skipped(
+                "模块2天猫退款执行总开关关闭，仅保留验货通过任务",
+                **details,
+            )
+        if run.failed:
+            return WorkerStageResult(
+                status="failed",
+                details=details,
+                error=f"模块2天猫退款执行失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)
 

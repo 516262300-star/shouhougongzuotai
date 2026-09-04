@@ -36,12 +36,14 @@ _MODULE_STAGES = {
         "logistics_gate",
         "module1_erp_refunds",
         "pdd_refund",
+        "tmall_refund",
     ),
     "module2": (
         "module2_erp_intake",
         "module2_refund_tasks",
         "module2_exception_todos",
         "module2_pdd_refunds",
+        "module2_tmall_refunds",
     ),
     "module3": (
         "module3_tasks",
@@ -186,6 +188,10 @@ class RuntimeMonitorService:
                 "desktop_send_enabled": self.settings.module1_desktop_send_enabled,
                 "qywx_write_enabled": self.settings.qywx_write_enabled,
                 "module1_refund_enabled": self.settings.module1_pdd_refund_execution_enabled,
+                "module1_tmall_refund_enabled": (
+                    self.settings.module1_tmall_refund_execution_enabled
+                    and self.settings.tmall_write_enabled
+                ),
                 "tmall_module123_trial_enabled": (
                     self.settings.tmall_module123_trial_enabled
                 ),
@@ -196,6 +202,16 @@ class RuntimeMonitorService:
                 "module2_refund_enabled": (
                     self.settings.module2_pdd_refund_execution_enabled
                     and self.settings.pdd_write_enabled
+                ),
+                "module2_tmall_refund_enabled": (
+                    self.settings.module2_tmall_refund_execution_enabled
+                    and self.settings.tmall_write_enabled
+                ),
+                "tmall_refund_enabled_shop_numbers": (
+                    self.settings.tmall_refund_enabled_shop_numbers
+                ),
+                "tmall_auto_refund_max_amount": str(
+                    self.settings.tmall_auto_refund_max_amount
                 ),
                 "module2_refund_min_return_id": self.settings.module2_refund_min_return_id,
                 "module2_erp_intake_min_order_id": (

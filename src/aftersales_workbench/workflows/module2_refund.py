@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -28,6 +28,7 @@ class Module2RefundCandidate:
     warehouse_return_id: int
     receipt_sn: str
     inspected_at: datetime | None
+    platform: Platform = Platform.PDD
 
 
 @dataclass(slots=True)
@@ -48,6 +49,8 @@ class Module2RefundRepository(Protocol):
         shop_codes: tuple[str, ...] | None,
         min_return_id: int,
         limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[Module2RefundCandidate]: ...
 
     def enqueue_refund(self, candidate: Module2RefundCandidate) -> bool: ...
@@ -67,11 +70,17 @@ class SqlAlchemyModule2RefundRepository:
         shop_codes: tuple[str, ...] | None,
         min_return_id: int,
         limit: int,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
     ) -> list[Module2RefundCandidate]:
         action_exists = exists().where(
             AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
-            AftersalesActionTask.action_type
-            == AutomationActionType.PDD_AGREE_RETURN_REFUND,
+            AftersalesActionTask.action_type.in_(
+                (
+                    AutomationActionType.PDD_AGREE_RETURN_REFUND,
+                    AutomationActionType.TMALL_AGREE_RETURN_REFUND,
+                )
+            ),
         )
         statement = (
             select(
@@ -80,6 +89,7 @@ class SqlAlchemyModule2RefundRepository:
                 WarehouseReturnRecord.id,
                 WarehouseReturnRecord.receipt_sn,
                 WarehouseReturnRecord.inspected_at,
+                Shop.platform,
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .join(
@@ -87,17 +97,33 @@ class SqlAlchemyModule2RefundRepository:
                 WarehouseReturnRecord.after_sales_sn == AfterSalesOrder.after_sales_sn,
             )
             .where(
-                Shop.platform == Platform.PDD,
+                or_(
+                    and_(
+                        Shop.platform == Platform.PDD,
+                        AfterSalesOrder.platform_after_sales_status.in_((2, 3)),
+                        or_(
+                            AfterSalesOrder.platform_order_refund_status.is_(None),
+                            AfterSalesOrder.platform_order_refund_status != 4,
+                        ),
+                    ),
+                    and_(
+                        include_tmall,
+                        Shop.platform == Platform.TMALL,
+                        AfterSalesOrder.id >= tmall_min_order_id,
+                        AfterSalesOrder.platform_after_sales_status_text.in_(
+                            ("WAIT_SELLER_AGREE", "WAIT_SELLER_CONFIRM_GOODS")
+                        ),
+                        or_(
+                            AfterSalesOrder.refund_financial_status.is_(None),
+                            AfterSalesOrder.refund_financial_status != "SUCCESS",
+                        ),
+                    ),
+                ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
                 AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_PASS,
                 WarehouseReturnRecord.inspection_status
                 == WarehouseInspectionStatus.PASS,
                 WarehouseReturnRecord.id >= min_return_id,
-                AfterSalesOrder.platform_after_sales_status.in_((2, 3)),
-                or_(
-                    AfterSalesOrder.platform_order_refund_status.is_(None),
-                    AfterSalesOrder.platform_order_refund_status != 4,
-                ),
                 ~action_exists,
             )
             .order_by(WarehouseReturnRecord.id)
@@ -112,14 +138,20 @@ class SqlAlchemyModule2RefundRepository:
                 warehouse_return_id=row.id,
                 receipt_sn=row.receipt_sn,
                 inspected_at=row.inspected_at,
+                platform=Platform(row.platform),
             )
             for row in self.session.execute(statement).all()
         ]
 
     def enqueue_refund(self, candidate: Module2RefundCandidate) -> bool:
+        action_type = (
+            AutomationActionType.TMALL_AGREE_RETURN_REFUND
+            if candidate.platform is Platform.TMALL
+            else AutomationActionType.PDD_AGREE_RETURN_REFUND
+        )
         idempotency_key = (
             f"module2:{candidate.after_sales_sn}:"
-            f"{AutomationActionType.PDD_AGREE_RETURN_REFUND.value}"
+            f"{action_type.value}"
         )
         existing = self.session.scalar(
             select(AftersalesActionTask.id).where(
@@ -131,7 +163,7 @@ class SqlAlchemyModule2RefundRepository:
         self.session.add(
             AftersalesActionTask(
                 after_sales_sn=candidate.after_sales_sn,
-                action_type=AutomationActionType.PDD_AGREE_RETURN_REFUND,
+                action_type=action_type,
                 action_status=AutomationTaskStatus.PENDING,
                 idempotency_key=idempotency_key,
                 payload={
@@ -165,6 +197,8 @@ class Module2RefundService:
         *,
         shop_codes: tuple[str, ...] | None = None,
         min_return_id: int = 0,
+        include_tmall: bool = False,
+        tmall_min_order_id: int = 0,
         limit: int = 20,
         dry_run: bool = True,
     ) -> Module2RefundRunResult:
@@ -174,10 +208,18 @@ class Module2RefundService:
             raise ValueError("limit 必须在 1–500 之间")
         result = Module2RefundRunResult(dry_run=dry_run)
         try:
+            list_kwargs: dict[str, Any] = {
+                "shop_codes": shop_codes,
+                "min_return_id": min_return_id,
+                "limit": limit,
+            }
+            if include_tmall:
+                list_kwargs.update(
+                    include_tmall=True,
+                    tmall_min_order_id=tmall_min_order_id,
+                )
             candidates = self.repository.list_candidates(
-                shop_codes=shop_codes,
-                min_return_id=min_return_id,
-                limit=limit,
+                **list_kwargs,
             )
             result.scanned = len(candidates)
             if dry_run:

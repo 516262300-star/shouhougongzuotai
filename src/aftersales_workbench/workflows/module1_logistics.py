@@ -208,6 +208,7 @@ class LogisticsGateRunResult:
     blocked_delivery: int = 0
     return_detected: int = 0
     waiting_erp_match: int = 0
+    tmall_refunds_ready: int = 0
     tmall_refunds_held: int = 0
     failed: int = 0
 
@@ -334,6 +335,8 @@ class Module1LogisticsGateService:
         default_phone: str | None = None,
         polling_policy: LogisticsPollingPolicy | None = None,
         business_hours: RefundBusinessHours | None = None,
+        tmall_refund_shop_codes: set[str] | None = None,
+        tmall_min_order_id: int = 0,
         now_provider: Callable[[], datetime] | None = None,
     ) -> None:
         self.session = session
@@ -342,6 +345,8 @@ class Module1LogisticsGateService:
         self.default_phone = default_phone
         self.polling_policy = polling_policy or LogisticsPollingPolicy()
         self.business_hours = business_hours or RefundBusinessHours()
+        self.tmall_refund_shop_codes = tmall_refund_shop_codes or set()
+        self.tmall_min_order_id = tmall_min_order_id
         self.now_provider = now_provider or _utcnow_naive
 
     def run(
@@ -467,7 +472,11 @@ class Module1LogisticsGateService:
             elif not platform_refunded:
                 if business_open:
                     if platform is Platform.TMALL:
-                        result.tmall_refunds_held += 1
+                        if self._tmall_refund_enabled(order):
+                            result.tmall_refunds_ready += 1
+                            result.allowed_refunds += 1
+                        else:
+                            result.tmall_refunds_held += 1
                     else:
                         result.allowed_refunds += 1
                 else:
@@ -481,7 +490,11 @@ class Module1LogisticsGateService:
         ):
             if business_open:
                 if platform is Platform.TMALL:
-                    result.tmall_refunds_held += 1
+                    if self._tmall_refund_enabled(order):
+                        result.tmall_refunds_ready += 1
+                        result.allowed_refunds += 1
+                    else:
+                        result.tmall_refunds_held += 1
                 else:
                     result.allowed_refunds += 1
             else:
@@ -580,13 +593,32 @@ class Module1LogisticsGateService:
     ) -> None:
         order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
         if platform is Platform.TMALL:
-            order.exception_type = "天猫试运行：物流已满足条件，等待人工审核退款"
-            return
+            if not self._tmall_refund_enabled(order):
+                order.exception_type = "天猫试运行：该店未配置退款子账号，等待人工审核"
+                return
+            order.exception_type = None
+            action_type = AutomationActionType.TMALL_AGREE_REFUND
+        else:
+            action_type = AutomationActionType.PDD_AGREE_REFUND
         self._enqueue(
             order.after_sales_sn,
-            AutomationActionType.PDD_AGREE_REFUND,
+            action_type,
             {"origin": "module1", "refund_gate": state.value},
         )
+
+    def _tmall_refund_enabled(self, order: AfterSalesOrder) -> bool:
+        if int(getattr(order, "id", 0) or 0) < self.tmall_min_order_id:
+            return False
+        explicit = str(getattr(order, "shop_code", None) or "").strip()
+        if explicit:
+            return explicit in self.tmall_refund_shop_codes
+        shop_id = getattr(order, "shop_id", None)
+        if shop_id is None:
+            return False
+        shop_code = self.session.scalar(
+            select(Shop.shop_code).where(Shop.shop_id == shop_id)
+        )
+        return str(shop_code or "") in self.tmall_refund_shop_codes
 
     def _enqueue(
         self,
@@ -602,7 +634,11 @@ class Module1LogisticsGateService:
         ).scalar_one_or_none()
         if existing is not None:
             if (
-                action_type is AutomationActionType.PDD_AGREE_REFUND
+                action_type
+                in {
+                    AutomationActionType.PDD_AGREE_REFUND,
+                    AutomationActionType.TMALL_AGREE_REFUND,
+                }
                 and AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.CANCELLED
             ):
                 existing.action_status = AutomationTaskStatus.PENDING
@@ -628,19 +664,29 @@ class Module1LogisticsGateService:
         *,
         reason: str = "物流退款闸门已冻结自动退款",
     ) -> bool:
-        task = self.session.execute(
+        query_result = self.session.execute(
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == after_sales_sn,
-                AftersalesActionTask.action_type == AutomationActionType.PDD_AGREE_REFUND,
+                AftersalesActionTask.action_type.in_(
+                    (
+                        AutomationActionType.PDD_AGREE_REFUND,
+                        AutomationActionType.TMALL_AGREE_REFUND,
+                    )
+                ),
             )
-        ).scalar_one_or_none()
-        if task is None:
-            return False
-        if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
-            return False
-        task.action_status = AutomationTaskStatus.CANCELLED
-        task.last_error = reason
-        return True
+        )
+        if hasattr(query_result, "scalars"):
+            tasks = list(query_result.scalars().all())
+        else:
+            task = query_result.scalar_one_or_none()
+            tasks = [task] if task is not None else []
+        changed = False
+        for task in tasks:
+            if AutomationTaskStatus(task.action_status) is AutomationTaskStatus.PENDING:
+                task.action_status = AutomationTaskStatus.CANCELLED
+                task.last_error = reason
+                changed = True
+        return changed
 
 
 def build_kuaidi100_client(settings: Settings) -> Kuaidi100Client:

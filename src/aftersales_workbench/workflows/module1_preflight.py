@@ -12,6 +12,7 @@ from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
     Platform,
+    Shop,
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.module1_logistics import (
@@ -45,6 +46,7 @@ class NotificationPreflightResult:
     logistics_query_failed: int = 0
     manual_review_required: int = 0
     tmall_refunds_held: int = 0
+    tmall_refunds_ready: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
         return asdict(self)
@@ -83,6 +85,8 @@ class Module1NotificationPreflightService:
         default_phone: str | None = None,
         notification_min_task_id: int = 0,
         polling_policy: LogisticsPollingPolicy | None = None,
+        tmall_refund_shop_codes: set[str] | None = None,
+        tmall_min_order_id: int = 0,
     ) -> None:
         if notification_min_task_id < 0:
             raise ValueError("notification_min_task_id 不能小于 0")
@@ -92,6 +96,8 @@ class Module1NotificationPreflightService:
         self.default_phone = default_phone
         self.notification_min_task_id = notification_min_task_id
         self.polling_policy = polling_policy or LogisticsPollingPolicy()
+        self.tmall_refund_shop_codes = tmall_refund_shop_codes or set()
+        self.tmall_min_order_id = tmall_min_order_id
 
     def run(
         self,
@@ -199,7 +205,11 @@ class Module1NotificationPreflightService:
             result.returning_skipped += 1
             if not self._platform_refunded(order):
                 if self._platform(payload) is Platform.TMALL:
-                    result.tmall_refunds_held += 1
+                    if self._tmall_refund_enabled(order):
+                        result.tmall_refunds_ready += 1
+                        result.refund_ready += 1
+                    else:
+                        result.tmall_refunds_held += 1
                 else:
                     result.refund_ready += 1
         elif state is LogisticsState.RETURNED:
@@ -209,7 +219,11 @@ class Module1NotificationPreflightService:
                 result.erp_match_ready += 1
             else:
                 if self._platform(payload) is Platform.TMALL:
-                    result.tmall_refunds_held += 1
+                    if self._tmall_refund_enabled(order):
+                        result.tmall_refunds_ready += 1
+                        result.refund_ready += 1
+                    else:
+                        result.tmall_refunds_held += 1
                 else:
                     result.refund_ready += 1
 
@@ -286,13 +300,32 @@ class Module1NotificationPreflightService:
         state: LogisticsState,
     ) -> None:
         if platform is Platform.TMALL:
-            order.exception_type = "天猫试运行：物流已满足条件，等待人工审核退款"
-            return
+            if not self._tmall_refund_enabled(order):
+                order.exception_type = "天猫试运行：该店未配置退款子账号，等待人工审核"
+                return
+            order.exception_type = None
+            action_type = AutomationActionType.TMALL_AGREE_REFUND
+        else:
+            action_type = AutomationActionType.PDD_AGREE_REFUND
         self._enqueue(
             order.after_sales_sn,
-            AutomationActionType.PDD_AGREE_REFUND,
+            action_type,
             {"origin": "module1", "refund_gate": state.value},
         )
+
+    def _tmall_refund_enabled(self, order: AfterSalesOrder) -> bool:
+        if int(getattr(order, "id", 0) or 0) < self.tmall_min_order_id:
+            return False
+        explicit = str(getattr(order, "shop_code", None) or "").strip()
+        if explicit:
+            return explicit in self.tmall_refund_shop_codes
+        shop_id = getattr(order, "shop_id", None)
+        if shop_id is None:
+            return False
+        shop_code = self.session.scalar(
+            select(Shop.shop_code).where(Shop.shop_id == shop_id)
+        )
+        return str(shop_code or "") in self.tmall_refund_shop_codes
 
     def _apply_query_failure(
         self,
@@ -348,7 +381,11 @@ class Module1NotificationPreflightService:
         ).scalar_one_or_none()
         if existing is not None:
             if (
-                action_type is AutomationActionType.PDD_AGREE_REFUND
+                action_type
+                in {
+                    AutomationActionType.PDD_AGREE_REFUND,
+                    AutomationActionType.TMALL_AGREE_REFUND,
+                }
                 and AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.CANCELLED
             ):
                 existing.action_status = AutomationTaskStatus.PENDING

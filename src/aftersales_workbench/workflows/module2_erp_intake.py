@@ -52,6 +52,7 @@ class Module2ErpIntakeRunResult:
     post_refund_waiting_tracking: int = 0
     post_refund_waiting_receipt: int = 0
     post_refund_verified: int = 0
+    tmall_refunds_ready: int = 0
     tmall_refunds_held: int = 0
     ambiguous: int = 0
     unavailable: int = 0
@@ -182,12 +183,7 @@ class Module2ErpIntakeService:
                     if self._platform_refunded(order):
                         result.post_refund_verified += 1
                     elif platform is Platform.TMALL:
-                        result.tmall_refunds_held += 1
-                        if not dry_run:
-                            order.exception_type = (
-                                "天猫试运行：验货通过，等待人工审核退款"
-                            )
-                            self.session.commit()
+                        result.tmall_refunds_ready += 1
             except Exception:
                 self.session.rollback()
                 result.unavailable += 1

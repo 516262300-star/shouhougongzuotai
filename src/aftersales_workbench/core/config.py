@@ -138,33 +138,45 @@ class Settings(BaseSettings):
     pdd_shop_7_app: int = Field(default=2, ge=1, le=2)
     pdd_shop_7_access_token: SecretStr | None = None
 
-    # 天猫/淘宝开放平台（TOP）只读售后同步。六店共用应用凭据，各店独立 SessionKey。
+    # 天猫/淘宝开放平台（TOP）。六店共用应用凭据，各店独立主账号 SessionKey；
+    # 同意退款另用已获店铺退款权限的子账号 SessionKey。
     tmall_api_url: str = "https://eco.taobao.com/router/rest"
     tmall_app_key: SecretStr | None = None
     tmall_app_secret: SecretStr | None = None
     tmall_timeout_seconds: float = Field(default=15, gt=0, le=60)
     tmall_read_max_attempts: int = Field(default=3, ge=1, le=5)
     tmall_sync_enabled: bool = False
+    tmall_write_enabled: bool = False
     tmall_sync_initial_lookback_hours: int = Field(default=72, ge=1, le=720)
     tmall_sync_overlap_seconds: int = Field(default=300, ge=0, le=3600)
     tmall_sync_page_size: int = Field(default=100, ge=1, le=100)
     tmall_sync_window_hours: int = Field(default=24, ge=1, le=24 * 30)
-    # 模块 1/2/3 的天猫试运行总开关及独立订单水位。真实天猫退款仍保持人工。
+    # 模块 1/2/3 的天猫总开关及独立订单水位。
     tmall_module123_trial_enabled: bool = False
     tmall_module123_min_order_id: int = Field(default=0, ge=0)
+    module1_tmall_refund_execution_enabled: bool = False
+    module2_tmall_refund_execution_enabled: bool = False
+    tmall_auto_refund_max_amount: Decimal = Field(default=Decimal("30.00"), gt=0)
+    tmall_refund_enabled_shop_numbers: list[int] = Field(default_factory=list)
 
     tmall_shop_1_code: str = "tmall-shop-01"
     tmall_shop_1_session_key: SecretStr | None = None
+    tmall_shop_1_refund_session_key: SecretStr | None = None
     tmall_shop_2_code: str = "tmall-shop-02"
     tmall_shop_2_session_key: SecretStr | None = None
+    tmall_shop_2_refund_session_key: SecretStr | None = None
     tmall_shop_3_code: str = "tmall-shop-03"
     tmall_shop_3_session_key: SecretStr | None = None
+    tmall_shop_3_refund_session_key: SecretStr | None = None
     tmall_shop_4_code: str = "tmall-shop-04"
     tmall_shop_4_session_key: SecretStr | None = None
+    tmall_shop_4_refund_session_key: SecretStr | None = None
     tmall_shop_5_code: str = "tmall-shop-05"
     tmall_shop_5_session_key: SecretStr | None = None
+    tmall_shop_5_refund_session_key: SecretStr | None = None
     tmall_shop_6_code: str = "tmall-shop-06"
     tmall_shop_6_session_key: SecretStr | None = None
+    tmall_shop_6_refund_session_key: SecretStr | None = None
 
     # 其余平台售后均为只读同步。店铺凭据使用 JSON 数组，支持任意店铺数量；
     # 真实密钥只放本机 .env，不写数据库和版本库。

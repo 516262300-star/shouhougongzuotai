@@ -93,7 +93,11 @@ def _cancel_pending_module1_tasks(
     for task in tasks:
         action_type = AutomationActionType(task.action_type)
         is_module1_refund = (
-            action_type is AutomationActionType.PDD_AGREE_REFUND
+            action_type
+            in {
+                AutomationActionType.PDD_AGREE_REFUND,
+                AutomationActionType.TMALL_AGREE_REFUND,
+            }
             and str((task.payload or {}).get("origin") or "") == "module1"
         )
         if action_type in {

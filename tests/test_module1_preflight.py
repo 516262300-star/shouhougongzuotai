@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
@@ -220,6 +221,24 @@ def test_returned_refunded_order_skips_notice_and_queues_erp_match() -> None:
     assert task.action_status is AutomationTaskStatus.CANCELLED
     assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
     assert session.added[0].action_type is AutomationActionType.ERP_MATCH_RETURN_ORDER
+
+
+def test_tmall_returned_enabled_shop_queues_tmall_refund() -> None:
+    task = _task()
+    task.payload["platform"] = Platform.TMALL.value
+    order = _order()
+    order.shop_code = "tmall-shop-05"
+    session = FakeSession(task, order)
+
+    result = Module1NotificationPreflightService(
+        session,  # type: ignore[arg-type]
+        FakeQuery("退回件已签收"),
+        carrier_map={"384": "jtexpress"},
+        tmall_refund_shop_codes={"tmall-shop-05"},
+    ).run(dry_run=False)
+
+    assert result.tmall_refunds_ready == 1
+    assert session.added[0].action_type is AutomationActionType.TMALL_AGREE_REFUND
 
 
 def test_notification_preflight_credential_is_fail_closed() -> None:

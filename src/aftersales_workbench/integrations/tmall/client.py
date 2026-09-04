@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any, Literal
 
 import httpx
@@ -16,6 +17,8 @@ TAOBAO_REFUNDS_RECEIVE_GET = "taobao.refunds.receive.get"
 TAOBAO_REFUND_GET = "taobao.refund.get"
 TAOBAO_TRADE_FULLINFO_GET = "taobao.trade.fullinfo.get"
 TAOBAO_LOGISTICS_ORDERS_GET = "taobao.logistics.orders.get"
+TAOBAO_RP_REFUND_REVIEW = "taobao.rp.refund.review"
+TAOBAO_RP_REFUNDS_AGREE = "taobao.rp.refunds.agree"
 
 _RESERVED_PARAMETERS = {
     "app_key",
@@ -106,6 +109,7 @@ class TmallClient:
         timeout_seconds: float = 15,
         read_max_attempts: int = 3,
         request_method: Literal["GET", "POST"] = "POST",
+        write_enabled: bool = False,
         http_client: httpx.Client | None = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
@@ -116,6 +120,7 @@ class TmallClient:
         self.api_url = api_url
         self.read_max_attempts = read_max_attempts
         self.request_method = request_method
+        self.write_enabled = write_enabled
         self._now = now
         self._sleep = sleep
         self._owns_http_client = http_client is None
@@ -192,6 +197,28 @@ class TmallClient:
             f"请求 {method} 失败，已尝试 {self.read_max_attempts} 次"
         ) from last_error
 
+    def execute_write(self, method: str, **parameters: Any) -> dict[str, Any]:
+        """执行不可逆写请求；只发送一次，避免网关超时后重复退款。"""
+        if not self.write_enabled:
+            raise TmallConfigurationError("天猫写操作未启用（TMALL_WRITE_ENABLED=false）")
+        payload = self.build_signed_payload(method, parameters)
+        try:
+            response = self._http_client.request("POST", self.api_url, data=payload)
+            response.raise_for_status()
+            body = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise TmallTransportError(
+                f"淘宝开放平台拒绝写请求: HTTP {exc.response.status_code}"
+            ) from exc
+        except (httpx.TransportError, json.JSONDecodeError) as exc:
+            raise TmallTransportError(
+                f"写请求 {method} 结果未知，未自动重试，请人工核对平台状态"
+            ) from exc
+        if not isinstance(body, dict):
+            raise TmallTransportError("淘宝开放平台返回了非 JSON 对象")
+        self._raise_for_api_error(body)
+        return body
+
     @staticmethod
     def _raise_for_api_error(body: Mapping[str, Any]) -> None:
         error = body.get("error_response")
@@ -243,9 +270,125 @@ class TmallClient:
         fields = (
             "refund_id,tid,oid,status,order_status,has_good_return,refund_fee,"
             "total_fee,payment,reason,desc,created,modified,num,title,sku,outer_id,"
-            "buyer_nick,sid,company_name"
+            "buyer_nick,sid,company_name,refund_version,refund_phase"
         )
         return self.execute_read(TAOBAO_REFUND_GET, fields=fields, refund_id=refund_id)
+
+    def agree_refund(
+        self,
+        *,
+        refund_id: int,
+        refund_credentials: TmallCredentials,
+        max_refund_amount: Decimal = Decimal("30.00"),
+    ) -> dict[str, Any]:
+        """按旧系统已验证的两步流程审核并同意一笔天猫退款。"""
+        refund = self._refund_from_response(self.get_refund(refund_id=refund_id))
+        status = str(refund.get("status") or "").strip().upper()
+        if status == "SUCCESS":
+            return {"already_refunded": True, "refund_id": str(refund_id)}
+        if status not in {"WAIT_SELLER_AGREE", "WAIT_SELLER_CONFIRM_GOODS"}:
+            raise TmallApiError(
+                code="unexpected-refund-status",
+                message=f"退款单当前状态 {status or '空'} 不允许自动同意",
+            )
+
+        refund_version = str(refund.get("refund_version") or "").strip()
+        refund_phase = str(refund.get("refund_phase") or "").strip()
+        if not refund_version or not refund_phase:
+            raise TmallTransportError("退款详情缺少 refund_version 或 refund_phase")
+        try:
+            refund_amount = Decimal(str(refund.get("refund_fee")))
+            fee_cents = int(
+                (refund_amount * 100).quantize(
+                    Decimal("1"), rounding=ROUND_HALF_UP
+                )
+            )
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise TmallTransportError("退款详情中的 refund_fee 非法") from exc
+        if fee_cents < 0:
+            raise TmallTransportError("退款金额不能小于 0")
+        if refund_amount > max_refund_amount:
+            raise TmallConfigurationError(
+                f"天猫退款金额 {refund_amount:.2f} 元超过自动退款上限 "
+                f"{max_refund_amount:.2f} 元，已转人工处理"
+            )
+
+        review_body = self.execute_write(
+            TAOBAO_RP_REFUND_REVIEW,
+            refund_id=refund_id,
+            refund_version=refund_version,
+            refund_phase=refund_phase,
+            operator="管理系统",
+            message="售后工作台自动同意",
+            result=True,
+        )
+        review = review_body.get("rp_refund_review_response")
+        if not isinstance(review, Mapping) or not self._as_bool(review.get("is_success")):
+            raise TmallApiError(
+                code="refund-review-failed",
+                message="天猫退款审核接口未返回成功",
+                request_id=self._request_id(review_body),
+            )
+
+        # 旧系统在审核与同意之间留出平台状态落库时间。
+        self._sleep(1.0)
+        child_client = TmallClient(
+            refund_credentials,
+            api_url=self.api_url,
+            read_max_attempts=1,
+            request_method="POST",
+            write_enabled=True,
+            http_client=self._http_client,
+            now=self._now,
+            sleep=self._sleep,
+        )
+        agree_body = child_client.execute_write(
+            TAOBAO_RP_REFUNDS_AGREE,
+            refund_infos=(
+                f"{refund_id}|{fee_cents}|{refund_version}|{refund_phase}"
+            ),
+            ignore_code=True,
+        )
+        agree = agree_body.get("rp_refunds_agree_response")
+        if not isinstance(agree, Mapping) or not self._as_bool(agree.get("succ")):
+            raise TmallApiError(
+                code="refund-agree-failed",
+                message="天猫退款同意接口未返回成功",
+                request_id=self._request_id(agree_body),
+            )
+        return {
+            "already_refunded": False,
+            "refund_id": str(refund_id),
+            "refund_fee_cents": fee_cents,
+            "review_request_id": self._request_id(review_body),
+            "agree_request_id": self._request_id(agree_body),
+        }
+
+    @staticmethod
+    def _refund_from_response(body: Mapping[str, Any]) -> Mapping[str, Any]:
+        response = body.get("refund_get_response")
+        if not isinstance(response, Mapping):
+            raise TmallTransportError("退款详情响应缺少 refund_get_response")
+        refund = response.get("refund")
+        if not isinstance(refund, Mapping):
+            raise TmallTransportError("退款详情响应缺少 refund")
+        return refund
+
+    @staticmethod
+    def _request_id(body: Mapping[str, Any]) -> str | None:
+        direct = body.get("request_id")
+        if direct:
+            return str(direct)
+        for value in body.values():
+            if isinstance(value, Mapping) and value.get("request_id"):
+                return str(value["request_id"])
+        return None
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"true", "1", "yes"}
 
     def get_trade_fullinfo(self, *, tid: int) -> dict[str, Any]:
         if tid < 1:

@@ -203,6 +203,26 @@ def test_tmall_transit_holds_platform_refund_for_manual_review() -> None:
     assert "天猫试运行" in order.exception_type
 
 
+def test_tmall_refund_enabled_shop_queues_tmall_refund() -> None:
+    order = _order(platform=Platform.TMALL)
+    order.shop_code = "tmall-shop-03"
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(["快件运输中"]),
+        carrier_map={"1": "yuantong"},
+        tmall_refund_shop_codes={"tmall-shop-03"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.allowed_refunds == 1
+    assert result.tmall_refunds_ready == 1
+    assert result.tmall_refunds_held == 0
+    assert session.added[0].action_type is AutomationActionType.TMALL_AGREE_REFUND
+
+
 def test_qywx_pushed_order_enters_logistics_gate_without_manual_confirmation() -> None:
     order = _order()
     order.workflow_status = WorkflowStatus.INTERCEPT_PUSHED

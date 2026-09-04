@@ -72,6 +72,24 @@ def test_external_executor_requires_both_erp_todo_write_gates() -> None:
     enabled._validate_write_gates((AutomationActionType.ERP_CREATE_MANUAL_TODO,))
 
 
+def test_external_executor_requires_tmall_write_gate() -> None:
+    executor = ExternalActionExecutor(  # type: ignore[arg-type]
+        None,
+        Settings(_env_file=None, tmall_write_enabled=False),
+    )
+
+    with pytest.raises(WorkflowTransitionError, match="TMALL_WRITE_ENABLED"):
+        executor._validate_write_gates((AutomationActionType.TMALL_AGREE_REFUND,))
+
+    enabled = ExternalActionExecutor(  # type: ignore[arg-type]
+        None,
+        Settings(_env_file=None, tmall_write_enabled=True),
+    )
+    enabled._validate_write_gates(
+        (AutomationActionType.TMALL_AGREE_RETURN_REFUND,)
+    )
+
+
 class _CaptureTodoClient:
     def __init__(self) -> None:
         self.request = None

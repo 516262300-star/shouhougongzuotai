@@ -71,6 +71,8 @@ ACTION_LABELS = {
     "ERP_CREATE_MANUAL_TODO": "管理系统人工待办",
     "PDD_AGREE_REFUND": "拼多多同意退款",
     "PDD_AGREE_RETURN_REFUND": "拼多多同意退货退款",
+    "TMALL_AGREE_REFUND": "天猫同意退款",
+    "TMALL_AGREE_RETURN_REFUND": "天猫同意退货退款",
 }
 
 ACTION_STATUS_LABELS = {
@@ -741,7 +743,13 @@ class AftersalesRecordService:
             tasks,
             AutomationActionType.QYWX_INTERCEPT_NOTIFY,
         )
-        refund_task = self._latest_task(tasks, AutomationActionType.PDD_AGREE_REFUND)
+        refund_task = self._latest_task_any(
+            tasks,
+            (
+                AutomationActionType.PDD_AGREE_REFUND,
+                AutomationActionType.TMALL_AGREE_REFUND,
+            ),
+        )
         erp_task = self._latest_task(tasks, AutomationActionType.ERP_MATCH_RETURN_ORDER)
         logistics = order.logistics_state or self._fallback_logistics(order)
         workflow = _enum_value(order.workflow_status)
@@ -817,6 +825,21 @@ class AftersalesRecordService:
                 task
                 for task in reversed(tasks)
                 if _enum_value(task.action_type) == action_type.value
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _latest_task_any(
+        tasks: list[AftersalesActionTask],
+        action_types: tuple[AutomationActionType, ...],
+    ) -> AftersalesActionTask | None:
+        values = {action_type.value for action_type in action_types}
+        return next(
+            (
+                task
+                for task in reversed(tasks)
+                if _enum_value(task.action_type) in values
             ),
             None,
         )

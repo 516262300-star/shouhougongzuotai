@@ -75,6 +75,20 @@ def test_module2_refund_apply_enqueues_and_commits() -> None:
     assert repository.rollbacks == 0
 
 
+def test_module2_refund_passes_tmall_candidate_scope() -> None:
+    repository = FakeModule2RefundRepository()
+
+    Module2RefundService(repository).run(
+        shop_codes=("tmall-shop-01",),
+        include_tmall=True,
+        tmall_min_order_id=3349,
+        dry_run=True,
+    )
+
+    assert repository.list_kwargs["include_tmall"] is True
+    assert repository.list_kwargs["tmall_min_order_id"] == 3349
+
+
 def test_module2_refund_rolls_back_on_failure() -> None:
     repository = FakeModule2RefundRepository(fail=True)
 
