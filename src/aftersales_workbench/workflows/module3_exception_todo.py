@@ -42,14 +42,14 @@ class Module3ExceptionTodoCandidate:
     erp_order_sn: str | None
 
     def task_payload(self, *, started_at: str) -> dict[str, Any]:
-        marker = f"【售后工作台 M3:{self.after_sales_sn}】"
+        marker = f"【售后工作台 M3订单:{self.platform_order_sn}】"
         erp_order = str(self.erp_order_sn or "未匹配").strip()
         message = self.exception_message[:1200] or "ERP 未返回明确原因"
         content = (
             f"{marker} 模块3未发货退款需人工核对；"
             f"异常类型：{self.exception_status}；原因：{message}；"
             f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
-            f"售后单号：{self.after_sales_sn}；ERP订单号：{erp_order}。"
+            f"ERP订单号：{erp_order}。"
             "请核对商家应收、订单欠货和退款单状态，处理后回到售后工作台复查。"
         )
         return {

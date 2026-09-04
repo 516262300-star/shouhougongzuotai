@@ -84,7 +84,7 @@ class Module1ManualTodoCandidate:
         return "物流正在派件，系统已冻结自动退款，请跟进拒收或明确退回记录"
 
     def task_payload(self, *, started_at: str) -> dict[str, Any]:
-        marker = f"【售后工作台 M1:{self.after_sales_sn}】"
+        marker = f"【售后工作台 M1订单:{self.platform_order_sn}】"
         carrier = self.carrier_code or "未知"
         logistics_label = self._LOGISTICS_LABELS.get(
             str(self.logistics_state or "UNKNOWN"),
@@ -97,7 +97,6 @@ class Module1ManualTodoCandidate:
                 f"原因：{self.reason_text}",
                 f"店铺：{self.shop_name}",
                 f"平台订单号：{self.platform_order_sn}",
-                f"售后单号：{self.after_sales_sn}",
                 f"发货运单：{self.tracking_number}",
             ]
             return_order_sn = str(
@@ -133,7 +132,7 @@ class Module1ManualTodoCandidate:
             content = (
                 f"{marker} 模块1在途售后需人工处理；原因：{self.reason_text}；"
                 f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
-                f"售后单号：{self.after_sales_sn}；发货运单：{self.tracking_number}"
+                f"发货运单：{self.tracking_number}"
                 f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
             )
         payload = {

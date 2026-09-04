@@ -825,11 +825,32 @@ class ExternalActionExecutor:
             raise WorkflowTransitionError(
                 "ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识"
             )
+        content = str(payload["content"])
+        marker = str(payload["marker"])
+        legacy_markers: tuple[str, ...] = ()
+        origin = str(payload.get("origin") or "").strip()
+        if origin in {"module1", "module3"}:
+            module_label = "M1" if origin == "module1" else "M3"
+            public_marker = (
+                f"【售后工作台 {module_label}订单:{task.platform_order_sn}】"
+            )
+            if marker != public_marker:
+                legacy_markers = (marker,)
+                content = content.replace(marker, public_marker)
+            content = content.replace(
+                f"售后单号：{task.after_sales_sn}；",
+                "",
+            ).replace(
+                f"售后单号：{task.after_sales_sn}",
+                "",
+            )
+            marker = public_marker
         return client.create_todo(
             ErpTodoRequest(
                 assignee=str(payload["assignee"]),
                 started_at=str(payload["started_at"]),
-                content=str(payload["content"]),
-                marker=str(payload["marker"]),
+                content=content,
+                marker=marker,
+                legacy_markers=legacy_markers,
             )
         )

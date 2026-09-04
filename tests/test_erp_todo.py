@@ -103,6 +103,50 @@ def test_erp_todo_client_remote_marker_prevents_duplicate_post() -> None:
     client.close()
 
 
+def test_erp_todo_client_legacy_marker_prevents_duplicate_post() -> None:
+    posts = 0
+    legacy_marker = "【售后工作台 M1:after-1】"
+    request = ErpTodoRequest(
+        assignee="金博敏",
+        started_at="2026-09-01 09:12:28",
+        marker="【售后工作台 M1订单:order-1】",
+        content="【售后工作台 M1订单:order-1】 模块1在途售后需人工处理。",
+        legacy_markers=(legacy_marker,),
+    )
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        path = http_request.url.path
+        if path.endswith("/welcome/loginpage"):
+            return httpx.Response(200, text="登录")
+        if path.endswith("/welcome/loginact"):
+            return httpx.Response(200, json={"code": 2})
+        if path.endswith("/wunderlist/stdview/ptlhykd"):
+            return httpx.Response(200, text=_row(legacy_marker))
+        if path.endswith("/wunderlist/stdnew"):
+            posts += 1
+            return httpx.Response(200, text="保存成功")
+        raise AssertionError(f"unexpected request: {http_request.method} {http_request.url}")
+
+    client = ErpTodoClient(
+        base_url="https://ldswj.test",
+        username="employee",
+        password="secret",
+        http_client=httpx.Client(
+            base_url="https://ldswj.test",
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+        ),
+    )
+
+    receipt = client.create_todo(request)
+
+    assert receipt.todo_id == "7791069"
+    assert receipt.created is False
+    assert posts == 0
+    client.close()
+
+
 def test_erp_todo_client_rejects_unconfirmed_save() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path

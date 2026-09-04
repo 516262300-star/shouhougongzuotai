@@ -20,6 +20,7 @@ class ErpTodoRequest:
     started_at: str
     content: str
     marker: str
+    legacy_markers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +98,10 @@ class ErpTodoClient:
     def create_todo(self, request: ErpTodoRequest) -> ErpTodoReceipt:
         self._validate(request)
         self._ensure_logged_in()
-        existing_id = self._find_existing(request.assignee, request.marker)
+        existing_id = self._find_existing_any(
+            request.assignee,
+            (request.marker, *request.legacy_markers),
+        )
         if existing_id:
             return ErpTodoReceipt(todo_id=existing_id, created=False)
 
@@ -170,6 +174,16 @@ class ErpTodoClient:
             (todo_id for todo_id, row_text in parser.rows if marker in row_text),
             None,
         )
+
+    def _find_existing_any(
+        self,
+        assignee: str,
+        markers: tuple[str, ...],
+    ) -> str | None:
+        for marker in markers:
+            if marker and (todo_id := self._find_existing(assignee, marker)):
+                return todo_id
+        return None
 
     @staticmethod
     def _validate(request: ErpTodoRequest) -> None:

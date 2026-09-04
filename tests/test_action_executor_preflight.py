@@ -72,6 +72,44 @@ def test_external_executor_requires_both_erp_todo_write_gates() -> None:
     enabled._validate_write_gates((AutomationActionType.ERP_CREATE_MANUAL_TODO,))
 
 
+class _CaptureTodoClient:
+    def __init__(self) -> None:
+        self.request = None
+
+    def create_todo(self, request):
+        self.request = request
+        return object()
+
+
+def test_external_executor_sanitizes_legacy_sales_todo_before_publish() -> None:
+    client = _CaptureTodoClient()
+    task = ExternalTaskSnapshot(
+        id=2,
+        after_sales_sn="after-1",
+        action_type=AutomationActionType.ERP_CREATE_MANUAL_TODO,
+        payload={
+            "origin": "module1",
+            "assignee": "金博敏",
+            "started_at": "2026-09-01 09:12:28",
+            "marker": "【售后工作台 M1:after-1】",
+            "content": (
+                "【售后工作台 M1:after-1】 模块1在途售后需人工处理；"
+                "平台订单号：order-1；售后单号：after-1；发货运单：JT1。"
+            ),
+        },
+        platform_order_sn="order-1",
+        shop_code="pdd-shop-01",
+    )
+
+    ExternalActionExecutor._create_erp_todo(client, task)  # type: ignore[arg-type]
+
+    assert client.request.marker == "【售后工作台 M1订单:order-1】"
+    assert client.request.marker in client.request.content
+    assert client.request.legacy_markers == ("【售后工作台 M1:after-1】",)
+    assert "售后单号" not in client.request.content
+    assert "after-1" not in client.request.content
+
+
 class _EmptyRows:
     def all(self):
         return []
