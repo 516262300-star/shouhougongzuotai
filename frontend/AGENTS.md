@@ -9,5 +9,6 @@ When implementing from a selected generated mock, treat that image as the source
 The selected visual source for the new Module 5 return-scrap view is the third displayed ideation option: a model-diagnostics dashboard with company summary metrics, ranked model analysis, cause distribution, trend charts, and a persistent right-side model detail. Preserve that information hierarchy for Module 5 unless the user explicitly chooses a new direction. Existing modules keep their established layouts.
 
 The "人工待办" navigation and the order summary's "待人工" metric must remain clickable. The manual-todo view must expose whether the ERP todo was actually sent, the exact assignee, the business trigger reason, the full message content, remote todo ID, timestamps, retry count, and any failure or cancellation reason in a persistent right-side audit detail.
+售后工作台必须保留“接入能力”总览，用平台与店铺两级矩阵明确展示售后同步、售后归因、退款统计、退款权限以及模块 1/2/3 的开通状态；未开启与尚未接入必须区分，并显示可执行的缺失原因，状态只能来自当前配置和本地店铺登记，不得暴露凭证明文。
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.

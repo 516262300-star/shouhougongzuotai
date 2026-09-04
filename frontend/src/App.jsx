@@ -205,6 +205,7 @@ function Sidebar({ activeView, onNavigate }) {
     { id: "attribution", label: "售后归因", icon: ChartBar, enabled: true },
     { id: "scrap", label: "退货报废", icon: Trash, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: true },
+    { id: "capabilities", label: "接入能力", icon: CheckCircle, enabled: true },
     { id: "monitor", label: "运行监控", icon: ChartBar, enabled: true },
   ];
   return (
@@ -979,6 +980,99 @@ function ManualTodoWorkspace() {
   );
 }
 
+const capabilityTone = (state) => ({ enabled: "success", partial: "warning", warning: "warning", disabled: "danger", unsupported: "neutral", missing: "neutral" }[state] ?? "neutral");
+
+function CapabilityCell({ value }) {
+  const Icon = value?.state === "enabled" ? CheckCircle : value?.state === "unsupported" ? X : WarningCircle;
+  return (
+    <div className={`capability-cell capability-${value?.state ?? "unsupported"}`} title={value?.detail ?? ""}>
+      <Icon size={15} weight={value?.state === "enabled" ? "fill" : "regular"} />
+      <div><strong>{value?.label ?? "未接入"}</strong><small>{value?.detail ?? "暂无能力说明"}</small></div>
+    </div>
+  );
+}
+
+function IntegrationWorkspace() {
+  const [data, setData] = useState(null);
+  const [platform, setPlatform] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const response = await fetch("/api/v1/monitor/capabilities", { cache: "no-store" });
+      if (!response.ok) throw new Error(`服务返回 ${response.status}`);
+      setData(await response.json());
+      setError("");
+    } catch (requestError) {
+      setError(`接入能力读取失败：${requestError.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  const platforms = useMemo(() => (
+    (data?.platforms ?? []).filter((item) => !platform || item.platform === platform)
+  ), [data, platform]);
+  const summary = data?.summary ?? {};
+  const definitions = data?.capability_definitions ?? [];
+
+  return (
+    <main className="workspace integration-workspace">
+      <header className="topbar">
+        <div className="page-title"><CheckCircle size={22} /><h1>平台与店铺接入能力</h1><span className="read-only-badge">配置只读</span></div>
+        <div className="sync-status"><span />配置核对于 {formatDateTime(data?.checked_at, true)}</div>
+      </header>
+      <div className="integration-body">
+        {error && <div className="monitor-alert monitor-alert-danger"><WarningCircle size={18} />{error}</div>}
+        <section className="integration-summary" aria-label="接入能力汇总">
+          <article><span>平台范围</span><strong>{summary.platform_count ?? "—"}</strong><small>工作台支持核对的平台</small></article>
+          <article><span>已配置店铺</span><strong>{summary.configured_shop_count ?? "—"}</strong><small>本机存在有效接入配置</small></article>
+          <article><span>售后自动同步</span><strong className="monitor-good">{summary.sync_enabled_shop_count ?? "—"}</strong><small>持续进入工作台的店铺</small></article>
+          <article><span>平台退款已开</span><strong className="monitor-good">{summary.refund_enabled_shop_count ?? "—"}</strong><small>具备退款凭证与写开关</small></article>
+          <article><span>模块全开店铺</span><strong className="monitor-good">{summary.full_module_shop_count ?? "—"}</strong><small>模块 1/2/3 与退回平账齐全</small></article>
+        </section>
+        <section className="integration-toolbar">
+          <div className="integration-platform-filter" role="tablist" aria-label="平台筛选">
+            <button type="button" className={!platform ? "active" : ""} onClick={() => setPlatform("")}>全部平台</button>
+            {(data?.platforms ?? []).map((item) => <button type="button" className={platform === item.platform ? "active" : ""} key={item.platform} onClick={() => setPlatform(item.platform)}>{item.platform_label}<b>{item.configured_shop_count}</b></button>)}
+          </div>
+          <button type="button" className="button secondary compact" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={15} />刷新状态</button>
+        </section>
+        <div className="capability-legend"><span><i className="enabled" />已开启</span><span><i className="disabled" />未开启</span><span><i className="unsupported" />尚未接入</span><small>{data?.source_note}</small></div>
+        <div className="integration-platforms">
+          {platforms.map((item) => (
+            <section className="integration-platform-card" key={item.platform}>
+              <header>
+                <div><h2>{item.platform_label}</h2><span>{item.connection_mode}</span></div>
+                <div className="platform-capability-summary"><span>配置 {item.configured_shop_count} 店</span><span>同步 {item.sync_enabled_shop_count} 店</span><span>退款 {item.refund_enabled_shop_count} 店</span><StatusTag tone={capabilityTone(item.state)}>{item.state_label}</StatusTag></div>
+              </header>
+              {item.configuration_error && <div className="platform-configuration-error"><WarningCircle size={15} />{item.configuration_error}</div>}
+              {item.shops.length ? (
+                <div className="capability-table-wrap">
+                  <table className="capability-table">
+                    <thead><tr><th>店铺与接入状态</th>{definitions.map((definition) => <th key={definition.id} title={definition.description}>{definition.label}<small>{definition.description}</small></th>)}</tr></thead>
+                    <tbody>{item.shops.map((shop) => (
+                      <tr key={shop.shop_code}>
+                        <td><div className="capability-shop"><strong>{shop.shop_name}</strong><span>{shop.shop_code}{shop.platform_shop_id ? ` · ${shop.platform_shop_id}` : ""}</span><div><StatusTag tone={capabilityTone(shop.connection.state)}>{shop.connection.label}</StatusTag><small>{shop.record_count} 条售后{shop.last_record_at ? ` · 最近 ${formatDateTime(shop.last_record_at)}` : ""}</small></div></div></td>
+                        {definitions.map((definition) => <td key={definition.id}><CapabilityCell value={shop.capabilities?.[definition.id]} /></td>)}
+                      </tr>
+                    ))}</tbody>
+                  </table>
+                </div>
+              ) : <div className="integration-empty">当前没有可展示的店铺配置。{item.configuration_error ? "请按上方提示补齐配置。" : ""}</div>}
+            </section>
+          ))}
+        </div>
+      </div>
+    </main>
+  );
+}
+
 const MONITOR_STAGE_LABELS = {
   sync: "拼多多同步",
   tmall_sync: "天猫同步与物流补全",
@@ -1646,6 +1740,8 @@ export function App() {
         <ScrapWorkspace onClose={() => setActiveView("orders")} />
       ) : activeView === "manual" ? (
         <ManualTodoWorkspace />
+      ) : activeView === "capabilities" ? (
+        <IntegrationWorkspace />
       ) : activeView === "monitor" ? (
         <MonitorWorkspace />
       ) : (

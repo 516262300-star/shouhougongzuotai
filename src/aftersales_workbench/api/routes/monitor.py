@@ -7,6 +7,9 @@ from aftersales_workbench.db.session import get_db_session
 from aftersales_workbench.services.desktop_notice_recovery import (
     DesktopNoticeRecoveryService,
 )
+from aftersales_workbench.services.integration_capabilities import (
+    IntegrationCapabilityService,
+)
 from aftersales_workbench.services.runtime_monitor import RuntimeMonitorService
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeSendError
 
@@ -25,11 +28,24 @@ def get_desktop_recovery_service(
     return DesktopNoticeRecoveryService(session)
 
 
+def get_capability_service(
+    session: Annotated[Session, Depends(get_db_session)],
+) -> IntegrationCapabilityService:
+    return IntegrationCapabilityService(session)
+
+
 @router.get("/status")
 def runtime_status(
     service: Annotated[RuntimeMonitorService, Depends(get_monitor_service)],
 ) -> dict[str, Any]:
     return service.get_status()
+
+
+@router.get("/capabilities")
+def integration_capabilities(
+    service: Annotated[IntegrationCapabilityService, Depends(get_capability_service)],
+) -> dict[str, Any]:
+    return service.get_capabilities()
 
 
 @router.post("/desktop-notifications/{task_id}/retry", status_code=status.HTTP_202_ACCEPTED)
