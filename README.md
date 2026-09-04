@@ -477,7 +477,7 @@ ESC 中止只读取 Windows 返回的“当前按下”高位；“自上次查�
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --resume-before-paste 任务ID --limit 1 --apply
 ```
 
-工作台“运行监控”会显示当前阻塞任务。只有账本明确停在 `PausedBeforePaste` 时才显示“重新尝试发送”；点击后仅将该任务安全恢复为 `Ready`，由后台运行器在下一个周期重新执行发送。若停在 `PasteStarted` 或 `SendPressed`，页面只提示到同一快递群人工核验，不提供直接重试，避免重复发群。
+工作台“运行监控”会显示当前阻塞任务。只有账本明确停在 `PausedBeforePaste` 且数据库动作任务仍为 `PENDING` 时才显示“重新尝试发送”；点击后仅将该任务安全恢复为 `Ready`，由后台运行器在下一个周期重新执行发送。若物流预检已把尚未粘贴的动作任务取消，重试接口和后台周期会把旧账本记为 `Discarded` 并解除阻塞，不会发送消息。若停在 `PasteStarted` 或 `SendPressed`，即使数据库任务状态已经变化，页面仍只提示到同一快递群人工核验，不提供直接重试，避免重复发群。
 
 如果账本停在 `PasteStarted` 或 `SendPressed`，必须先回到同一快递群人工核验，程序拒绝恢复和盲目重发。完成单笔真实验收后，才允许同时设置 `MODULE1_NOTIFICATION_TRANSPORT=desktop`、`MODULE1_DESKTOP_SEND_ENABLED=true` 并重启后台运行器；后台每个完整周期只处理 `MODULE1_DESKTOP_BATCH_LIMIT` 条，当前安全默认值为 1。任一桌面任务暂停或结果不明时，本周期立即失败停止发送，后续周期只读取账本并继续失败关闭，不会再次按键。
 
@@ -757,7 +757,7 @@ cd ..
 - `GET /api/v1/aftersales/manual-todos`：模块 1/3 人工待办的发送审计、业务员与原因筛选、完整事项、远端待办 ID、失败或取消原因；
 - `GET /api/v1/aftersales/orders/{after_sales_sn}`：订单详情、SKU、物流判断和动作时间线。
 - `GET /api/v1/monitor/status`：只读返回常驻运行器 PID/周期新鲜度、模块 1/2/3 阶段结果、企微拦截任务状态汇总和关键执行开关；不执行任何外部动作。
-- `POST /api/v1/monitor/desktop-notifications/{task_id}/retry`：仅将当前最早且明确停在 `PausedBeforePaste` 的企微任务恢复为 `Ready`；要求任务仍为待发送、桌面通知已启用且发送器单实例锁空闲。接口本身不控制企业微信，后台在下一周期发送；可能已输入或发送的状态返回 HTTP 409。
+- `POST /api/v1/monitor/desktop-notifications/{task_id}/retry`：将当前最早且明确停在 `PausedBeforePaste`、数据库仍为待发送的企微任务恢复为 `Ready`；若该任务已经取消、完成或不存在，则安全记为 `Discarded` 并解除旧阻塞，不会发送。桌面通知须已启用且发送器单实例锁空闲。接口本身不控制企业微信，后台在下一周期发送；可能已输入或发送的状态仍返回 HTTP 409 并要求人工核验。
 - `GET /api/v1/attribution/overview`：模块 4 售后归因摘要、实际/申请退款金额、趋势、环比同比、数据覆盖、原因构成、型号排名、店铺分布和选中型号下钻；支持 `platform`、`shop_id`、`period_mode=MONTH|YEAR|CUSTOM`、`started_on`、`ended_on`、`model_keyword`、`reason_category` 和 `focus_model`。
 - `GET /api/v1/scrap/overview`：模块 5 退货数量、报废数量、报废率、已核定损失、全部退货型号（含零报废型号）、原因/颜色分布、趋势和型号明细；支持日期、型号、原因、责任、数据状态和焦点型号筛选。
 - `PATCH /api/v1/scrap/records/{source_row_id}/decision`：补录报废原因、责任归属、确认单位成本、损失金额、成本来源和复核人；仅写工作台核定层，不回写 ERP。

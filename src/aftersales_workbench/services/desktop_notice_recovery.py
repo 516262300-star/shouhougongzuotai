@@ -55,20 +55,6 @@ class DesktopNoticeRecoveryService:
         if not self.settings.module1_desktop_send_enabled:
             raise DesktopNoticeSendError("企业微信桌面发送当前未启用")
 
-        task = self.session.get(AftersalesActionTask, task_id)
-        if task is None:
-            raise DesktopNoticeSendError(f"动作任务不存在：{task_id}")
-        if (
-            AutomationActionType(task.action_type)
-            is not AutomationActionType.QYWX_INTERCEPT_NOTIFY
-        ):
-            raise DesktopNoticeSendError("动作任务不是企业微信拦截通知")
-        if (
-            AutomationTaskStatus(task.action_status)
-            is not AutomationTaskStatus.PENDING
-        ):
-            raise DesktopNoticeSendError("动作任务不再是待发送状态，禁止重试")
-
         ledger_path = resolve_project_path(
             self.project_root,
             self.settings.module1_desktop_ledger_path,
@@ -91,11 +77,37 @@ class DesktopNoticeRecoveryService:
                     f"任务停在 {blocking.state.value}，可能已经输入或发送，"
                     "必须先到同一快递群人工核验"
                 )
-            entry = ledger.resume_before_paste(task_id)
+            task = self.session.get(AftersalesActionTask, task_id)
+            if task is None:
+                entry = ledger.discard_before_paste(
+                    task_id,
+                    error="数据库动作任务不存在，已安全解除发送前阻塞",
+                )
+                message = "动作任务已不存在，旧发送阻塞已安全解除，不会再次发送"
+            elif (
+                AutomationActionType(task.action_type)
+                is not AutomationActionType.QYWX_INTERCEPT_NOTIFY
+            ):
+                raise DesktopNoticeSendError("动作任务不是企业微信拦截通知")
+            elif (
+                AutomationTaskStatus(task.action_status)
+                is not AutomationTaskStatus.PENDING
+            ):
+                status = AutomationTaskStatus(task.action_status).value
+                entry = ledger.discard_before_paste(
+                    task_id,
+                    error=f"数据库动作任务状态为 {status}，已安全解除发送前阻塞",
+                )
+                message = (
+                    f"动作任务已是 {status}，旧发送阻塞已安全解除，不会再次发送"
+                )
+            else:
+                entry = ledger.resume_before_paste(task_id)
+                message = "已重新进入发送队列，后台将在下一个周期尝试发送"
 
         return DesktopNoticeRetryResult(
             task_id=task_id,
             state=entry.state.value,
             queued_at=datetime.now(UTC).isoformat(),
-            message="已重新进入发送队列，后台将在下一个周期尝试发送",
+            message=message,
         )

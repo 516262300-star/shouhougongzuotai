@@ -20,6 +20,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopSendLockError,
     DesktopSendProcessLock,
     desktop_notice_plan_hash,
+    discard_inactive_before_paste_entries,
 )
 
 
@@ -267,6 +268,40 @@ def test_manually_sent_paused_before_paste_task_can_be_confirmed(tmp_path) -> No
     confirmed = ledger.confirm_sent(61)
 
     assert confirmed.state is DesktopLedgerState.SENT
+    assert ledger.blocking_entry() is None
+
+
+def test_paused_before_paste_task_can_be_safely_discarded(tmp_path) -> None:
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
+        plan_hash=desktop_notice_plan_hash(_plan()),
+    )
+
+    discarded = ledger.discard_before_paste(61, error="动作任务已取消")
+
+    assert discarded.state is DesktopLedgerState.DISCARDED
+    assert ledger.blocking_entry() is None
+
+
+def test_cancelled_before_paste_task_is_reconciled_without_sending(tmp_path) -> None:
+    session = _FakeSession()
+    session.task.action_status = AutomationTaskStatus.CANCELLED
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61,
+        state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
+        plan_hash=desktop_notice_plan_hash(_plan()),
+    )
+
+    discarded = discard_inactive_before_paste_entries(
+        session,  # type: ignore[arg-type]
+        ledger,
+    )
+
+    assert discarded == 1
+    assert ledger.latest(61).state is DesktopLedgerState.DISCARDED  # type: ignore[union-attr]
     assert ledger.blocking_entry() is None
 
 

@@ -90,3 +90,33 @@ def test_monitor_exposes_safe_retry_state(tmp_path) -> None:
     assert state["blocking_state"] == DesktopLedgerState.PAUSED_BEFORE_PASTE.value
     assert state["can_retry"] is True
     assert state["requires_manual_verification"] is False
+
+
+def test_monitor_does_not_offer_retry_for_cancelled_task(tmp_path) -> None:
+    _append_blocking_entry(tmp_path, DesktopLedgerState.PAUSED_BEFORE_PASTE)
+    monitor = RuntimeMonitorService(
+        _FakeSession(status=AutomationTaskStatus.CANCELLED),
+        settings=_settings(),
+        project_root=tmp_path,
+    )
+
+    state = monitor._desktop_notification_recovery()
+
+    assert state["can_retry"] is False
+    assert state["requires_manual_verification"] is False
+    assert "不会再次发送" in state["message"]
+
+
+def test_retry_discards_cancelled_task_paused_before_paste(tmp_path) -> None:
+    ledger = _append_blocking_entry(tmp_path, DesktopLedgerState.PAUSED_BEFORE_PASTE)
+    service = DesktopNoticeRecoveryService(
+        _FakeSession(status=AutomationTaskStatus.CANCELLED),
+        settings=_settings(),
+        project_root=tmp_path,
+    )
+
+    result = service.retry_before_paste(823)
+
+    assert result.state == DesktopLedgerState.DISCARDED.value
+    assert "不会再次发送" in result.message
+    assert ledger.blocking_entry() is None

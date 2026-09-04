@@ -242,16 +242,32 @@ class RuntimeMonitorService:
                 "message": None,
                 "error": None,
             }
-        can_retry = blocking.state is DesktopLedgerState.PAUSED_BEFORE_PASTE
+        paused_before_paste = (
+            blocking.state is DesktopLedgerState.PAUSED_BEFORE_PASTE
+        )
+        task = self.session.get(AftersalesActionTask, blocking.task_id)
+        task_is_pending_notice = bool(
+            task is not None
+            and AutomationActionType(task.action_type)
+            is AutomationActionType.QYWX_INTERCEPT_NOTIFY
+            and AutomationTaskStatus(task.action_status)
+            is AutomationTaskStatus.PENDING
+        )
+        can_retry = paused_before_paste and task_is_pending_notice
+        stale_before_paste = paused_before_paste and not task_is_pending_notice
         return {
             "blocking_task_id": blocking.task_id,
             "blocking_state": blocking.state.value,
             "can_retry": can_retry,
-            "requires_manual_verification": not can_retry,
+            "requires_manual_verification": not paused_before_paste,
             "message": (
                 "发送前失败，确认企业微信可用后可以安全重试"
                 if can_retry
-                else "任务可能已经输入或发送，请先到同一快递群人工核验"
+                else (
+                    "动作任务已取消、完成或不存在，后台将安全解除旧发送阻塞，不会再次发送"
+                    if stale_before_paste
+                    else "任务可能已经输入或发送，请先到同一快递群人工核验"
+                )
             ),
             "error": blocking.error,
         }

@@ -47,6 +47,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendService,
     DesktopSendProcessLock,
+    discard_inactive_before_paste_entries,
 )
 from aftersales_workbench.workflows.module1 import (
     Module1InterceptService,
@@ -882,18 +883,24 @@ class Module1WorkerRuntime:
             ledger = DesktopNoticeLedger(
                 Path(self.settings.module1_desktop_ledger_path)
             )
-            blocking = ledger.blocking_entry()
-            if blocking is not None:
-                return WorkerStageResult(
-                    status="failed",
-                    details={
-                        "transport": "desktop",
-                        "blocking_task_id": blocking.task_id,
-                        "blocking_state": blocking.state.value,
-                    },
-                    error="桌面发送账本存在未核验任务，禁止继续发送",
-                )
             with SessionLocal() as session:
+                stale_before_paste_discarded = (
+                    discard_inactive_before_paste_entries(session, ledger)
+                )
+                blocking = ledger.blocking_entry()
+                if blocking is not None:
+                    return WorkerStageResult(
+                        status="failed",
+                        details={
+                            "transport": "desktop",
+                            "blocking_task_id": blocking.task_id,
+                            "blocking_state": blocking.state.value,
+                            "stale_before_paste_discarded": (
+                                stale_before_paste_discarded
+                            ),
+                        },
+                        error="桌面发送账本存在未核验任务，禁止继续发送",
+                    )
                 preview = DesktopNoticePreviewService(
                     session,
                     DesktopNoticePlanner(
@@ -907,6 +914,7 @@ class Module1WorkerRuntime:
                 details: dict[str, Any] = {
                     "transport": "desktop",
                     "batch_limit": limit,
+                    "stale_before_paste_discarded": stale_before_paste_discarded,
                     **preview.safe_dict(),
                 }
                 if preview.blocked_preflight or preview.blocked_missing_group:

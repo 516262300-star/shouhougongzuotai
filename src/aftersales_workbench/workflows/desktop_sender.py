@@ -45,6 +45,7 @@ class DesktopLedgerState(StrEnum):
     SENT = "Sent"
     MANUAL_HANDLED = "ManualHandled"
     PAUSED_BEFORE_PASTE = "PausedBeforePaste"
+    DISCARDED = "Discarded"
 
 
 AMBIGUOUS_LEDGER_STATES = {
@@ -168,6 +169,26 @@ class DesktopNoticeLedger:
             plan_hash=latest.plan_hash,
         )
 
+    def discard_before_paste(
+        self,
+        task_id: int,
+        *,
+        error: str | None = None,
+    ) -> DesktopLedgerEntry:
+        """任务已失效且确认尚未输入时，解除其发送阻塞。"""
+
+        latest = self.latest(task_id)
+        if latest is None or latest.state is not DesktopLedgerState.PAUSED_BEFORE_PASTE:
+            raise DesktopNoticeSendError(
+                "只有 PausedBeforePaste 状态可以安全作废；已开始输入或可能发送的任务必须人工核验"
+            )
+        return self.append(
+            task_id=task_id,
+            state=DesktopLedgerState.DISCARDED,
+            plan_hash=latest.plan_hash,
+            error=error,
+        )
+
     def confirm_sent(self, task_id: int) -> DesktopLedgerEntry:
         """操作员在目标群确认消息已出现后，解除桌面发送阻塞。"""
 
@@ -195,6 +216,47 @@ class DesktopNoticeLedger:
             state=DesktopLedgerState.MANUAL_HANDLED,
             plan_hash=latest.plan_hash,
         )
+
+
+def discard_inactive_before_paste_entries(
+    session: Session,
+    ledger: DesktopNoticeLedger,
+) -> int:
+    """解除数据库中已失效、且确认尚未粘贴的连续阻塞任务。"""
+
+    discarded = 0
+    while True:
+        blocking = ledger.blocking_entry()
+        if (
+            blocking is None
+            or blocking.state is not DesktopLedgerState.PAUSED_BEFORE_PASTE
+        ):
+            return discarded
+        task = session.get(AftersalesActionTask, blocking.task_id)
+        try:
+            pending_notice = bool(
+                task is not None
+                and AutomationActionType(task.action_type)
+                is AutomationActionType.QYWX_INTERCEPT_NOTIFY
+                and AutomationTaskStatus(task.action_status)
+                is AutomationTaskStatus.PENDING
+            )
+        except ValueError:
+            pending_notice = False
+        if pending_notice:
+            return discarded
+        task_status = (
+            getattr(task.action_status, "value", str(task.action_status))
+            if task is not None
+            else "MISSING"
+        )
+        ledger.discard_before_paste(
+            blocking.task_id,
+            error=(
+                f"数据库动作任务状态为 {task_status}，后台已安全解除发送前阻塞"
+            ),
+        )
+        discarded += 1
 
 
 class DesktopSendProcessLock:
