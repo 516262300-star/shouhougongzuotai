@@ -61,7 +61,9 @@ class FakeRuntime(Module1WorkerRuntime):
 
     def _sync_sales_owners(self) -> WorkerStageResult:
         self.calls.append("erp_sales_owners")
-        return WorkerStageResult.completed({"scanned": 1, "matched": 1})
+        return WorkerStageResult.completed(
+            {"scanned": 2, "matched": 1, "not_required": 1}
+        )
 
     def _prepare_module2_refund_tasks(self) -> WorkerStageResult:
         self.calls.append("module2_refund_tasks")
@@ -187,6 +189,7 @@ def test_worker_cycle_runs_stages_in_operational_order() -> None:
     assert summary["module3_erp_refunds"]["applied"] == 1
     assert summary["module3_exception_todos"]["tasks_created"] == 1
     assert summary["erp_sales_owners"]["matched"] == 1
+    assert summary["erp_sales_owners"]["not_required"] == 1
     assert summary["module2_refund_tasks"]["tasks_created"] == 1
     assert summary["module2_erp_intake"]["inspections_failed"] == 1
     assert summary["module2_exception_todos"]["tasks_created"] == 1

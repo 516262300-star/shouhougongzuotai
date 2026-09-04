@@ -276,6 +276,7 @@ class Module1WorkerCycleResult:
                     "matched",
                     "conflict",
                     "not_found",
+                    "not_required",
                     "unavailable",
                     "remaining",
                 ),
@@ -802,6 +803,7 @@ class Module1WorkerRuntime:
                 matched=0,
                 conflict=0,
                 not_found=0,
+                not_required=0,
                 unavailable=0,
                 remaining=0,
             )
