@@ -17,6 +17,8 @@ $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDir = Join-Path $projectRoot '.runtime'
 $configFile = Join-Path $runtimeDir 'module1-autostart.json'
 $mysqlDefaultsBackupFile = Join-Path $runtimeDir 'mysql-defaults-backup.ini'
+$mysqlStdoutLog = Join-Path $runtimeDir 'mysql-autostart.log'
+$mysqlStderrLog = Join-Path $runtimeDir 'mysql-autostart-error.log'
 $logFile = Join-Path $runtimeDir 'module1-autostart.log'
 $workerScript = Join-Path $PSScriptRoot 'module1-worker.ps1'
 $webPidFile = Join-Path $runtimeDir 'workbench-web.pid'
@@ -168,6 +170,71 @@ function Restore-MySqlDefaultsFile {
     Write-AutostartLog "MySQL 配置文件缺失，已从本地副本自动恢复：$defaultsFile"
 }
 
+function Start-WorkbenchMySql {
+    param($Config)
+    if (-not (Test-Path -LiteralPath $Config.MySqlExe -PathType Leaf)) {
+        throw "MySQL 程序不存在：$($Config.MySqlExe)"
+    }
+    Restore-MySqlDefaultsFile -Config $Config
+    $mysqlArgument = "--defaults-file=`"$($Config.MySqlDefaultsFile)`""
+    $lastExitCode = $null
+    for ($startAttempt = 1; $startAttempt -le 3; $startAttempt++) {
+        if (Test-TcpPort -HostName $Config.MySqlHost -Port $Config.MySqlPort) {
+            return
+        }
+        $process = Start-Process `
+            -FilePath $Config.MySqlExe `
+            -ArgumentList @($mysqlArgument, '--console') `
+            -WorkingDirectory $projectRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $mysqlStdoutLog `
+            -RedirectStandardError $mysqlStderrLog `
+            -PassThru
+        Write-AutostartLog "MySQL 未运行，第 $startAttempt/3 次启动请求已发出，PID=$($process.Id)"
+        for ($second = 0; $second -lt 20; $second++) {
+            Start-Sleep -Seconds 1
+            if (Test-TcpPort -HostName $Config.MySqlHost -Port $Config.MySqlPort) {
+                Write-AutostartLog "MySQL 启动成功，PID=$($process.Id)"
+                return
+            }
+            if ($process.HasExited) {
+                $lastExitCode = $process.ExitCode
+                Write-AutostartLog (
+                    "MySQL 第 $startAttempt/3 次启动提前退出，退出码=$lastExitCode；" +
+                    "错误日志：$mysqlStderrLog"
+                )
+                break
+            }
+        }
+        if (-not $process.HasExited) {
+            for ($second = 0; $second -lt 40; $second++) {
+                Start-Sleep -Seconds 1
+                if (Test-TcpPort -HostName $Config.MySqlHost -Port $Config.MySqlPort) {
+                    Write-AutostartLog "MySQL 启动成功，PID=$($process.Id)"
+                    return
+                }
+                if ($process.HasExited) {
+                    $lastExitCode = $process.ExitCode
+                    break
+                }
+            }
+            if (-not $process.HasExited) {
+                throw (
+                    "MySQL 进程 PID=$($process.Id) 已运行但在 60 秒内未监听 " +
+                    "$($Config.MySqlHost):$($Config.MySqlPort)；错误日志：$mysqlStderrLog"
+                )
+            }
+        }
+        if ($startAttempt -lt 3) {
+            Start-Sleep -Seconds 3
+        }
+    }
+    throw (
+        "MySQL 连续 3 次启动失败，最后退出码=$lastExitCode；" +
+        "请查看 $mysqlStderrLog"
+    )
+}
+
 function Get-Module1WorkerProcess {
     $pidFile = Join-Path $runtimeDir 'module1-worker.pid'
     if (-not (Test-Path -LiteralPath $pidFile)) {
@@ -317,27 +384,7 @@ function Start-AftersalesRuntime {
     $config = Get-AutostartConfiguration
     $mysqlReady = Test-TcpPort -HostName $config.MySqlHost -Port $config.MySqlPort
     if (-not $mysqlReady) {
-        if (-not (Test-Path -LiteralPath $config.MySqlExe -PathType Leaf)) {
-            throw "MySQL 程序不存在：$($config.MySqlExe)"
-        }
-        Restore-MySqlDefaultsFile -Config $config
-        $mysqlArgument = "--defaults-file=`"$($config.MySqlDefaultsFile)`""
-        Start-Process `
-            -FilePath $config.MySqlExe `
-            -ArgumentList $mysqlArgument `
-            -WorkingDirectory $projectRoot `
-            -WindowStyle Hidden | Out-Null
-        Write-AutostartLog 'MySQL 未运行，已发出隐藏启动请求'
-        for ($attempt = 0; $attempt -lt 60; $attempt++) {
-            Start-Sleep -Seconds 1
-            if (Test-TcpPort -HostName $config.MySqlHost -Port $config.MySqlPort) {
-                $mysqlReady = $true
-                break
-            }
-        }
-        if (-not $mysqlReady) {
-            throw "MySQL 在 60 秒内未监听 $($config.MySqlHost):$($config.MySqlPort)"
-        }
+        Start-WorkbenchMySql -Config $config
     }
 
     $worker = Get-Module1WorkerProcess

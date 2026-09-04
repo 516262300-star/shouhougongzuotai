@@ -390,7 +390,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 & .\scripts\module1-worker.ps1 -Action Stop
 ```
 
-本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，并把 MySQL 本机启动配置备份到同样被忽略的 `.runtime/mysql-defaults-backup.ini`；启动入口不保存平台 Token、管理系统账号或数据库密码，本机 MySQL 配置副本也不得提交或对外共享。守护脚本显式按 UTF-8 读取 JSON，且 Windows PowerShell 入口脚本保留 UTF-8 BOM，兼容 PowerShell 7 写入配置、Windows PowerShell 5.1 后台读取中文项目路径和脚本的场景。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时若原配置文件暂时缺失，会先从本地副本恢复到安装时的位置，再隐藏启动 MySQL；售后后台运行器未运行时调用上面的幂等启动脚本，工作台 Web 健康检查未通过时使用生产构建启动 `uvicorn`；已经运行时不会重复启动。Web 默认监听 `127.0.0.1:8000`，要求 `frontend/dist/client/index.html` 已由 `npm run build` 生成。
+本机长期运行时，安装 Windows 登录自启动与 5 分钟守护。安装器会从当前运行的 MySQL 自动记录程序和配置文件路径到被 Git 忽略的 `.runtime/module1-autostart.json`，并把 MySQL 本机启动配置备份到同样被忽略的 `.runtime/mysql-defaults-backup.ini`；启动入口不保存平台 Token、管理系统账号或数据库密码，本机 MySQL 配置副本也不得提交或对外共享。守护脚本显式按 UTF-8 读取 JSON，且 Windows PowerShell 入口脚本保留 UTF-8 BOM，兼容 PowerShell 7 写入配置、Windows PowerShell 5.1 后台读取中文项目路径和脚本的场景。它优先注册 Windows 计划任务；当前进程没有计划任务权限时，自动回退到当前用户“启动”目录并运行一个隐藏的守护进程。两种方式都会在登录后检查，并每 5 分钟再次检查：MySQL 未监听时若原配置文件暂时缺失，会先从本地副本恢复到安装时的位置；启动过程中若 MySQL 提前退出，会在当前检查内最多重试 3 次，并把控制台输出分别写入 `.runtime/mysql-autostart.log` 与 `.runtime/mysql-autostart-error.log`；售后后台运行器未运行时调用上面的幂等启动脚本，工作台 Web 健康检查未通过时使用生产构建启动 `uvicorn`；已经运行时不会重复启动。Web 默认监听 `127.0.0.1:8000`，要求 `frontend/dist/client/index.html` 已由 `npm run build` 生成。
 
 ```powershell
 & .\scripts\module1-autostart.ps1 -Action Install
@@ -422,7 +422,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
 - 电脑重启：登录当前 Windows 用户后，自启动守护会依次恢复 MySQL、后台运行器和工作台 Web；打开 `http://127.0.0.1:8000/` 即可。若 Web 未恢复，先执行 `& .\scripts\module1-autostart.ps1 -Action Run`；
-- 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；Web 启动失败另查 `.runtime/workbench-web-error.log`。MySQL 原配置在开机阶段缺失时会自动从 `.runtime/mysql-defaults-backup.ini` 恢复并记入日志；若原配置与恢复副本都丢失，先手动启动 MySQL，再重新执行 `Install`。如果 MySQL、工作区路径或 Web 端口发生变化，也要重新执行 `Install` 刷新本机配置和恢复副本；
+- 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；MySQL 启动失败另查 `.runtime/mysql-autostart-error.log`，Web 启动失败另查 `.runtime/workbench-web-error.log`。MySQL 原配置在开机阶段缺失时会自动从 `.runtime/mysql-defaults-backup.ini` 恢复并记入日志；若原配置与恢复副本都丢失，先手动启动 MySQL，再重新执行 `Install`。如果 MySQL、工作区路径或 Web 端口发生变化，也要重新执行 `Install` 刷新本机配置和恢复副本；
 - 重复启动：启停脚本通过 PID 文件阻止第二个后台进程。不要绕过脚本同时启动多个 `--forever` 实例。
 
 如需前台观察持续循环或临时覆盖店铺，可直接执行：
