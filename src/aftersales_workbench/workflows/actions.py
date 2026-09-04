@@ -901,8 +901,8 @@ class ExternalActionExecutor:
             order_sn=task.platform_order_sn,
         )
 
+    @staticmethod
     def _agree_tmall(
-        self,
         client: TmallClient,
         refund_credentials: TmallCredentials,
         task: ExternalTaskSnapshot,
@@ -912,7 +912,6 @@ class ExternalActionExecutor:
         return client.agree_refund(
             refund_id=int(task.after_sales_sn),
             refund_credentials=refund_credentials,
-            max_refund_amount=self.settings.tmall_auto_refund_max_amount,
         )
 
     def _validate_module2_refund_task(self, task: ExternalTaskSnapshot) -> bool:

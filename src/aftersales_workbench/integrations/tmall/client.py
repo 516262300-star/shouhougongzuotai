@@ -279,7 +279,6 @@ class TmallClient:
         *,
         refund_id: int,
         refund_credentials: TmallCredentials,
-        max_refund_amount: Decimal = Decimal("30.00"),
     ) -> dict[str, Any]:
         """按旧系统已验证的两步流程审核并同意一笔天猫退款。"""
         refund = self._refund_from_response(self.get_refund(refund_id=refund_id))
@@ -297,9 +296,8 @@ class TmallClient:
         if not refund_version or not refund_phase:
             raise TmallTransportError("退款详情缺少 refund_version 或 refund_phase")
         try:
-            refund_amount = Decimal(str(refund.get("refund_fee")))
             fee_cents = int(
-                (refund_amount * 100).quantize(
+                (Decimal(str(refund.get("refund_fee"))) * 100).quantize(
                     Decimal("1"), rounding=ROUND_HALF_UP
                 )
             )
@@ -307,11 +305,6 @@ class TmallClient:
             raise TmallTransportError("退款详情中的 refund_fee 非法") from exc
         if fee_cents < 0:
             raise TmallTransportError("退款金额不能小于 0")
-        if refund_amount > max_refund_amount:
-            raise TmallConfigurationError(
-                f"天猫退款金额 {refund_amount:.2f} 元超过自动退款上限 "
-                f"{max_refund_amount:.2f} 元，已转人工处理"
-            )
 
         review_body = self.execute_write(
             TAOBAO_RP_REFUND_REVIEW,

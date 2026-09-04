@@ -156,7 +156,6 @@ class Settings(BaseSettings):
     tmall_module123_min_order_id: int = Field(default=0, ge=0)
     module1_tmall_refund_execution_enabled: bool = False
     module2_tmall_refund_execution_enabled: bool = False
-    tmall_auto_refund_max_amount: Decimal = Field(default=Decimal("30.00"), gt=0)
     tmall_refund_enabled_shop_numbers: list[int] = Field(default_factory=list)
 
     tmall_shop_1_code: str = "tmall-shop-01"

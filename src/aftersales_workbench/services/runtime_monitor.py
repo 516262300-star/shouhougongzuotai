@@ -210,9 +210,6 @@ class RuntimeMonitorService:
                 "tmall_refund_enabled_shop_numbers": (
                     self.settings.tmall_refund_enabled_shop_numbers
                 ),
-                "tmall_auto_refund_max_amount": str(
-                    self.settings.tmall_auto_refund_max_amount
-                ),
                 "module2_refund_min_return_id": self.settings.module2_refund_min_return_id,
                 "module2_erp_intake_min_order_id": (
                     self.settings.module2_erp_intake_min_order_id

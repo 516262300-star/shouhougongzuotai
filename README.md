@@ -133,7 +133,6 @@ alembic downgrade -1
 | `TMALL_REFUND_ENABLED_SHOP_NUMBERS` | 天猫自动退款店铺白名单；当前前五店为 `[1,2,3,4,5]`，适家不得加入 | `[]` |
 | `MODULE1_TMALL_REFUND_EXECUTION_ENABLED` | 模块 1 天猫已发货仅退款执行开关 | `false` |
 | `MODULE2_TMALL_REFUND_EXECUTION_ENABLED` | 模块 2 天猫验货通过后退货退款执行开关 | `false` |
-| `TMALL_AUTO_REFUND_MAX_AMOUNT` | 单笔天猫自动退款金额硬上限；超过后转人工且不调用退款写接口 | `30.00` |
 | `TMALL_SYNC_INITIAL_LOOKBACK_HOURS` | 天猫新店铺无游标时的首次回溯小时数 | `72` |
 | `TMALL_SYNC_OVERLAP_SECONDS` | 天猫增量续传时向前重叠秒数 | `300` |
 | `TMALL_SYNC_WINDOW_HOURS` | 天猫单个修改时间窗口小时数 | `24` |
@@ -218,7 +217,7 @@ alembic upgrade head
 
 默认仍是只读记录层。只有同时设置 `TMALL_SYNC_ENABLED=true`、`TMALL_MODULE123_TRIAL_ENABLED=true` 并配置独立上线水位后，水位之后的新天猫售后才进入模块 1/2/3：模块 1 对已发货全额仅退款执行物流预检和企业微信快递群拦截；模块 2 按客户退货运单核对 ERP 客户退货单或退货暂存列表，并逐项比较型号、颜色和数量；模块 3 对平台已经退款的未发货订单执行 ERP 取消履约及补开退款单。六店同步阶段只有当轮整体成功才放行天猫候选，防止任何店铺使用陈旧状态执行写操作。
 
-模块 1/2 的天猫退款使用独立动作 `TMALL_AGREE_REFUND` / `TMALL_AGREE_RETURN_REFUND`：先用店铺主账号调用 `taobao.rp.refund.review` 审核，再用该店具备退款权限的子账号调用 `taobao.rp.refunds.agree`。不可逆写请求只发送一次，网关超时或结果未知时转人工核对，不自动重试。真实执行必须同时满足 `TMALL_WRITE_ENABLED=true`、对应模块执行开关和 `TMALL_REFUND_ENABLED_SHOP_NUMBERS` 白名单，并在调用任何退款写接口前回查平台实时退款金额；默认仅允许 30.00 元及以下自动退款，超过 `TMALL_AUTO_REFUND_MAX_AMOUNT` 的任务转人工。当前只允许利德仕、leedis、珂琪艺、梵居匠、固家恒五店；适家没有独立退款子账号，只同步并参与模块 3 已退款后的 ERP 闭环，不执行模块 1/2 自动退款。官方参考：[退款业务流程](https://developer.alibaba.com/docs/doc.htm?articleId=102594&docType=1&source=search&treeId=1)、[`taobao.rp.refunds.agree`](https://developer.alibaba.com/docs/api.htm?apiId=22465&scopeId=11527)、[`taobao.logistics.orders.get`](https://developer.alibaba.com/docs/api.htm?apiId=235)。
+模块 1/2 的天猫退款使用独立动作 `TMALL_AGREE_REFUND` / `TMALL_AGREE_RETURN_REFUND`：先用店铺主账号调用 `taobao.rp.refund.review` 审核，再用该店具备退款权限的子账号调用 `taobao.rp.refunds.agree`。不可逆写请求只发送一次，网关超时或结果未知时转人工核对，不自动重试。与拼多多模块 1/2 一样，天猫不设置独立金额上限；真实执行必须满足对应模块的物流拦截或仓库验货条件，并同时通过 `TMALL_WRITE_ENABLED=true`、模块执行开关、店铺白名单及平台实时状态复核。当前只允许利德仕、leedis、珂琪艺、梵居匠、固家恒五店；适家没有独立退款子账号，只同步并参与模块 3 已退款后的 ERP 闭环，不执行模块 1/2 自动退款。官方参考：[退款业务流程](https://developer.alibaba.com/docs/doc.htm?articleId=102594&docType=1&source=search&treeId=1)、[`taobao.rp.refunds.agree`](https://developer.alibaba.com/docs/api.htm?apiId=22465&scopeId=11527)、[`taobao.logistics.orders.get`](https://developer.alibaba.com/docs/api.htm?apiId=235)。
 
 首次接入先停后台、迁移前五店退款子账号凭证、升级数据库并校验六店授权；迁移脚本只更新仓库根目录 `.env`，会先备份到 `.runtime/`，不会输出凭证明文：
 

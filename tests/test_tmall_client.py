@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 
 import httpx
 import pytest
@@ -216,7 +215,7 @@ def test_agree_refund_uses_main_review_then_child_agree(
     http_client.close()
 
 
-def test_agree_refund_blocks_amount_over_limit_before_any_write(
+def test_agree_refund_does_not_apply_tmall_only_amount_limit(
     credentials: TmallCredentials,
 ) -> None:
     requests: list[dict[str, str]] = []
@@ -224,21 +223,23 @@ def test_agree_refund_blocks_amount_over_limit_before_any_write(
     def handler(request: httpx.Request) -> httpx.Response:
         payload = dict(httpx.QueryParams(request.content.decode()))
         requests.append(payload)
-        return httpx.Response(
-            200,
-            json={
+        if payload["method"] == TAOBAO_REFUND_GET:
+            body = {
                 "refund_get_response": {
                     "refund": {
                         "refund_id": "9002",
                         "status": "WAIT_SELLER_CONFIRM_GOODS",
-                        "refund_fee": "30.01",
+                        "refund_fee": "300.01",
                         "refund_version": "10002",
                         "refund_phase": "onsale",
                     }
                 }
-            },
-            request=request,
-        )
+            }
+        elif payload["method"] == TAOBAO_RP_REFUND_REVIEW:
+            body = {"rp_refund_review_response": {"is_success": True}}
+        else:
+            body = {"rp_refunds_agree_response": {"succ": True}}
+        return httpx.Response(200, json=body, request=request)
 
     child_credentials = TmallCredentials(
         shop_code="tmall-shop-01",
@@ -253,12 +254,15 @@ def test_agree_refund_blocks_amount_over_limit_before_any_write(
         http_client=http_client,
     )
 
-    with pytest.raises(TmallConfigurationError, match="超过自动退款上限"):
-        client.agree_refund(
-            refund_id=9002,
-            refund_credentials=child_credentials,
-            max_refund_amount=Decimal("30.00"),
-        )
+    client.agree_refund(
+        refund_id=9002,
+        refund_credentials=child_credentials,
+    )
 
-    assert [request["method"] for request in requests] == [TAOBAO_REFUND_GET]
+    assert [request["method"] for request in requests] == [
+        TAOBAO_REFUND_GET,
+        TAOBAO_RP_REFUND_REVIEW,
+        TAOBAO_RP_REFUNDS_AGREE,
+    ]
+    assert requests[2]["refund_infos"] == "9002|30001|10002|onsale"
     http_client.close()
