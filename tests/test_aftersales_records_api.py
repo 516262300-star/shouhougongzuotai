@@ -6,11 +6,26 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from aftersales_workbench.api.routes.aftersales import get_record_service
+from aftersales_workbench.integrations.erp.sales_owner import SalesOwnerLookup
 from aftersales_workbench.main import app
 from aftersales_workbench.services.aftersales_records import (
     AftersalesRecordService,
     _utc_naive_dt,
 )
+
+
+def test_fast_refund_without_erp_is_not_displayed_as_unmatched() -> None:
+    owner = SalesOwnerLookup(
+        None,
+        None,
+        "not_required",
+        "买家在平台订单导入 ERP 前完成退款",
+    )
+
+    serialized = AftersalesRecordService._serialize_owner(owner)
+
+    assert serialized["sales_owner"] == "快速退款未入 ERP"
+    assert serialized["status"] == "not_required"
 
 
 class FakeRecordService:

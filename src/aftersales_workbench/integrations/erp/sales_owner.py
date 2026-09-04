@@ -14,7 +14,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
-from aftersales_workbench.db.models import AfterSalesOrder, Platform, Shop
+from aftersales_workbench.db.models import (
+    AfterSalesOrder,
+    AfterSalesType,
+    Platform,
+    ShippingStatus,
+    Shop,
+)
+from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +38,7 @@ class SalesOwnerSyncResult:
     matched: int
     conflict: int
     not_found: int
+    not_required: int
     unavailable: int
     not_configured: int
     remaining: int
@@ -41,6 +49,7 @@ class SalesOwnerSyncResult:
             "matched": self.matched,
             "conflict": self.conflict,
             "not_found": self.not_found,
+            "not_required": self.not_required,
             "unavailable": self.unavailable,
             "not_configured": self.not_configured,
             "remaining": self.remaining,
@@ -336,6 +345,15 @@ class ErpSalesOwnerSyncService:
         self.session = session
         self.resolver = resolver
 
+    @staticmethod
+    def _is_fast_refund_without_erp(order: AfterSalesOrder) -> bool:
+        return (
+            getattr(order, "after_sales_type", None) == AfterSalesType.ONLY_REFUND
+            and getattr(order, "order_shipping_status", None)
+            == ShippingStatus.UNSHIPPED
+            and platform_refund_completed(order)
+        )
+
     def sync_stale(
         self,
         *,
@@ -384,6 +402,23 @@ class ErpSalesOwnerSyncService:
                 .limit(limit)
             ).all()
         )
+        fast_refund_shop_ids = {
+            order.shop_id
+            for order in orders
+            if self._is_fast_refund_without_erp(order)
+        }
+        pdd_shop_ids = (
+            set(
+                self.session.scalars(
+                    select(Shop.shop_id).where(
+                        Shop.platform == Platform.PDD,
+                        Shop.shop_id.in_(fast_refund_shop_ids),
+                    )
+                ).all()
+            )
+            if fast_refund_shop_ids
+            else set()
+        )
         lookups = self.resolver.resolve_many(
             order.platform_order_sn for order in orders
         )
@@ -391,6 +426,7 @@ class ErpSalesOwnerSyncService:
             "matched": 0,
             "conflict": 0,
             "not_found": 0,
+            "not_required": 0,
             "unavailable": 0,
             "not_configured": 0,
         }
@@ -402,6 +438,17 @@ class ErpSalesOwnerSyncService:
                     None,
                     "unavailable",
                     "ERP 归属业务员查询未返回结果",
+                )
+            if (
+                lookup.status == "not_found"
+                and getattr(order, "shop_id", None) in pdd_shop_ids
+                and self._is_fast_refund_without_erp(order)
+            ):
+                lookup = SalesOwnerLookup(
+                    None,
+                    None,
+                    "not_required",
+                    "买家在拼多多订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员",
                 )
             order.erp_customer_name = lookup.customer_name
             order.erp_sales_owner = lookup.sales_owner
@@ -418,6 +465,7 @@ class ErpSalesOwnerSyncService:
             matched=counts["matched"],
             conflict=counts["conflict"],
             not_found=counts["not_found"],
+            not_required=counts["not_required"],
             unavailable=counts["unavailable"],
             not_configured=counts["not_configured"],
             remaining=max(0, stale_total - len(orders)),

@@ -965,11 +965,13 @@ class AftersalesRecordService:
             "unavailable": "warning",
             "not_configured": "warning",
             "not_found": "neutral",
+            "not_required": "neutral",
         }.get(owner.status, "neutral")
         display_name = owner.sales_owner or {
             "not_configured": "待接入 ERP",
             "unavailable": "ERP 暂不可用",
             "not_found": "未匹配",
+            "not_required": "快速退款未入 ERP",
         }.get(owner.status, "未匹配")
         return {
             "sales_owner": display_name,
@@ -984,11 +986,16 @@ class AftersalesRecordService:
     def _cached_owner(order: AfterSalesOrder) -> SalesOwnerLookup | None:
         if not order.erp_sales_owner_status:
             return None
+        message = (
+            "买家在平台订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员"
+            if order.erp_sales_owner_status == "not_required"
+            else "已从本地 ERP 归属缓存读取"
+        )
         return SalesOwnerLookup(
             sales_owner=order.erp_sales_owner,
             customer_name=order.erp_customer_name,
             status=order.erp_sales_owner_status,
-            message="已从本地 ERP 归属缓存读取",
+            message=message,
         )
 
     def _owners_for_rows(self, rows: list[Any]) -> dict[str, SalesOwnerLookup]:

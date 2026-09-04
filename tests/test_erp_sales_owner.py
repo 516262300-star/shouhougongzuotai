@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import httpx
 from sqlalchemy import create_engine, text
 
+from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
 from aftersales_workbench.integrations.erp.sales_owner import (
     ErpSalesOwnerResolver,
     ErpSalesOwnerSyncService,
@@ -276,3 +277,58 @@ def test_sales_owner_sync_retries_unavailable_result_after_five_minutes() -> Non
     expected = before - timedelta(seconds=86100)
     assert order.erp_sales_owner_synced_at >= expected
     assert order.erp_sales_owner_synced_at < before - timedelta(hours=23)
+
+
+def test_sales_owner_sync_marks_completed_pdd_fast_refund_as_not_required() -> None:
+    order = SimpleNamespace(
+        shop_id=7,
+        platform_order_sn="ORDER-FAST-REFUND",
+        after_sales_type=AfterSalesType.ONLY_REFUND,
+        order_shipping_status=ShippingStatus.UNSHIPPED,
+        refund_financial_status="SUCCESS",
+        platform_after_sales_status=10,
+        platform_order_refund_status=4,
+        erp_customer_name=None,
+        erp_sales_owner=None,
+        erp_sales_owner_status="not_found",
+        erp_sales_owner_synced_at=None,
+    )
+
+    class ScalarRows:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def all(self):
+            return self.rows
+
+    class FakeSession:
+        scalar_calls = 0
+        scalars_calls = 0
+
+        def scalar(self, _statement):
+            self.scalar_calls += 1
+            return 1
+
+        def scalars(self, _statement):
+            self.scalars_calls += 1
+            return ScalarRows([order] if self.scalars_calls == 1 else [7])
+
+        def commit(self):
+            pass
+
+    class FakeResolver:
+        def resolve_many(self, _order_sns):
+            return {
+                "ORDER-FAST-REFUND": SalesOwnerLookup(
+                    None, None, "not_found", "missing"
+                )
+            }
+
+    result = ErpSalesOwnerSyncService(FakeSession(), FakeResolver()).sync_stale(
+        limit=20,
+        refresh_seconds=86400,
+    )
+
+    assert result.not_required == 1
+    assert result.not_found == 0
+    assert order.erp_sales_owner_status == "not_required"
