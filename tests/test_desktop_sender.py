@@ -470,3 +470,46 @@ def test_desktop_sender_process_lock_is_non_blocking_and_reusable(tmp_path) -> N
 
     with DesktopSendProcessLock(lock_path):
         assert lock_path.exists()
+
+
+@pytest.mark.parametrize("send_pressed", [False, True])
+def test_before_paste_exception_after_input_never_downgrades_ledger(tmp_path, send_pressed):
+    class Gateway:
+        calls = 0
+
+        def send(self, plan, hooks):
+            self.calls += 1
+            hooks.paste_started()
+            if send_pressed:
+                hooks.send_pressed()
+            raise DesktopBeforePasteError("窗口区域读取失败")
+
+    session = _FakeSession()
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    gateway = Gateway()
+    service = DesktopNoticeSendService(session, gateway, ledger)
+    assert service.run([_plan()]).paused == 1
+    assert service.run([_plan()]).paused == 1
+    assert gateway.calls == 1
+    assert ledger.latest(61).state is (
+        DesktopLedgerState.SEND_PRESSED if send_pressed else DesktopLedgerState.PASTE_STARTED
+    )
+    assert ledger.latest(61).error == "窗口区域读取失败"
+    assert session.task.action_status is AutomationTaskStatus.RUNNING
+    with pytest.raises(DesktopNoticeSendError):
+        ledger.resume_before_paste(61)
+
+
+def test_unexpected_error_before_input_after_resume_blocks_queue(tmp_path):
+    class Gateway:
+        def send(self, plan, hooks):
+            raise OSError("截图失败")
+
+    ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
+    ledger.append(
+        task_id=61, state=DesktopLedgerState.READY, plan_hash=desktop_notice_plan_hash(_plan())
+    )
+    session = _FakeSession()
+    assert DesktopNoticeSendService(session, Gateway(), ledger).run([_plan()]).paused == 1
+    assert ledger.blocking_entry().state is DesktopLedgerState.PAUSED_BEFORE_PASTE
+    assert session.task.action_status is AutomationTaskStatus.PENDING

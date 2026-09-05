@@ -202,6 +202,7 @@ class WindowsWeComGateway:
         self.kernel32.CloseHandle.restype = wintypes.BOOL
         self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._random = random.SystemRandom()
+        self._target_hwnd: int | None = None
 
     def send(self, plan: DesktopNoticePlan, hooks: DesktopSendHooks) -> None:
         previous_hwnd = int(self.user32.GetForegroundWindow())
@@ -210,6 +211,7 @@ class WindowsWeComGateway:
         self._raise_if_escape()
         try:
             hwnd, process_id = self._activate_wecom_foreground()
+            self._target_hwnd = hwnd
             self._raise_if_security_window(process_id)
 
             self._hotkey(VK_CONTROL, VK_1)
@@ -256,9 +258,11 @@ class WindowsWeComGateway:
             self._raise_if_security_window(process_id, ambiguous=True)
             self._raise_if_escape(ambiguous=True)
 
-            before_send = self._snapshot(hwnd, region=self._SEND_CHANGE_REGION)
+            before_send = self._snapshot(
+                hwnd, region=self._SEND_CHANGE_REGION, ambiguous=True
+            )
             hooks.send_pressed()
-            self._tap(VK_RETURN)
+            self._tap(VK_RETURN, ambiguous=True)
             self._sleep_range(2200, 3100, ambiguous=True)
             self._wait_for_change(
                 hwnd,
@@ -275,6 +279,7 @@ class WindowsWeComGateway:
             hooks.sent()
             completed = True
         finally:
+            self._target_hwnd = None
             # 只有确认发送成功或尚未开始输入时才恢复原窗口。结果不明时保留
             # 企业微信在前台，方便操作员立即核验，避免盲目重发。
             if completed or not input_started:
@@ -284,17 +289,26 @@ class WindowsWeComGateway:
         candidate = _select_wecom_window(self._visible_wecom_windows())
         self._raise_if_security_window(candidate.process_id)
         deadline = time.monotonic() + 2.0
+        stable_since: float | None = None
         while time.monotonic() < deadline:
             # 仅在尚未输入消息的激活阶段有限重试。部分桌面程序会在收到
             # 通知时瞬间抢回焦点；重复激活可消除这种竞争，但开始输入后
             # 仍由后续前台校验失败关闭，绝不边输入边争抢窗口。
-            self._focus_window(candidate.hwnd)
+            if stable_since is None:
+                self._focus_window(candidate.hwnd)
             time.sleep(0.08)
             try:
                 hwnd, process_id = self._require_wecom_foreground()
             except DesktopBeforePasteError:
+                stable_since = None
                 continue
-            return hwnd, process_id
+            if hwnd != candidate.hwnd:
+                stable_since = None
+                continue
+            if stable_since is None:
+                stable_since = time.monotonic()
+            elif time.monotonic() - stable_since >= 0.3:
+                return hwnd, process_id
         raise DesktopBeforePasteError("无法将企业微信切换到前台，未输入任何消息")
 
     def _visible_wecom_windows(self) -> list[_WeComWindowCandidate]:
@@ -438,11 +452,24 @@ class WindowsWeComGateway:
 
     def _send_inputs(self, inputs: Any, *, ambiguous: bool = False) -> None:
         self._raise_if_escape(ambiguous=ambiguous)
+        # 搜索等待、逐段输入及换行之间都可能失焦，不能只在入口检查一次。
+        self._require_target_foreground(ambiguous=ambiguous)
         values = tuple(inputs)
         array = (_INPUT * len(values))(*values)
         sent = self.user32.SendInput(len(values), array, ctypes.sizeof(_INPUT))
         if sent != len(values):
             error = "Windows SendInput 未完整发送键盘输入"
+            if ambiguous:
+                raise DesktopAmbiguousSendError(error)
+            raise DesktopBeforePasteError(error)
+
+    def _require_target_foreground(
+        self, *, hwnd: int | None = None, ambiguous: bool = False
+    ) -> None:
+        current_hwnd, _process_id = self._require_wecom_foreground(ambiguous=ambiguous)
+        expected_hwnd = hwnd if hwnd is not None else self._target_hwnd
+        if expected_hwnd is not None and current_hwnd != expected_hwnd:
+            error = "企业微信前台已切换到其他窗口，已停止输入和发送"
             if ambiguous:
                 raise DesktopAmbiguousSendError(error)
             raise DesktopBeforePasteError(error)
@@ -509,14 +536,20 @@ class WindowsWeComGateway:
         hwnd: int,
         *,
         region: tuple[float, float, float, float] | None = None,
+        ambiguous: bool = False,
     ) -> Image:
+        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
         rect = wintypes.RECT()
         if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            if ambiguous:
+                raise DesktopAmbiguousSendError("无法读取企业微信窗口区域")
             raise DesktopBeforePasteError("无法读取企业微信窗口区域")
         image = self.ImageGrab.grab(
             bbox=(rect.left, rect.top, rect.right, rect.bottom),
             all_screens=True,
         ).convert("L")
+        # ImageGrab 截取的是屏幕，窗口被遮挡后的变化不能证明消息已输入或发出。
+        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
         if region is not None:
             left, top, right, bottom = region
             image = image.crop(
@@ -543,7 +576,7 @@ class WindowsWeComGateway:
         deadline = time.monotonic() + (timeout_ms / 1000)
         while time.monotonic() < deadline:
             self._raise_if_escape(ambiguous=ambiguous)
-            after = self._snapshot(hwnd, region=region)
+            after = self._snapshot(hwnd, region=region, ambiguous=ambiguous)
             difference = self.ImageChops.difference(before, after)
             mean = float(self.ImageStat.Stat(difference).mean[0]) / 255
             if mean >= threshold:

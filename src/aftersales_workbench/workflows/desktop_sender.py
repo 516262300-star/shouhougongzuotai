@@ -426,18 +426,26 @@ class DesktopNoticeSendService:
                 self.gateway.send(plan, hooks)
                 result.sent += 1
             except DesktopBeforePasteError as exc:
-                self.ledger.append(
-                    task_id=plan.task_id,
-                    state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
-                    plan_hash=plan_hash,
-                    error=str(exc),
-                )
+                # 以持久化进度为准，底层截图/按键异常不能把已输入任务降级为可重试。
+                latest = self.ledger.latest(plan.task_id)
+                if latest is not None and latest.state in AMBIGUOUS_LEDGER_STATES:
+                    self._record_ambiguous_failure(plan.task_id, str(exc))
+                elif latest is None or latest.state in {
+                    DesktopLedgerState.READY,
+                    DesktopLedgerState.PAUSED_BEFORE_PASTE,
+                }:
+                    self.ledger.append(
+                        task_id=plan.task_id,
+                        state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
+                        plan_hash=plan_hash,
+                        error=str(exc),
+                    )
                 result.paused += 1
                 result.error = str(exc)
                 break
             except Exception as exc:
                 latest = self.ledger.latest(plan.task_id)
-                if latest is None:
+                if latest is None or latest.state is DesktopLedgerState.READY:
                     self.ledger.append(
                         task_id=plan.task_id,
                         state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
@@ -585,6 +593,14 @@ class DesktopNoticeSendService:
         return True
 
     def _record_ambiguous_failure(self, task_id: int, error: str) -> None:
+        latest = self.ledger.latest(task_id)
+        if latest is not None and latest.state in AMBIGUOUS_LEDGER_STATES:
+            self.ledger.append(
+                task_id=task_id,
+                state=latest.state,
+                plan_hash=latest.plan_hash,
+                error=error,
+            )
         changed = False
         for task, _order in self._notification_group(task_id):
             if AutomationTaskStatus(task.action_status) is AutomationTaskStatus.RUNNING:

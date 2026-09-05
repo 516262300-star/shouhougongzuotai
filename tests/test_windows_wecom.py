@@ -5,7 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from aftersales_workbench.workflows.desktop_sender import DesktopBeforePasteError
+from aftersales_workbench.workflows.desktop_sender import (
+    DesktopAmbiguousSendError,
+    DesktopBeforePasteError,
+)
 from aftersales_workbench.workflows.windows_wecom import (
     _INPUT,
     _INPUT_UNION,
@@ -129,3 +132,62 @@ def test_send_is_confirmed_immediately_after_post_send_visual_change(monkeypatch
     assert hooks.events == ["paste_started", "send_pressed", "sent"]
     assert visual_checks == 3
     assert foreground_checks == 2
+
+
+@pytest.mark.parametrize("ambiguous", [False, True])
+def test_no_key_is_sent_after_target_window_changes(monkeypatch, ambiguous) -> None:
+    gateway = object.__new__(WindowsWeComGateway)
+    gateway._target_hwnd = 11
+    calls = []
+    gateway.user32 = SimpleNamespace(SendInput=lambda *args: calls.append(args))
+    monkeypatch.setattr(gateway, "_raise_if_escape", lambda **kwargs: None)
+    # 即使同属 WXWork.exe，弹窗也不能接收原聊天的按键。
+    monkeypatch.setattr(gateway, "_require_wecom_foreground", lambda **kwargs: (12, 101))
+    error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
+    with pytest.raises(error_type, match="其他窗口"):
+        gateway._tap(13, ambiguous=ambiguous)
+    assert calls == []
+
+
+def test_occluded_snapshot_cannot_confirm_send(monkeypatch) -> None:
+    gateway = object.__new__(WindowsWeComGateway)
+    observations = iter([(11, 101), (12, 101)])
+    monkeypatch.setattr(
+        gateway, "_require_wecom_foreground", lambda **kwargs: next(observations)
+    )
+
+    def get_rect(hwnd, pointer):
+        pointer._obj.right = 100
+        pointer._obj.bottom = 100
+        return True
+
+    gateway.user32 = SimpleNamespace(GetWindowRect=get_rect)
+    gateway.ImageGrab = SimpleNamespace(
+        grab=lambda **kwargs: SimpleNamespace(convert=lambda mode: object())
+    )
+    with pytest.raises(DesktopAmbiguousSendError, match="其他窗口"):
+        gateway._snapshot(11, ambiguous=True)
+
+
+def test_activation_rejects_other_wecom_window_and_waits_for_stability(monkeypatch) -> None:
+    import aftersales_workbench.workflows.windows_wecom as module
+
+    gateway = object.__new__(WindowsWeComGateway)
+    candidate = _WeComWindowCandidate(11, 101, "企业微信", 1_200_000)
+    monkeypatch.setattr(gateway, "_visible_wecom_windows", lambda: [candidate])
+    monkeypatch.setattr(gateway, "_raise_if_security_window", lambda *args: None)
+    focused = []
+    monkeypatch.setattr(gateway, "_focus_window", focused.append)
+    now = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    checks = []
+
+    def foreground():
+        checks.append(now[0])
+        return (12 if len(checks) == 1 else 11), 101
+
+    monkeypatch.setattr(gateway, "_require_wecom_foreground", foreground)
+    assert gateway._activate_wecom_foreground() == (11, 101)
+    assert len(focused) == 2
+    assert checks[-1] - checks[1] >= 0.3
