@@ -27,6 +27,7 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     get_erp_sales_owner_resolver,
 )
 from aftersales_workbench.services.refund_attribution import REASON_CATEGORIES
+from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlanner
 from aftersales_workbench.workflows.module1_logistics import (
     build_refund_business_hours,
 )
@@ -226,6 +227,10 @@ class AftersalesRecordService:
         self.sales_owner_resolver = sales_owner_resolver or get_erp_sales_owner_resolver()
         self.settings = settings or get_settings()
         self.refund_business_hours = build_refund_business_hours(self.settings)
+        self.desktop_notice_planner = DesktopNoticePlanner(
+            self.settings.module1_desktop_group_map,
+            self.settings.kuaidi100_carrier_map,
+        )
 
     def list_orders(
         self,
@@ -763,8 +768,8 @@ class AftersalesRecordService:
             refund_task,
             logistics,
         )
-        group_name = self.settings.module1_desktop_group_map.get(
-            str(order.carrier_code or "").strip()
+        group_name = self.desktop_notice_planner.resolve_target_group(
+            str(order.carrier_code or "")
         )
         latest_error = next(
             (

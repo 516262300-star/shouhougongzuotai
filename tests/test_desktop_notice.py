@@ -51,6 +51,16 @@ def test_tmall_carrier_name_reuses_verified_pdd_group_mapping() -> None:
     plan = planner.build(_candidate("极兔速递"))
 
     assert plan.target_group == "精确极兔群名"
+    assert planner.resolve_target_group("极兔速递") == "精确极兔群名"
+
+
+def test_target_group_resolver_returns_none_for_unmapped_carrier() -> None:
+    planner = DesktopNoticePlanner(
+        {"384": "精确极兔群名"},
+        {"384": "jtexpress"},
+    )
+
+    assert planner.resolve_target_group("顺丰速运") is None
 
 
 def test_desktop_notice_safe_output_masks_order_identifiers() -> None:

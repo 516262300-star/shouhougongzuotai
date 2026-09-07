@@ -106,15 +106,24 @@ class DesktopNoticePlanner:
                 )
             self.canonical_group_map[canonical] = group_name
 
+    def resolve_target_group(self, carrier_id: str) -> str | None:
+        """按发送器实际使用的规则解析快递公司对应的企业微信群。"""
+        clean_carrier_id = carrier_id.strip()
+        target_group = self.group_map.get(clean_carrier_id)
+        if target_group:
+            return target_group
+        try:
+            canonical = resolve_logistics_carrier(
+                clean_carrier_id,
+                self.carrier_map,
+            )
+        except Kuaidi100ConfigurationError:
+            return None
+        return self.canonical_group_map.get(canonical)
+
     def build(self, candidate: DesktopNoticeCandidate) -> DesktopNoticePlan:
         carrier_id = candidate.carrier_id.strip()
-        target_group = self.group_map.get(carrier_id)
-        if not target_group:
-            try:
-                canonical = resolve_logistics_carrier(carrier_id, self.carrier_map)
-            except Kuaidi100ConfigurationError:
-                canonical = ""
-            target_group = self.canonical_group_map.get(canonical)
+        target_group = self.resolve_target_group(carrier_id)
         if not target_group:
             raise DesktopNoticeConfigurationError(
                 f"物流公司 {carrier_id or '<empty>'} 未配置企业微信群白名单"
