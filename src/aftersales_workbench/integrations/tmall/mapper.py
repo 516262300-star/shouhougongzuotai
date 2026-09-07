@@ -98,9 +98,13 @@ def unwrap_seller(body: dict[str, Any]) -> dict[str, Any]:
 
 def unwrap_refund(body: dict[str, Any]) -> dict[str, Any]:
     response = body.get("refund_get_response")
+    if not isinstance(response, dict):
+        response = body.get("special_refund_get_response")
     refund = response.get("refund") if isinstance(response, dict) else None
     if not isinstance(refund, dict):
-        raise TmallDataMappingError("缺少 refund_get_response.refund")
+        raise TmallDataMappingError(
+            "缺少 refund_get_response.refund 或 special_refund_get_response.refund"
+        )
     return refund
 
 
@@ -191,6 +195,7 @@ def normalize_refund(
         or oid
     )
     quantity = merged.get("num") or trade_order.get("num") or 1
+    special_refund_type = _nonempty(merged.get("special_refund_type"))
     forward_tracking, forward_carrier = normalize_forward_logistics(logistics)
     return NormalizedTmallRefund(
         after_sales_sn=refund_id,
@@ -200,7 +205,11 @@ def normalize_refund(
         ),
         refund_amount=refund_amount,  # type: ignore[arg-type]
         platform_order_amount=(
-            _money(merged.get("payment"), field="payment")
+            (
+                _money(merged.get("total_fee"), field="total_fee")
+                if special_refund_type
+                else _money(merged.get("payment"), field="payment")
+            )
             or _money(trade.get("payment"), field="trade.payment")
         ),
         platform_goods_amount=(

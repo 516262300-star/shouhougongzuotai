@@ -11,6 +11,7 @@ from aftersales_workbench.integrations.tmall.client import (
     TAOBAO_REFUNDS_RECEIVE_GET,
     TAOBAO_RP_REFUND_REVIEW,
     TAOBAO_RP_REFUNDS_AGREE,
+    TAOBAO_SPECIAL_REFUND_GET,
     TmallApiError,
     TmallClient,
     TmallConfigurationError,
@@ -131,6 +132,52 @@ def test_api_error_preserves_safe_diagnostics(credentials: TmallCredentials) -> 
     assert caught.value.code == 27
     assert caught.value.request_id == "request-1"
     assert "session-key" not in str(caught.value)
+    http_client.close()
+
+
+def test_special_refund_detail_falls_back_to_official_special_api(
+    credentials: TmallCredentials,
+) -> None:
+    requests: list[dict[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = dict(httpx.QueryParams(request.content.decode()))
+        requests.append(payload)
+        if payload["method"] == TAOBAO_REFUND_GET:
+            body = {
+                "error_response": {
+                    "code": 15,
+                    "sub_code": "isv.change-refund-top-api",
+                    "sub_msg": "请使用taobao.special.refund.get接口查询对应的退款信息",
+                }
+            }
+        else:
+            body = {
+                "special_refund_get_response": {
+                    "refund": {
+                        "refund_id": "283809325290075129",
+                        "status": "SUCCESS",
+                        "refund_fee": "1.47",
+                        "special_refund_type": "cashBack",
+                    }
+                }
+            }
+        return httpx.Response(200, json=body, request=request)
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = TmallClient(credentials, http_client=http_client)
+
+    body = client.get_refund(refund_id=283809325290075129)
+
+    assert [request["method"] for request in requests] == [
+        TAOBAO_REFUND_GET,
+        TAOBAO_SPECIAL_REFUND_GET,
+    ]
+    assert "special_refund_type" in requests[1]["fields"]
+    assert (
+        body["special_refund_get_response"]["refund"]["special_refund_type"]
+        == "cashBack"
+    )
     http_client.close()
 
 

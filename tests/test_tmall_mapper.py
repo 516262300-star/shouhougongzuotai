@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
-from aftersales_workbench.integrations.tmall.mapper import normalize_refund
+from aftersales_workbench.integrations.tmall.mapper import normalize_refund, unwrap_refund
 
 
 def test_normalize_return_refund_uses_trade_sku_and_return_tracking() -> None:
@@ -101,3 +101,35 @@ def test_normalize_only_refund_uses_unique_forward_logistics_package() -> None:
 
     assert refund.forward_tracking_number == "JT123456"
     assert refund.carrier_code == "极兔速递"
+
+
+def test_special_price_adjustment_uses_total_fee_as_refund_scope_basis() -> None:
+    detail = unwrap_refund(
+        {
+            "special_refund_get_response": {
+                "refund": {
+                    "refund_id": "283809325290075129",
+                    "tid": 3316828585122027759,
+                    "oid": 3316828585122027759,
+                    "status": "SUCCESS",
+                    "order_status": "WAIT_BUYER_CONFIRM_GOODS",
+                    "has_good_return": False,
+                    "refund_fee": "1.47",
+                    "total_fee": "26.44",
+                    "payment": "24.97",
+                    "reason": "商品降价了",
+                    "num": 3,
+                    "outer_id": "8167-25",
+                    "special_refund_type": "cashBack",
+                }
+            }
+        }
+    )
+
+    refund = normalize_refund(detail, detail, {})
+
+    assert refund.after_sales_type is AfterSalesType.ONLY_REFUND
+    assert refund.refund_amount == Decimal("1.47")
+    assert refund.platform_order_amount == Decimal("26.44")
+    assert refund.refund_amount < refund.platform_order_amount
+    assert refund.buyer_reason_raw == "商品降价了"

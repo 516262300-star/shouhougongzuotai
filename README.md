@@ -213,7 +213,7 @@ alembic upgrade head
 
 ## 天猫六店售后同步与模块 1/2/3 接入
 
-天猫接入直接调用淘宝开放平台正式 HTTPS 网关，不依赖旧管理系统网页或旧代码运行环境。六个店铺共用 `TMALL_APP_KEY` / `TMALL_APP_SECRET`，每店使用独立的 `TMALL_SHOP_N_SESSION_KEY`。同步器调用 `taobao.user.seller.get` 校验卖家身份，按修改时间分页读取 `taobao.refunds.receive.get`，再用 `taobao.refund.get` 和 `taobao.trade.fullinfo.get` 补齐退款原因、留言、商品、SKU、订单状态和退货运单。对已发货仅退款，另外调用 `taobao.logistics.orders.get` 读取原发货运单和物流公司；多包裹、无运单或物流接口失败时不猜测，记录失败关闭。结果与拼多多共用 `shops`、`aftersales_orders`、`aftersales_items`，进度单独保存在 `tmall_sync_cursors`。
+天猫接入直接调用淘宝开放平台正式 HTTPS 网关，不依赖旧管理系统网页或旧代码运行环境。六个店铺共用 `TMALL_APP_KEY` / `TMALL_APP_SECRET`，每店使用独立的 `TMALL_SHOP_N_SESSION_KEY`。同步器调用 `taobao.user.seller.get` 校验卖家身份，按修改时间分页读取 `taobao.refunds.receive.get`，再用 `taobao.refund.get` 和 `taobao.trade.fullinfo.get` 补齐退款原因、留言、商品、SKU、订单状态和退货运单；普通详情接口返回 `isv.change-refund-top-api` 时，自动改用 `taobao.special.refund.get` 读取退差价、价保返现等特殊退款。这类记录继续进入售后台账，但以订单总金额判定为部分退款，不生成快递拦截、退货验收或平台退款动作。对已发货仅退款，另外调用 `taobao.logistics.orders.get` 读取原发货运单和物流公司；多包裹、无运单或物流接口失败时不猜测，记录失败关闭。结果与拼多多共用 `shops`、`aftersales_orders`、`aftersales_items`，进度单独保存在 `tmall_sync_cursors`。
 
 默认仍是只读记录层。只有同时设置 `TMALL_SYNC_ENABLED=true`、`TMALL_MODULE123_TRIAL_ENABLED=true` 并配置独立上线水位后，水位之后的新天猫售后才进入模块 1/2/3：模块 1 对已发货全额仅退款执行物流预检和企业微信快递群拦截；模块 2 按客户退货运单核对 ERP 客户退货单或退货暂存列表，并逐项比较型号、颜色和数量；模块 3 对平台已经退款的未发货订单执行 ERP 取消履约及补开退款单。六店同步阶段只有当轮整体成功才放行天猫候选，防止任何店铺使用陈旧状态执行写操作。
 

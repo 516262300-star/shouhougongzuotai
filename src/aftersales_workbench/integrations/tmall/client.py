@@ -15,6 +15,7 @@ from pydantic import SecretStr
 TAOBAO_USER_SELLER_GET = "taobao.user.seller.get"
 TAOBAO_REFUNDS_RECEIVE_GET = "taobao.refunds.receive.get"
 TAOBAO_REFUND_GET = "taobao.refund.get"
+TAOBAO_SPECIAL_REFUND_GET = "taobao.special.refund.get"
 TAOBAO_TRADE_FULLINFO_GET = "taobao.trade.fullinfo.get"
 TAOBAO_LOGISTICS_ORDERS_GET = "taobao.logistics.orders.get"
 TAOBAO_RP_REFUND_REVIEW = "taobao.rp.refund.review"
@@ -267,12 +268,28 @@ class TmallClient:
     def get_refund(self, *, refund_id: int) -> dict[str, Any]:
         if refund_id < 1:
             raise ValueError("refund_id 必须大于 0")
-        fields = (
+        common_fields = (
             "refund_id,tid,oid,status,order_status,has_good_return,refund_fee,"
             "total_fee,payment,reason,desc,created,modified,num,title,sku,outer_id,"
             "buyer_nick,sid,company_name,refund_version,refund_phase"
         )
-        return self.execute_read(TAOBAO_REFUND_GET, fields=fields, refund_id=refund_id)
+        try:
+            return self.execute_read(
+                TAOBAO_REFUND_GET,
+                fields=common_fields,
+                refund_id=refund_id,
+            )
+        except TmallApiError as exc:
+            if exc.sub_code != "isv.change-refund-top-api":
+                raise
+        return self.execute_read(
+            TAOBAO_SPECIAL_REFUND_GET,
+            fields=(
+                f"{common_fields},special_refund_type,seller_refund_fee,"
+                "platform_refund_fee,operation_contraint"
+            ),
+            refund_id=refund_id,
+        )
 
     def agree_refund(
         self,
@@ -361,7 +378,11 @@ class TmallClient:
     def _refund_from_response(body: Mapping[str, Any]) -> Mapping[str, Any]:
         response = body.get("refund_get_response")
         if not isinstance(response, Mapping):
-            raise TmallTransportError("退款详情响应缺少 refund_get_response")
+            response = body.get("special_refund_get_response")
+        if not isinstance(response, Mapping):
+            raise TmallTransportError(
+                "退款详情响应缺少 refund_get_response 或 special_refund_get_response"
+            )
         refund = response.get("refund")
         if not isinstance(refund, Mapping):
             raise TmallTransportError("退款详情响应缺少 refund")
