@@ -77,6 +77,35 @@ def verified_pdd_paid(info: dict[str, Any], order_sn: str) -> Decimal:
     return paid
 
 
+def verified_tmall_status(info: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, str]:
+    """只回填已核实成功的历史退款状态，不以交易关闭推断退款成功。"""
+    if (
+        str(info.get("refund_id") or "") != snapshot["after_sales_sn"]
+        or str(info.get("tid") or "") != snapshot["platform_order_sn"]
+    ):
+        raise SupplementDataError("天猫售后或订单身份不一致，未补写")
+    if (
+        info.get("status") != "SUCCESS" or info.get("order_status") != "TRADE_CLOSED"
+        or info.get("has_good_return") is not False
+    ):
+        raise SupplementDataError("平台未明确返回仅退款成功且交易关闭，未补写")
+    try:
+        amount = Decimal(str(info.get("refund_fee")))
+        valid = (
+            amount.is_finite() and amount > 0
+            and amount == snapshot["refund_amount"]
+        )
+    except (InvalidOperation, ValueError):
+        valid = False
+    if not valid:
+        raise SupplementDataError("平台退款金额无效或与本地不一致，未补写")
+    return {
+        "refund_financial_status": "SUCCESS",
+        "platform_after_sales_status_text": "SUCCESS",
+        "platform_order_status_text": "TRADE_CLOSED",
+    }
+
+
 class HistoricalSupplementService:
     def __init__(self, session: Session, settings: Settings):
         self.session = session
@@ -109,10 +138,25 @@ class HistoricalSupplementService:
                          O.merchant_receivable_amount.is_(None)),
                 ),
             ]
-        if kind != "tmall_owner":
+        if kind not in {"tmall_owner", "tmall_status"}:
             raise ValueError("不支持的补查类型")
         if max_order_id >= self.settings.tmall_module123_min_order_id:
-            raise ValueError("归属补查上限必须早于天猫自动化水位")
+            raise ValueError("天猫补查上限必须早于天猫自动化水位")
+        if kind == "tmall_status":
+            # 本入口仅修复从未有动作任务的旧资料，不接管正在办理或已办理的任务。
+            any_task = exists().where(
+                AftersalesActionTask.after_sales_sn == O.after_sales_sn,
+            ).correlate(O)
+            return [
+                O.id <= max_order_id, platform_scope, ~any_task,
+                O.refund_financial_status == "UNKNOWN",
+                O.platform_after_sales_status_text.is_(None),
+                O.platform_order_status_text.is_(None),
+                O.after_sales_type == "ONLY_REFUND",
+                O.order_shipping_status == "UNSHIPPED",
+                O.workflow_status == "PENDING_CHECK",
+                O.forward_tracking_number.is_(None),
+            ]
         prior_failure = exists().where(
             AutomationPollState.scope == scope,
             AutomationPollState.reference == O.after_sales_sn,
@@ -135,6 +179,7 @@ class HistoricalSupplementService:
         self, *, kind: str, max_order_id: int, limit: int = 100, dry_run: bool = True,
         read_paid: Callable[[str, str, str], dict[str, Any]] | None = None,
         read_owner: Callable[[str], SalesOwnerLookup] | None = None,
+        read_status: Callable[[str, str, str], dict[str, Any]] | None = None,
         on_progress: Callable[[dict[str, Any]], None] | None = None,
         record_ids: tuple[int, ...] | None = None,
     ) -> dict[str, Any]:
@@ -143,8 +188,12 @@ class HistoricalSupplementService:
         if record_ids and any(record_id < 1 for record_id in record_ids):
             raise ValueError("指定记录的 ID 必须大于零")
         filters = self._filters(kind, max_order_id)
+        if kind == "tmall_status" and not record_ids:
+            raise ValueError("天猫状态补查必须用 record_ids 点名已核查的历史记录")
         if (kind == "pdd_paid" and read_paid is None) or (
             kind == "tmall_owner" and read_owner is None
+        ) or (
+            kind == "tmall_status" and read_status is None
         ):
             raise ValueError("缺少对应只读查询器")
         scope = f"history_{kind}"
@@ -152,6 +201,8 @@ class HistoricalSupplementService:
             O.id, O.shop_id, O.after_sales_sn, O.platform_order_sn, O.refund_financial_status,
             O.workflow_status, O.after_sales_type, O.order_shipping_status,
             O.platform_order_amount, O.merchant_receivable_amount,
+            O.refund_amount, O.platform_after_sales_status_text, O.platform_order_status_text,
+            O.forward_tracking_number,
             O.erp_customer_name, O.erp_sales_owner, O.erp_sales_owner_status,
             O.erp_sales_owner_synced_at, Shop.shop_code,
         )
@@ -186,6 +237,13 @@ class HistoricalSupplementService:
                     outcomes["paid_available"] += 1
                     if info.get("amount_source") == "refund_detail":
                         outcomes["from_refund_detail"] += 1
+                elif kind == "tmall_status":
+                    info = read_status(
+                        snapshot["shop_code"], snapshot["platform_order_sn"],
+                        snapshot["after_sales_sn"],
+                    )
+                    values = verified_tmall_status(info, snapshot)
+                    outcomes["confirmed_success"] += 1
                 else:
                     lookup = read_owner(snapshot["platform_order_sn"])
                     if lookup.status not in {"matched", "not_found", "conflict"}:

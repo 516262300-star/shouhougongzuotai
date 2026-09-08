@@ -12,6 +12,9 @@ from aftersales_workbench.db.session import SessionLocal
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
+from aftersales_workbench.integrations.tmall.client import TmallClient
+from aftersales_workbench.integrations.tmall.mapper import unwrap_refund
+from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
 from aftersales_workbench.services.historical_supplement import (
     HistoricalSupplementService,
     SupplementDataError,
@@ -23,7 +26,7 @@ def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="历史资料隔离补查，默认只读预演")
-    parser.add_argument("kind", choices=("pdd_paid", "tmall_owner"))
+    parser.add_argument("kind", choices=("pdd_paid", "tmall_owner", "tmall_status"))
     parser.add_argument("--max-order-id", required=True, type=int)
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument(
@@ -32,6 +35,8 @@ def main(argv=None):
     )
     parser.add_argument("--apply", action="store_true", help="仅补写本地资料和检查台账")
     args = parser.parse_args(argv)
+    if args.kind == "tmall_status" and not args.record_ids:
+        parser.error("tmall_status 必须用 --record-ids 点名历史记录")
     settings = get_settings()
     clients = {}
     with ExitStack() as stack:
@@ -53,6 +58,27 @@ def main(argv=None):
                 )
 
             readers = {"read_paid": read_paid}
+        elif args.kind == "tmall_status":
+            shops = {
+                s.shop_code: s for s in load_configured_tmall_shops(settings, require_all=False)
+            }
+
+            def read_status(shop_code, order_sn, after_sales_sn):
+                if shop_code not in shops:
+                    raise SupplementDataError("对应天猫店铺未配置，未补写")
+                if not (re.fullmatch(r"\d{12,40}", order_sn)
+                        and re.fullmatch(r"\d{1,40}", after_sales_sn)):
+                    raise SupplementDataError("天猫订单或售后单号格式异常，未查询")
+                if shop_code not in clients:
+                    clients[shop_code] = stack.enter_context(TmallClient(
+                        shops[shop_code].credentials(), api_url=settings.tmall_api_url,
+                        timeout_seconds=settings.tmall_timeout_seconds,
+                        read_max_attempts=1, write_enabled=False,
+                    ))
+                time.sleep(0.25)
+                return unwrap_refund(clients[shop_code].get_refund(refund_id=int(after_sales_sn)))
+
+            readers = {"read_status": read_status}
         else:
             if not (settings.erp_web_lookup_enabled and settings.erp_web_username
                     and settings.erp_web_password):

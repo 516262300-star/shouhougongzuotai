@@ -120,7 +120,7 @@ def test_unsafe_live_records_and_non_pdd_never_selected(db):
     assert db.get(AfterSalesOrder, 6).platform_order_amount == Decimal("1.88")
 
 
-@pytest.mark.parametrize("kind", ["pdd_paid", "tmall_owner"])
+@pytest.mark.parametrize("kind", ["pdd_paid", "tmall_owner", "tmall_status"])
 def test_cannot_expand_automation_waterline(db, kind):
     with pytest.raises(ValueError, match="水位"):
         service(db).run(kind=kind, max_order_id=100, read_paid=paid)
@@ -263,3 +263,108 @@ def test_permission_and_rate_errors_do_not_trigger_fallback():
     with pytest.raises(PddApiError):
         read_pdd_paid(client, order_sn="order", after_sales_sn="1")
     assert client.detail_calls == 0
+
+
+def status_detail(_shop, order_sn, after_sales_sn):
+    return {
+        "tid": order_sn, "refund_id": after_sales_sn, "status": "SUCCESS",
+        "order_status": "TRADE_CLOSED", "has_good_return": False,
+        "refund_fee": "1.88", "payment": "0.00", "modified": "2026-09-02 10:00:00",
+    }
+
+
+def status_run(db, **kwargs):
+    return service(db).run(
+        kind="tmall_status", max_order_id=99, read_status=status_detail,
+        record_ids=(1,), **kwargs,
+    )
+
+
+def test_tmall_status_preview_then_updates_only_three_status_fields(db):
+    add_order(db, 1, shop_id=2, refund_financial_status="UNKNOWN",
+              platform_order_amount=Decimal("1.88"), erp_sales_owner_status="not_found")
+    assert status_run(db)["updated"] == 0
+    assert db.query(AutomationPollState).count() == 0
+    assert db.get(AfterSalesOrder, 1).refund_financial_status == "UNKNOWN"
+    assert status_run(db, dry_run=False)["updated"] == 1
+    db.expire_all()
+    row = db.get(AfterSalesOrder, 1)
+    assert row.refund_financial_status == row.platform_after_sales_status_text == "SUCCESS"
+    assert row.platform_order_status_text == "TRADE_CLOSED"
+    assert row.refund_completed_at is None  # modified 不冒充退款完成时刻。
+    assert row.updated_at == datetime(2026, 9, 1, 10)
+    assert row.platform_updated_at is None
+    assert row.platform_order_amount == Decimal("1.88")  # 不被售后接口 payment=0 覆盖。
+    assert row.merchant_receivable_amount is None
+    assert row.erp_sales_owner_status == "not_found"
+    assert row.workflow_status == "PENDING_CHECK" and row.order_shipping_status == "UNSHIPPED"
+    assert db.query(AftersalesActionTask).count() == 0
+    assert db.scalar(select(AutomationPollState)).scope == "history_tmall_status"
+    assert status_run(db)["scanned"] == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"tid": "other"}, {"refund_id": "other"}, {"status": "CLOSED"},
+    {"status": "WAIT_SELLER_AGREE"}, {"order_status": None},
+    {"has_good_return": True}, {"has_good_return": None},
+    {"refund_fee": None}, {"refund_fee": "NaN"}, {"refund_fee": "Infinity"},
+    {"refund_fee": "0"}, {"refund_fee": "1.89"},
+])
+def test_tmall_status_requires_exact_identity_success_type_and_amount(db, changes):
+    add_order(db, 1, shop_id=2, refund_financial_status="UNKNOWN")
+
+    def read(*args):
+        return {**status_detail(*args), **changes}
+
+    result = service(db).run(
+        kind="tmall_status", max_order_id=99, record_ids=(1,), read_status=read, dry_run=False,
+    )
+    assert result["failed"] == 1 and result["updated"] == 0
+    assert db.get(AfterSalesOrder, 1).refund_financial_status == "UNKNOWN"
+    assert db.query(AftersalesActionTask).count() == 0
+
+
+def test_tmall_status_requires_explicit_ids_and_excludes_business_tasks_or_new_orders(db):
+    for n, changes in enumerate([
+        {"shop_id": 1}, {"refund_financial_status": "SUCCESS"},
+        {"order_shipping_status": "IN_TRANSIT"}, {"workflow_status": "MANUAL_PROCESSING"},
+        {"platform_after_sales_status_text": "WAIT_SELLER_AGREE"},
+        {"forward_tracking_number": "tracking"}, {"after_sales_type": "RETURN_AND_REFUND"},
+        {}, {}, {},
+    ], start=1):
+        add_order(db, n, **{"shop_id": 2, "refund_financial_status": "UNKNOWN", **changes})
+    for n, task_status in [(8, "PENDING"), (9, "SUCCEEDED")]:
+        db.add(AftersalesActionTask(
+            id=n, after_sales_sn=f"af-{n}", action_type="TMALL_AGREE_REFUND",
+            action_status=task_status, idempotency_key=f"existing-{n}",
+        ))
+    db.commit()
+    add_order(db, 100, shop_id=2, refund_financial_status="UNKNOWN")
+    with pytest.raises(ValueError, match="点名"):
+        service(db).run(kind="tmall_status", max_order_id=99, read_status=status_detail)
+    result = service(db).run(
+        kind="tmall_status", max_order_id=99, record_ids=(*range(1, 11), 100),
+        read_status=status_detail, dry_run=False,
+    )
+    assert result["scanned"] == result["updated"] == 1
+    assert db.get(AfterSalesOrder, 10).refund_financial_status == "SUCCESS"
+    assert db.get(AfterSalesOrder, 100).refund_financial_status == "UNKNOWN"
+    assert db.query(AftersalesActionTask).count() == 2
+
+
+def test_tmall_status_concurrent_platform_sync_is_not_overwritten(db):
+    add_order(db, 1, shop_id=2, refund_financial_status="UNKNOWN")
+
+    def concurrent(*args):
+        db.execute(update(AfterSalesOrder).where(AfterSalesOrder.id == 1).values(
+            refund_financial_status="CLOSED", platform_after_sales_status_text="CLOSED",
+        ))
+        db.commit()
+        return status_detail(*args)
+
+    result = service(db).run(
+        kind="tmall_status", max_order_id=99, record_ids=(1,),
+        read_status=concurrent, dry_run=False,
+    )
+    assert result["skipped_changed"] == 1 and result["updated"] == 0
+    assert db.get(AfterSalesOrder, 1).refund_financial_status == "CLOSED"
