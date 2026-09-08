@@ -17,6 +17,11 @@ def _parser() -> argparse.ArgumentParser:
         description="只读查询 ERP 客户档案并缓存售后订单归属业务员。"
     )
     parser.add_argument("--limit", type=int, help="本次最多处理的售后订单数")
+    parser.add_argument("--platform-order-sn", action="append",
+                        help="仅复查指定平台订单，可重复；忽略本地缓存刷新间隔")
+    parser.add_argument("--include-tmall", action="store_true",
+                        help="包含当前已开启的天猫试运行范围")
+    parser.add_argument("--dry-run", action="store_true", help="只读查询，不更新本地归属缓存")
     parser.add_argument(
         "--refresh-seconds",
         type=int,
@@ -30,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.reconfigure(encoding="utf-8")
     args = _parser().parse_args(argv)
     settings = get_settings()
+    if args.include_tmall and not settings.tmall_module123_trial_enabled:
+        _parser().error("天猫试运行未开启，不能纳入本次归属刷新")
     limit = args.limit or settings.erp_sales_owner_sync_batch_size
     refresh_seconds = (
         args.refresh_seconds or settings.erp_sales_owner_refresh_seconds
@@ -38,8 +45,13 @@ def main(argv: list[str] | None = None) -> int:
         result = ErpSalesOwnerSyncService(
             session,
             get_erp_sales_owner_resolver(),
-        ).sync_stale(limit=limit, refresh_seconds=refresh_seconds)
-    print(json.dumps(result.safe_dict(), ensure_ascii=False))
+        ).sync_stale(
+            limit=limit, refresh_seconds=refresh_seconds,
+            include_tmall=args.include_tmall,
+            tmall_min_order_id=settings.tmall_module123_min_order_id,
+            platform_order_sns=args.platform_order_sn, dry_run=args.dry_run,
+        )
+    print(json.dumps({**result.safe_dict(), "dry_run": args.dry_run}, ensure_ascii=False))
     return 0 if result.unavailable == 0 and result.not_configured == 0 else 1
 
 

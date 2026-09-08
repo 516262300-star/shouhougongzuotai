@@ -199,7 +199,7 @@ def test_detail_explains_cached_failure_and_missing_amount_without_external_call
         app.dependency_overrides.clear()
     assert response.status_code == 200
     detail = response.json()
-    assert detail["erp_customer"]["sales_owner"] == "ERP 查询失败"
+    assert detail["erp_customer"]["sales_owner"] == "ERP 查询失败·待重试"
     assert "失败" in detail["erp_customer"]["message"]
     assert detail["erp_customer"]["checked_at"] == "2026-09-08T10:00:00"
     assert detail["refund_scope"] == "缺买家实付"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -9,7 +10,7 @@ from time import monotonic
 from typing import Protocol
 
 import httpx
-from sqlalchemy import Engine, and_, bindparam, create_engine, func, or_, select, text
+from sqlalchemy import Engine, and_, bindparam, case, create_engine, func, or_, select, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -22,6 +23,9 @@ from aftersales_workbench.db.models import (
     Shop,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
+
+logger = logging.getLogger(__name__)
+_RETRY_STATUSES = ("unavailable", "not_configured")
 
 
 @dataclass(frozen=True, slots=True)
@@ -278,6 +282,8 @@ class ErpWebSalesOwnerResolver:
         return self.resolve_many([normalized])[normalized]
 
     def _lookup(self, order_sn: str) -> SalesOwnerLookup:
+        reason = "invalid_response"
+        http_status = None
         try:
             for attempt in range(2):
                 self._ensure_logged_in(force=attempt > 0)
@@ -288,14 +294,29 @@ class ErpWebSalesOwnerResolver:
                 response.raise_for_status()
                 body = response.text.strip()
                 if not body or "welcome/loginpage" in str(response.url):
+                    reason = "empty_response_or_login_redirect"
                     self._logged_in = False
                     continue
                 payload = response.json()
                 if isinstance(payload, list):
                     return self._parse_results(payload)
                 self._logged_in = False
-        except (httpx.HTTPError, ValueError, TypeError):
+        except httpx.TimeoutException:
+            reason = "timeout"
             self._logged_in = False
+        except httpx.HTTPStatusError as exc:
+            reason = "http_status"
+            http_status = exc.response.status_code
+            self._logged_in = False
+        except httpx.HTTPError:
+            reason = "network_error"
+            self._logged_in = False
+        except (ValueError, TypeError):
+            reason = "login_or_response_invalid"
+            self._logged_in = False
+        # 仅本地日志记录分类，不输出响应正文、URL、密码、Cookie 或原始异常。
+        logger.warning("ERP_OWNER_LOOKUP_FAILED order=%s reason=%s http_status=%s",
+                       order_sn, reason, http_status)
         return SalesOwnerLookup(
             sales_owner=None,
             customer_name=None,
@@ -323,10 +344,12 @@ class ErpWebSalesOwnerResolver:
         customers: set[str] = set()
         for item in payload:
             if not isinstance(item, dict):
-                continue
+                raise ValueError("ERP 客户查询结果行格式无效")
             parts = str(item.get("autocomplete") or "").split("@")
             customer = parts[0].strip() if parts else ""
             owner = parts[4].strip() if len(parts) > 4 else ""
+            if not customer:
+                raise ValueError("ERP 客户查询结果缺少客户标识")
             if customer:
                 customers.add(customer)
             if owner:
@@ -347,11 +370,13 @@ class ErpSalesOwnerSyncService:
 
     @staticmethod
     def _is_fast_refund_without_erp(order: AfterSalesOrder) -> bool:
+        financial = str(getattr(order, "refund_financial_status", "") or "").upper()
         return (
             getattr(order, "after_sales_type", None) == AfterSalesType.ONLY_REFUND
             and getattr(order, "order_shipping_status", None)
             == ShippingStatus.UNSHIPPED
             and platform_refund_completed(order)
+            and financial in {"", "UNKNOWN", "SUCCESS"}
         )
 
     def sync_stale(
@@ -361,6 +386,8 @@ class ErpSalesOwnerSyncService:
         refresh_seconds: int,
         include_tmall: bool = False,
         tmall_min_order_id: int = 0,
+        platform_order_sns: Iterable[str] | None = None,
+        dry_run: bool = False,
     ) -> SalesOwnerSyncResult:
         if limit < 1:
             raise ValueError("limit 必须大于 0")
@@ -373,6 +400,12 @@ class ErpSalesOwnerSyncService:
             AfterSalesOrder.erp_sales_owner_synced_at.is_(None),
             AfterSalesOrder.erp_sales_owner_synced_at < stale_before,
         )
+        if platform_order_sns is not None:
+            selected = tuple(dict.fromkeys(_normalize_order_sn(sn) for sn in platform_order_sns))
+            if not selected or any(not sn for sn in selected) or len(selected) > limit:
+                raise ValueError("指定订单不能为空，且订单数不能超过 limit")
+            # 指定订单跳过旧缓存时间限制，但仍遵守平台及天猫试运行范围。
+            stale_filter = AfterSalesOrder.platform_order_sn.in_(selected)
         platform_scope = or_(
             Shop.platform == Platform.PDD,
             and_(
@@ -390,18 +423,31 @@ class ErpSalesOwnerSyncService:
             )
             or 0
         )
-        orders = list(
-            self.session.scalars(
-                select(AfterSalesOrder)
-                .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
-                .where(platform_scope, stale_filter)
-                .order_by(
-                    AfterSalesOrder.erp_sales_owner_synced_at.asc(),
-                    AfterSalesOrder.id.desc(),
-                )
-                .limit(limit)
-            ).all()
+        retry_bucket = case((AfterSalesOrder.erp_sales_owner_status.in_(_RETRY_STATUSES), 1),
+                            else_=0)
+        eligible = select(
+            AfterSalesOrder.id,
+            AfterSalesOrder.erp_sales_owner_synced_at.label("synced_at"),
+            retry_bucket.label("retry_bucket"),
+            func.row_number().over(
+                partition_by=retry_bucket,
+                order_by=(AfterSalesOrder.erp_sales_owner_synced_at.asc(),
+                          AfterSalesOrder.id.desc()),
+            ).label("bucket_rank"),
+        ).join(Shop, Shop.shop_id == AfterSalesOrder.shop_id).where(
+            platform_scope, stale_filter,
+        ).subquery()
+        # 到期失败单优先占半批；另一半保留给新单/常规复查，空余名额可互补。
+        priority = case(
+            (and_(eligible.c.retry_bucket == 1,
+                  eligible.c.bucket_rank <= max(1, limit // 2)), 0),
+            (eligible.c.retry_bucket == 0, 1), else_=2,
         )
+        orders = list(self.session.scalars(
+            select(AfterSalesOrder).join(eligible, eligible.c.id == AfterSalesOrder.id)
+            .order_by(priority, eligible.c.synced_at.asc(), AfterSalesOrder.id.desc())
+            .limit(limit)
+        ).all())
         fast_refund_shop_ids = {
             order.shop_id
             for order in orders
@@ -441,6 +487,8 @@ class ErpSalesOwnerSyncService:
                 )
             if (
                 lookup.status == "not_found"
+                and not lookup.customer_name
+                and not getattr(order, "erp_customer_name", None)
                 and getattr(order, "shop_id", None) in pdd_shop_ids
                 and self._is_fast_refund_without_erp(order)
             ):
@@ -448,18 +496,23 @@ class ErpSalesOwnerSyncService:
                     None,
                     None,
                     "not_required",
-                    "买家在拼多多订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员",
+                    "未发货仅退款已成功且本次未查到 ERP 客户，"
+                    "符合快速退款未入 ERP 规则；仍会定期复查",
                 )
-            order.erp_customer_name = lookup.customer_name
-            order.erp_sales_owner = lookup.sales_owner
-            order.erp_sales_owner_status = lookup.status
-            order.erp_sales_owner_synced_at = (
-                now
-                if lookup.status not in {"unavailable", "not_configured"}
-                else now - timedelta(seconds=max(0, refresh_seconds - 300))
-            )
+            if not dry_run:
+                order.erp_customer_name = lookup.customer_name
+                order.erp_sales_owner = lookup.sales_owner
+                order.erp_sales_owner_status = lookup.status
+                # 沿用旧缓存调度约定；失败时间为重查排序值，并非实际查询时刻。
+                checked_at = datetime.now()
+                order.erp_sales_owner_synced_at = (
+                    checked_at
+                    if lookup.status not in _RETRY_STATUSES
+                    else checked_at - timedelta(seconds=max(0, refresh_seconds - 300))
+                )
             counts[lookup.status if lookup.status in counts else "unavailable"] += 1
-        self.session.commit()
+        if not dry_run:
+            self.session.commit()
         return SalesOwnerSyncResult(
             scanned=len(orders),
             matched=counts["matched"],

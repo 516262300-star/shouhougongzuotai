@@ -1017,8 +1017,8 @@ class AftersalesRecordService:
         }.get(owner.status, "neutral")
         display_name = owner.sales_owner or {
             "not_configured": "ERP 查询未配置",
-            "unavailable": "ERP 查询失败",
-            "not_found": "ERP 未查到归属",
+            "unavailable": "ERP 查询失败·待重试",
+            "not_found": "ERP 客户未设置业务员" if owner.customer_name else "ERP 未查到客户",
             "not_required": "快速退款未入 ERP",
             "unsupported": "归属查询未接入",
             "history_excluded": "历史单未查询",
@@ -1040,12 +1040,21 @@ class AftersalesRecordService:
             return None
         message = {
             "matched": "已从 ERP 客户档案匹配归属业务员；页面显示最近一次查询结果。",
-            "not_found": "最近一次查询未找到归属业务员，不等于尚未接入 ERP；请核对客户档案。",
-            "unavailable": "最近一次 ERP 归属查询失败，未取得有效结果；请检查 ERP 服务或登录状态。",
+            "not_found": (
+                "ERP 查询成功，客户档案存在但未取得归属业务员；请核对客户归属。"
+                if order.erp_customer_name else
+                "ERP 查询成功，但未找到该平台订单对应的客户；"
+                "可能尚未导入，不能据此认定未发货或已平账。"
+            ),
+            "unavailable": (
+                "上次 ERP 归属查询未取得有效结果，等待后台优先重查；"
+                "不等同于客户不存在或平台退款失败。"
+            ),
             "not_configured": "最近一次查询缺少 ERP 只读连接或登录配置。",
             "conflict": "同一订单匹配到多个业务员，需要人工核对客户档案归属。",
             "not_required": (
-                "买家在平台订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员"
+                "未发货仅退款已成功且查询未找到 ERP 客户，符合快速退款未入 ERP 规则；"
+                "仍会定期复查，不代表 ERP 平账已核验"
             ),
         }.get(order.erp_sales_owner_status, "已从本地 ERP 归属缓存读取")
         return SalesOwnerLookup(
