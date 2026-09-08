@@ -26,7 +26,13 @@ from aftersales_workbench.integrations.erp.sales_owner import (
     SalesOwnerResolver,
     get_erp_sales_owner_resolver,
 )
+from aftersales_workbench.services.record_status import (
+    confirmed_refund,
+    confirmed_refund_filter,
+    refund_display,
+)
 from aftersales_workbench.services.refund_attribution import REASON_CATEGORIES
+from aftersales_workbench.services.refund_scope import RefundScope, classify_refund_scope
 from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlanner
 from aftersales_workbench.workflows.module1_logistics import (
     build_refund_business_hours,
@@ -137,13 +143,13 @@ PLATFORM_LABELS = {
 COMPLETED_WORKFLOWS = {
     "UNSHIPPED_AUTO_REFUNDED",
     "INTERCEPT_SUCCESS",
-    "RETURN_INSPECTED_PASS",
     "SCRAPPED_REFUNDED",
 }
 
 PASSIVE_RECORD_WORKFLOWS = {
     "PENDING_CHECK",
     "PARTIAL_REFUND_EXCLUDED",
+    "RETURN_INSPECTED_PASS",
     *COMPLETED_WORKFLOWS,
 }
 
@@ -303,23 +309,13 @@ class AftersalesRecordService:
         after_sales_sns = [row.AfterSalesOrder.after_sales_sn for row in rows]
         tasks_by_order = self._tasks_by_order(after_sales_sns)
         owners_by_order = self._owners_for_rows(rows)
-        missing_order_sns = [
-            row.AfterSalesOrder.platform_order_sn
-            for row in rows
-            if row.Shop.platform == Platform.PDD
-            and row.AfterSalesOrder.platform_order_sn not in owners_by_order
-        ]
-        if missing_order_sns:
-            owners_by_order.update(
-                self.sales_owner_resolver.resolve_many(missing_order_sns)
-            )
 
         items = [
             self._serialize_list_item(
                 order,
                 shop,
                 tasks_by_order.get(order.after_sales_sn, []),
-                owners_by_order.get(order.platform_order_sn),
+                owners_by_order.get(order.after_sales_sn),
             )
             for order, shop in rows
         ]
@@ -396,7 +392,7 @@ class AftersalesRecordService:
                     order,
                     shop,
                     tasks_by_order.get(order.after_sales_sn, []),
-                    owners_by_order.get(order.platform_order_sn),
+                    owners_by_order.get(order.after_sales_sn),
                 )
                 for order, shop in rows
             ],
@@ -549,14 +545,10 @@ class AftersalesRecordService:
                     after_sales_type=after_sales_type,
                 )
             )
-        owner = self._cached_owner(order)
-        if owner is None:
-            owner = (
-                self.sales_owner_resolver.resolve(order.platform_order_sn)
-                if shop.platform == Platform.PDD
-                else self._unsupported_platform_owner(shop.platform)
-            )
+        owner = self._owner_for_record(order, shop)
         serialized_owner = self._serialize_owner(owner)
+        serialized_owner["checked_at"] = _dt(order.erp_sales_owner_synced_at)
+        refund = self._refund_display(order, shop, tasks)
         return {
             "after_sales_sn": order.after_sales_sn,
             "shop_name": shop.shop_name,
@@ -598,6 +590,8 @@ class AftersalesRecordService:
             ),
             "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
             "refund_scope": self._refund_scope(order),
+            "refund_scope_reason": self._refund_scope_reason(order),
+            "platform_refund": refund,
             "product_name": product_name,
             "buyer_name": "平台未返回",
             "buyer_reason": order.buyer_reason_raw or "—",
@@ -672,12 +666,7 @@ class AftersalesRecordService:
                 "CANCELLED": "已取消转人工",
             }.get(task_status, intercept_label)
             intercept_tone = _task_tone(task_status)
-        platform_refunded = (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-            or workflow in COMPLETED_WORKFLOWS
-            or workflow == WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN.value
-        )
+        refund = self._refund_display(order, shop, tasks)
         owner = owner or SalesOwnerLookup(None, None, "not_found", "ERP 客户档案未匹配")
         serialized_owner = self._serialize_owner(owner)
         return {
@@ -693,6 +682,8 @@ class AftersalesRecordService:
             "sales_owner": serialized_owner["sales_owner"],
             "sales_owner_status": serialized_owner["status"],
             "sales_owner_tone": serialized_owner["tone"],
+            "sales_owner_reason": serialized_owner["message"],
+            "sales_owner_checked_at": _dt(order.erp_sales_owner_synced_at),
             "erp_customer_name": serialized_owner["customer_name"],
             "after_sales_type": _enum_value(order.after_sales_type),
             "after_sales_type_label": self._type_label(_enum_value(order.after_sales_type)),
@@ -724,6 +715,7 @@ class AftersalesRecordService:
             ),
             "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
             "refund_scope": self._refund_scope(order),
+            "refund_scope_reason": self._refund_scope_reason(order),
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
             "logistics_state": logistics,
@@ -732,8 +724,10 @@ class AftersalesRecordService:
             "workflow_status": workflow,
             "intercept_label": intercept_label,
             "intercept_tone": intercept_tone,
-            "platform_refund_label": "平台已退款" if platform_refunded else "—",
-            "platform_refund_tone": "success" if platform_refunded else "neutral",
+            "platform_refund_status": refund["status"],
+            "platform_refund_label": refund["label"],
+            "platform_refund_tone": refund["tone"],
+            "platform_refund_reason": refund["reason"],
             "updated_at": _dt(order.updated_at),
         }
 
@@ -767,6 +761,7 @@ class AftersalesRecordService:
             qywx_task,
             refund_task,
             logistics,
+            platform=shop.platform,
         )
         group_name = self.desktop_notice_planner.resolve_target_group(
             str(order.carrier_code or "")
@@ -789,6 +784,7 @@ class AftersalesRecordService:
             "sales_owner": serialized_owner["sales_owner"],
             "sales_owner_status": serialized_owner["status"],
             "sales_owner_tone": serialized_owner["tone"],
+            "sales_owner_reason": serialized_owner["message"],
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
             "target_group": group_name or "未配置快递群",
@@ -877,9 +873,13 @@ class AftersalesRecordService:
         notice_task: AftersalesActionTask | None,
         refund_task: AftersalesActionTask | None,
         logistics: str,
+        *,
+        platform: Platform | str,
     ) -> tuple[str, str]:
-        if self._platform_refunded(order):
+        if confirmed_refund(order, platform):
             return "平台已退款", "success"
+        if order.refund_financial_status == "CLOSED":
+            return "退款已关闭", "neutral"
         if refund_task is not None:
             status = _enum_value(refund_task.action_status)
             if status == "CANCELLED" and "非快递拦截客服工作时间" in str(
@@ -889,7 +889,7 @@ class AftersalesRecordService:
             return {
                 "PENDING": ("待执行平台退款", "info"),
                 "RUNNING": ("平台退款执行中", "info"),
-                "SUCCEEDED": ("平台已退款", "success"),
+                "SUCCEEDED": ("已提交·待平台确认", "info"),
                 "FAILED": ("平台退款失败", "danger"),
                 "CANCELLED": ("自动退款已冻结", "danger"),
             }.get(status, ("等待退款判断", "neutral"))
@@ -976,13 +976,22 @@ class AftersalesRecordService:
             "closed_loop_at": payload.get("closed_loop_at"),
         }
 
-    @staticmethod
-    def _platform_refunded(order: AfterSalesOrder) -> bool:
-        return (
-            order.platform_after_sales_status == 10
-            or order.platform_order_refund_status == 4
-            or _enum_value(order.workflow_status)
-            == WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN.value
+    @classmethod
+    def _refund_display(
+        cls, order: AfterSalesOrder, shop: Shop, tasks: list[AftersalesActionTask]
+    ) -> dict[str, str]:
+        task = cls._latest_task_any(
+            tasks,
+            (
+                AutomationActionType.PDD_AGREE_REFUND,
+                AutomationActionType.PDD_AGREE_RETURN_REFUND,
+                AutomationActionType.TMALL_AGREE_REFUND,
+                AutomationActionType.TMALL_AGREE_RETURN_REFUND,
+            ),
+        )
+        return refund_display(
+            order, shop.platform,
+            submitted=task is not None and _enum_value(task.action_status) == "SUCCEEDED",
         )
 
     @staticmethod
@@ -996,10 +1005,14 @@ class AftersalesRecordService:
             "not_required": "neutral",
         }.get(owner.status, "neutral")
         display_name = owner.sales_owner or {
-            "not_configured": "待接入 ERP",
-            "unavailable": "ERP 暂不可用",
-            "not_found": "未匹配",
+            "not_configured": "ERP 查询未配置",
+            "unavailable": "ERP 查询失败",
+            "not_found": "ERP 未查到归属",
             "not_required": "快速退款未入 ERP",
+            "unsupported": "归属查询未接入",
+            "history_excluded": "历史单未查询",
+            "sync_disabled": "归属同步未开启",
+            "pending": "待查询 ERP",
         }.get(owner.status, "未匹配")
         return {
             "sales_owner": display_name,
@@ -1014,11 +1027,16 @@ class AftersalesRecordService:
     def _cached_owner(order: AfterSalesOrder) -> SalesOwnerLookup | None:
         if not order.erp_sales_owner_status:
             return None
-        message = (
-            "买家在平台订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员"
-            if order.erp_sales_owner_status == "not_required"
-            else "已从本地 ERP 归属缓存读取"
-        )
+        message = {
+            "matched": "已从 ERP 客户档案匹配归属业务员；页面显示最近一次查询结果。",
+            "not_found": "最近一次查询未找到归属业务员，不等于尚未接入 ERP；请核对客户档案。",
+            "unavailable": "最近一次 ERP 归属查询失败，未取得有效结果；请检查 ERP 服务或登录状态。",
+            "not_configured": "最近一次查询缺少 ERP 只读连接或登录配置。",
+            "conflict": "同一订单匹配到多个业务员，需要人工核对客户档案归属。",
+            "not_required": (
+                "买家在平台订单导入 ERP 前完成退款，未生成 ERP 客户档案，无需匹配业务员"
+            ),
+        }.get(order.erp_sales_owner_status, "已从本地 ERP 归属缓存读取")
         return SalesOwnerLookup(
             sales_owner=order.erp_sales_owner,
             customer_name=order.erp_customer_name,
@@ -1027,27 +1045,48 @@ class AftersalesRecordService:
         )
 
     def _owners_for_rows(self, rows: list[Any]) -> dict[str, SalesOwnerLookup]:
-        owners_by_order: dict[str, SalesOwnerLookup] = {}
-        for row in rows:
-            order_sn = row.AfterSalesOrder.platform_order_sn
-            cached = self._cached_owner(row.AfterSalesOrder)
-            if cached is not None:
-                owners_by_order[order_sn] = cached
-            elif row.Shop.platform != Platform.PDD:
-                owners_by_order[order_sn] = self._unsupported_platform_owner(
-                    row.Shop.platform
-                )
-        missing_order_sns = [
-            row.AfterSalesOrder.platform_order_sn
-            for row in rows
-            if row.Shop.platform == Platform.PDD
-            and row.AfterSalesOrder.platform_order_sn not in owners_by_order
-        ]
-        if missing_order_sns:
-            owners_by_order.update(
-                self.sales_owner_resolver.resolve_many(missing_order_sns)
+        # 页面只读本地缓存；外部查询由后台同步负责，避免翻页时逐单阻塞。
+        return {
+            row.AfterSalesOrder.after_sales_sn: self._owner_for_record(
+                row.AfterSalesOrder, row.Shop
             )
-        return owners_by_order
+            for row in rows
+        }
+
+    def _owner_for_record(self, order: AfterSalesOrder, shop: Shop) -> SalesOwnerLookup:
+        cached = self._cached_owner(order)
+        if cached is not None:
+            return cached
+        if shop.platform not in {Platform.PDD, Platform.TMALL}:
+            return self._unsupported_platform_owner(shop.platform)
+        if shop.platform == Platform.TMALL:
+            if not self.settings.tmall_module123_trial_enabled:
+                return SalesOwnerLookup(
+                    None, None, "sync_disabled", "天猫业务链路未开启，归属查询尚未进入后台同步。"
+                )
+            if (order.id or 0) < self.settings.tmall_module123_min_order_id:
+                return SalesOwnerLookup(
+                    None, None, "history_excluded",
+                    "该天猫历史单早于当前自动化起始范围，尚未查询归属；不代表 ERP 中没有客户。",
+                )
+        configured = bool(self.settings.erp_read_database_url) or (
+            self.settings.erp_web_lookup_enabled
+            and bool(self.settings.erp_web_username)
+            and bool(self.settings.erp_web_password)
+        )
+        if not configured:
+            return SalesOwnerLookup(
+                None, None, "not_configured", "缺少 ERP 只读连接或已启用的网页登录配置。"
+            )
+        if not self.settings.erp_sales_owner_sync_enabled:
+            return SalesOwnerLookup(
+                None, None, "sync_disabled",
+                "ERP 归属后台同步开关未开启，页面不会临时发起外部查询。"
+            )
+        return SalesOwnerLookup(
+            None, None, "pending",
+            "尚无本地归属查询结果，等待后台分批查询；不代表 ERP 中没有客户或退货单。",
+        )
 
     @staticmethod
     def _unsupported_platform_owner(platform: Platform | str) -> SalesOwnerLookup:
@@ -1055,7 +1094,7 @@ class AftersalesRecordService:
         return SalesOwnerLookup(
             None,
             None,
-            "not_configured",
+            "unsupported",
             f"{PLATFORM_LABELS.get(platform_value, platform_value)}订单的 ERP 客户归属尚未接入",
         )
 
@@ -1130,7 +1169,12 @@ class AftersalesRecordService:
             cls._module1_filter(),
             AfterSalesOrder.workflow_status.notin_(tuple(COMPLETED_WORKFLOWS)),
         )
-        return or_(active_action, active_workflow, module1_candidate)
+        inspection_waiting_refund = and_(
+            AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_PASS,
+            cls._platform_not_refunded_filter(),
+            func.coalesce(AfterSalesOrder.refund_financial_status, "UNKNOWN") != "CLOSED",
+        )
+        return or_(active_action, active_workflow, module1_candidate, inspection_waiting_refund)
 
     @classmethod
     def _record_view_filter(cls, record_view: str) -> Any | None:
@@ -1165,20 +1209,19 @@ class AftersalesRecordService:
     def _full_refund_filter() -> Any:
         return and_(
             AfterSalesOrder.platform_order_amount.is_not(None),
+            AfterSalesOrder.refund_amount > 0,
             AfterSalesOrder.refund_amount == AfterSalesOrder.platform_order_amount,
         )
 
     @staticmethod
     def _platform_not_refunded_filter() -> Any:
-        return and_(
-            func.coalesce(AfterSalesOrder.platform_after_sales_status, 0) != 10,
-            func.coalesce(AfterSalesOrder.platform_order_refund_status, 0) != 4,
-        )
+        return not_(confirmed_refund_filter())
 
     @classmethod
     def _refund_blocked_filter(cls) -> Any:
         return and_(
             cls._platform_not_refunded_filter(),
+            func.coalesce(AfterSalesOrder.refund_financial_status, "UNKNOWN") != "CLOSED",
             or_(
                 AfterSalesOrder.logistics_state.in_(
                     ("UNKNOWN", "OUT_FOR_DELIVERY", "DELIVERED")
@@ -1378,11 +1421,7 @@ class AftersalesRecordService:
                 .select_from(AfterSalesOrder)
                 .where(
                     *base_filters,
-                    or_(
-                        AfterSalesOrder.workflow_status.in_(tuple(COMPLETED_WORKFLOWS)),
-                        AfterSalesOrder.platform_after_sales_status == 10,
-                        AfterSalesOrder.platform_order_refund_status == 4,
-                    )
+                    confirmed_refund_filter(),
                 )
             )
             or 0
@@ -1654,10 +1693,20 @@ class AftersalesRecordService:
 
     @staticmethod
     def _refund_scope(order: AfterSalesOrder) -> str:
-        if order.platform_order_amount is None:
-            return "待核实"
-        if order.refund_amount == order.platform_order_amount:
-            return "全额退款"
-        if 0 < order.refund_amount < order.platform_order_amount:
-            return "部分退款/补偿"
-        return "金额异常"
+        return {
+            RefundScope.UNKNOWN: "缺买家实付",
+            RefundScope.FULL: "全额退款",
+            RefundScope.PARTIAL: "部分退款/补偿",
+            RefundScope.INVALID: "金额异常",
+        }[classify_refund_scope(order.refund_amount, order.platform_order_amount)]
+
+    @staticmethod
+    def _refund_scope_reason(order: AfterSalesOrder) -> str:
+        return {
+            RefundScope.UNKNOWN: (
+                "缺少买家优惠后实付金额，无法判断全额或部分退款；不代表平台尚未退款。"
+            ),
+            RefundScope.FULL: "申请金额等于买家优惠后实付金额；平台补贴不计入买家实付比较。",
+            RefundScope.PARTIAL: "申请金额小于买家实付金额，记录售后但不进入全额退款拦截。",
+            RefundScope.INVALID: "金额非正数或申请金额大于买家实付金额，需核实原始订单。",
+        }[classify_refund_scope(order.refund_amount, order.platform_order_amount)]

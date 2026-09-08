@@ -154,7 +154,7 @@ function SummaryStrip({ summary, onManual }) {
     { label: "今日新增", value: summary.today_new ?? 0, tone: "blue" },
     { label: "待拦截", value: summary.pending_intercept ?? 0, tone: "orange" },
     { label: "待人工", value: summary.manual ?? 0, tone: "orange", onClick: onManual },
-    { label: "已完成", value: summary.completed ?? 0, tone: "green" },
+    { label: "平台已退款", value: summary.completed ?? 0, tone: "green" },
   ];
   return (
     <section className="summary-strip" aria-label="售后订单摘要">
@@ -366,14 +366,14 @@ function OrdersTable({ items, selected, onSelect, loading, error, onRetry }) {
               <td title={`${item.platform_label || ""} ${item.shop_name}`}><div className="stacked-cell"><b className="truncate shop-cell">{item.shop_name}</b><small>{item.platform_label || "—"}</small></div></td>
               <td className="mono">{item.after_sales_sn}</td>
               <td className="mono" title={item.platform_order_sn}>{item.platform_order_sn}</td>
-              <td title={item.erp_customer_name}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
+              <td title={`${item.sales_owner_reason ?? ""} · ERP客户：${item.erp_customer_name}`}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td>{item.after_sales_type_label}</td>
               <td>{formatCurrency(item.refund_amount)}</td>
-              <td title={`买家实付 ${formatCurrency(item.platform_order_amount)} · 平台优惠 ${formatCurrency(item.platform_discount_amount)} · 商家应收 ${formatCurrency(item.merchant_receivable_amount)}`}><StatusTag tone={item.refund_scope === "全额退款" ? "success" : item.refund_scope === "部分退款/补偿" ? "warning" : "neutral"}>{item.refund_scope}</StatusTag></td>
+              <td title={`${item.refund_scope_reason ?? ""} · 买家实付 ${formatCurrency(item.platform_order_amount)} · 平台优惠 ${formatCurrency(item.platform_discount_amount)} · 商家应收 ${formatCurrency(item.merchant_receivable_amount)}`}><StatusTag tone={item.refund_scope === "全额退款" ? "success" : item.refund_scope === "部分退款/补偿" ? "warning" : "neutral"}>{item.refund_scope}</StatusTag></td>
               <td title={`${item.carrier_name} ${item.tracking_number}`}><span className="truncate tracking-cell">{item.tracking_number}</span></td>
               <td><StatusTag tone={item.logistics_tone}>{item.logistics_label}</StatusTag></td>
               <td><StatusTag tone={item.intercept_tone}>{item.intercept_label}</StatusTag></td>
-              <td><span className={`refund-text refund-${item.platform_refund_tone}`}>{item.platform_refund_label}</span></td>
+              <td title={item.platform_refund_reason}><span className={`refund-text refund-${item.platform_refund_tone}`}>{item.platform_refund_label}</span></td>
               <td>{formatDateTime(item.updated_at)}</td>
               <td><button type="button" className="link-button" onClick={(event) => { event.stopPropagation(); onSelect(item.after_sales_sn); }}>查看详情</button></td>
             </tr>
@@ -505,7 +505,7 @@ function InterceptTable({ items, selected, onSelect, loading, error, onRetry }) 
               title={item.latest_error || item.logistics_context}
             >
               <td title={item.shop_name}><span className="truncate">{item.shop_name}</span></td>
-              <td><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
+              <td title={item.sales_owner_reason}><StatusTag tone={item.sales_owner_tone}>{item.sales_owner}</StatusTag></td>
               <td className="mono">{item.after_sales_sn}</td>
               <td className="mono" title={item.platform_order_sn}>{item.platform_order_sn}</td>
               <td title={`${item.target_group} / ${item.carrier_name} ${item.tracking_number}`}>
@@ -1289,6 +1289,8 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="订单号" value={detail.platform_order_sn} copyable onCopy={onCopy} />
               <DetailRow label="归属业务员" value={detail.erp_customer.sales_owner} />
               <DetailRow label="ERP客户" value={detail.erp_customer.customer_name} />
+              <DetailRow label="归属说明" value={detail.erp_customer.message} />
+              <DetailRow label="归属最近查询" value={formatDateTime(detail.erp_customer.checked_at, true)} />
               <DetailRow label="快递单号" value={detail.tracking_number} copyable onCopy={onCopy} />
               <DetailRow label="申请时间" value={formatDateTime(detail.created_at, true)} />
               <DetailRow label="售后类型" value={detail.after_sales_type} />
@@ -1298,6 +1300,11 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="商家优惠" value={formatCurrency(detail.seller_discount_amount)} />
               <DetailRow label="商家应收" value={formatCurrency(detail.merchant_receivable_amount)} />
               <DetailRow label="退款范围" value={detail.refund_scope} />
+              <DetailRow label="范围说明" value={detail.refund_scope_reason} />
+              {detail.platform_refund && <>
+                <div className="detail-row"><dt>平台退款</dt><dd><StatusTag tone={detail.platform_refund.tone}>{detail.platform_refund.label}</StatusTag></dd></div>
+                <DetailRow label="退款说明" value={detail.platform_refund.reason} />
+              </>}
               <DetailRow label="商品名称" value={detail.product_name} />
               <DetailRow label="原因分类" value={detail.buyer_reason_category} />
               <DetailRow label="买家昵称" value={detail.buyer_name} />
