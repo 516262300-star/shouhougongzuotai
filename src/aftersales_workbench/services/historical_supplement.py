@@ -14,6 +14,7 @@ from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AutomationPollState,
+    ShippingStatus,
     Shop,
 )
 from aftersales_workbench.db.models import (
@@ -22,6 +23,11 @@ from aftersales_workbench.db.models import (
 from aftersales_workbench.integrations.erp.sales_owner import SalesOwnerLookup
 from aftersales_workbench.integrations.pdd.client import PddApiError
 from aftersales_workbench.integrations.pdd.mapper import unwrap_order_information
+from aftersales_workbench.integrations.tmall.shipping import (
+    DELIVERED_STATUSES,
+    SHIPPED_STATUSES,
+    preserve_shipping,
+)
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -106,6 +112,75 @@ def verified_tmall_status(info: dict[str, Any], snapshot: dict[str, Any]) -> dic
     }
 
 
+def verified_tmall_refund_facts(
+    info: dict[str, Any], snapshot: dict[str, Any],
+) -> dict[str, str]:
+    """历史单的成功事实与对应退款子单的发货证据，不据父单推断子单发货。"""
+    refund, trade = info.get("refund"), info.get("trade")
+    if not isinstance(refund, dict) or not isinstance(trade, dict):
+        raise SupplementDataError("天猫售后或交易详情缺失，未补写")
+    if (
+        str(refund.get("refund_id") or "") != snapshot["after_sales_sn"]
+        or str(refund.get("tid") or "") != snapshot["platform_order_sn"]
+        or str(trade.get("tid") or "") != snapshot["platform_order_sn"]
+    ):
+        raise SupplementDataError("天猫售后、父订单或交易详情身份不一致，未补写")
+    expected_return = {"ONLY_REFUND": False, "RETURN_AND_REFUND": True}.get(
+        snapshot["after_sales_type"]
+    )
+    if expected_return is None or refund.get("has_good_return") is not expected_return:
+        raise SupplementDataError("天猫退款类型与本地不一致或未明确返回，未补写")
+    order_status = refund.get("order_status")
+    if refund.get("status") != "SUCCESS" or order_status not in (
+        "TRADE_CLOSED", *DELIVERED_STATUSES, *SHIPPED_STATUSES,
+    ):
+        raise SupplementDataError("平台未明确返回退款成功及可识别的交易状态，未补写")
+    try:
+        amount = Decimal(str(refund.get("refund_fee")))
+        valid = (
+            amount.is_finite() and 0 < amount <= Decimal("99999999.99")
+            and amount == amount.quantize(Decimal("0.01"))
+            and amount == snapshot["refund_amount"]
+        )
+    except (InvalidOperation, ValueError):
+        valid = False
+    if not valid:
+        raise SupplementDataError("平台退款金额无效或与本地不一致，未补写")
+    node = trade.get("orders")
+    rows = node.get("order") if isinstance(node, dict) else None
+    child_id = str(refund.get("oid") or "")
+    if not child_id or not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+        raise SupplementDataError("天猫退款子订单明细缺失，未补写")
+    matched = [r for r in rows if str(r.get("oid") or "") == child_id]
+    if len(matched) != 1:
+        raise SupplementDataError("天猫退款子订单未唯一匹配，未补写")
+
+    # 父订单状态/发货时间仅可用于禁止整单取消，不能证明本退款子单已发货。
+    child = matched[0]
+    incoming = ShippingStatus.UNKNOWN
+    statuses = {order_status, child.get("status")}
+    if statuses & DELIVERED_STATUSES:
+        incoming = ShippingStatus.DELIVERED
+    elif statuses & SHIPPED_STATUSES:
+        incoming = ShippingStatus.IN_TRANSIT
+    else:
+        try:
+            datetime.strptime(str(child.get("consign_time") or ""), "%Y-%m-%d %H:%M:%S")
+            incoming = ShippingStatus.IN_TRANSIT
+        except ValueError:
+            pass
+    values = {
+        "refund_financial_status": "SUCCESS",
+        "platform_after_sales_status_text": "SUCCESS",
+        "platform_order_status_text": order_status,
+    }
+    if incoming in (ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED):
+        values["order_shipping_status"] = preserve_shipping(
+            snapshot["order_shipping_status"], incoming,
+        ).value
+    return values
+
+
 class HistoricalSupplementService:
     def __init__(self, session: Session, settings: Settings):
         self.session = session
@@ -138,24 +213,32 @@ class HistoricalSupplementService:
                          O.merchant_receivable_amount.is_(None)),
                 ),
             ]
-        if kind not in {"tmall_owner", "tmall_status"}:
+        if kind not in {"tmall_owner", "tmall_status", "tmall_refund_facts"}:
             raise ValueError("不支持的补查类型")
         if max_order_id >= self.settings.tmall_module123_min_order_id:
             raise ValueError("天猫补查上限必须早于天猫自动化水位")
-        if kind == "tmall_status":
+        if kind in {"tmall_status", "tmall_refund_facts"}:
             # 本入口仅修复从未有动作任务的旧资料，不接管正在办理或已办理的任务。
             any_task = exists().where(
                 AftersalesActionTask.after_sales_sn == O.after_sales_sn,
             ).correlate(O)
-            return [
+            filters = [
                 O.id <= max_order_id, platform_scope, ~any_task,
                 O.refund_financial_status == "UNKNOWN",
                 O.platform_after_sales_status_text.is_(None),
                 O.platform_order_status_text.is_(None),
+                O.forward_tracking_number.is_(None),
+            ]
+            if kind == "tmall_refund_facts":
+                return [*filters,
+                    O.after_sales_type.in_(("ONLY_REFUND", "RETURN_AND_REFUND")),
+                    O.order_shipping_status.in_(("UNKNOWN", "IN_TRANSIT", "DELIVERED")),
+                    O.workflow_status.in_(("PENDING_CHECK", "PARTIAL_REFUND_EXCLUDED")),
+                ]
+            return [*filters,
                 O.after_sales_type == "ONLY_REFUND",
                 O.order_shipping_status == "UNSHIPPED",
                 O.workflow_status == "PENDING_CHECK",
-                O.forward_tracking_number.is_(None),
             ]
         prior_failure = exists().where(
             AutomationPollState.scope == scope,
@@ -188,12 +271,12 @@ class HistoricalSupplementService:
         if record_ids and any(record_id < 1 for record_id in record_ids):
             raise ValueError("指定记录的 ID 必须大于零")
         filters = self._filters(kind, max_order_id)
-        if kind == "tmall_status" and not record_ids:
+        if kind in {"tmall_status", "tmall_refund_facts"} and not record_ids:
             raise ValueError("天猫状态补查必须用 record_ids 点名已核查的历史记录")
         if (kind == "pdd_paid" and read_paid is None) or (
             kind == "tmall_owner" and read_owner is None
         ) or (
-            kind == "tmall_status" and read_status is None
+            kind in {"tmall_status", "tmall_refund_facts"} and read_status is None
         ):
             raise ValueError("缺少对应只读查询器")
         scope = f"history_{kind}"
@@ -237,13 +320,19 @@ class HistoricalSupplementService:
                     outcomes["paid_available"] += 1
                     if info.get("amount_source") == "refund_detail":
                         outcomes["from_refund_detail"] += 1
-                elif kind == "tmall_status":
+                elif kind in {"tmall_status", "tmall_refund_facts"}:
                     info = read_status(
                         snapshot["shop_code"], snapshot["platform_order_sn"],
                         snapshot["after_sales_sn"],
                     )
-                    values = verified_tmall_status(info, snapshot)
+                    values = (
+                        verified_tmall_status(info, snapshot) if kind == "tmall_status"
+                        else verified_tmall_refund_facts(info, snapshot)
+                    )
                     outcomes["confirmed_success"] += 1
+                    if kind == "tmall_refund_facts":
+                        shipping = values.get("order_shipping_status")
+                        outcomes[f"shipping_{shipping or 'unchanged'}"] += 1
                 else:
                     lookup = read_owner(snapshot["platform_order_sn"])
                     if lookup.status not in {"matched", "not_found", "conflict"}:

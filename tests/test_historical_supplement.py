@@ -21,6 +21,7 @@ from aftersales_workbench.services.historical_supplement import (
     SupplementDataError,
     read_pdd_paid,
     verified_pdd_paid,
+    verified_tmall_refund_facts,
 )
 
 
@@ -120,7 +121,9 @@ def test_unsafe_live_records_and_non_pdd_never_selected(db):
     assert db.get(AfterSalesOrder, 6).platform_order_amount == Decimal("1.88")
 
 
-@pytest.mark.parametrize("kind", ["pdd_paid", "tmall_owner", "tmall_status"])
+@pytest.mark.parametrize("kind", [
+    "pdd_paid", "tmall_owner", "tmall_status", "tmall_refund_facts",
+])
 def test_cannot_expand_automation_waterline(db, kind):
     with pytest.raises(ValueError, match="水位"):
         service(db).run(kind=kind, max_order_id=100, read_paid=paid)
@@ -368,3 +371,221 @@ def test_tmall_status_concurrent_platform_sync_is_not_overwritten(db):
     )
     assert result["skipped_changed"] == 1 and result["updated"] == 0
     assert db.get(AfterSalesOrder, 1).refund_financial_status == "CLOSED"
+
+
+def refund_facts(_shop, order_sn, after_sales_sn):
+    return {
+        "refund": {
+            **status_detail(_shop, order_sn, after_sales_sn),
+            "has_good_return": True, "oid": "child",
+        },
+        "trade": {
+            "tid": order_sn, "status": "TRADE_FINISHED", "payment": "0.00",
+            "consign_time": "2026-08-26 10:00:00",
+            "orders": {"order": [
+                {"oid": "child", "status": "TRADE_CLOSED",
+                 "consign_time": "2026-08-26 10:00:00"},
+                {"oid": "sibling", "status": "TRADE_FINISHED"},
+            ]},
+        },
+    }
+
+
+def add_facts_order(db, number=1, **changes):
+    return add_order(db, number, **{
+        "shop_id": 2, "refund_financial_status": "UNKNOWN",
+        "order_shipping_status": "UNKNOWN", "after_sales_type": "RETURN_AND_REFUND",
+        "platform_order_amount": Decimal("3.88"), "erp_sales_owner_status": "matched",
+        **changes,
+    })
+
+
+def facts_run(db, **changes):
+    return service(db).run(**{
+        "kind": "tmall_refund_facts", "max_order_id": 99, "record_ids": (1,),
+        "read_status": refund_facts, **changes,
+    })
+
+
+def row_values(db, number=1):
+    return dict(db.execute(select(AfterSalesOrder.__table__).where(
+        AfterSalesOrder.id == number,
+    )).mappings().one())
+
+
+def test_tmall_facts_preview_and_apply_change_only_verified_four_fields(db):
+    add_facts_order(db)
+    before = row_values(db)
+    assert facts_run(db)["ready"] == 1
+    assert row_values(db) == before
+    assert db.query(AutomationPollState).count() == 0
+    result = facts_run(db, dry_run=False)
+    assert result["updated"] == 1 and result["failed"] == 0
+    after = row_values(db)
+    changed = {key for key in before if before[key] != after[key]}
+    assert changed == {
+        "refund_financial_status", "platform_after_sales_status_text",
+        "platform_order_status_text", "order_shipping_status",
+    }
+    assert after["refund_financial_status"] == "SUCCESS"
+    assert after["order_shipping_status"] == "IN_TRANSIT"  # 父单完成不等于子单签收。
+    assert db.query(AftersalesActionTask).count() == 0
+    assert db.scalar(select(AutomationPollState)).scope == "history_tmall_refund_facts"
+    assert facts_run(db)["scanned"] == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"tid": "wrong"}, {"refund_id": "wrong"}, {"oid": "wrong"}, {"oid": None},
+    {"status": "CLOSED"}, {"status": "WAIT_SELLER_AGREE"}, {"status": "future_state"},
+    {"has_good_return": False}, {"has_good_return": None}, {"has_good_return": 1},
+    {"has_good_return": "true"}, {"order_status": None}, {"order_status": "new_state"},
+    {"refund_fee": "1.87"}, {"refund_fee": True}, {"refund_fee": "NaN"},
+    {"refund_fee": "Infinity"}, {"refund_fee": "0"}, {"refund_fee": "1.881"},
+])
+def test_tmall_facts_validate_refund_identity_type_status_and_amount(db, changes):
+    add_facts_order(db)
+    before = row_values(db)
+
+    def read(*args):
+        body = refund_facts(*args)
+        body["refund"].update(changes)
+        return body
+
+    result = facts_run(db, read_status=read, dry_run=False)
+    assert result["failed"] == 1 and result["updated"] == 0
+    assert row_values(db) == before
+    assert db.query(AftersalesActionTask).count() == 0
+
+
+@pytest.mark.parametrize("changes", [
+    {"tid": "wrong"}, {"orders": None}, {"orders": {"order": []}},
+    {"orders": {"order": [{"oid": "child"}, {"oid": "child"}]}},
+    {"orders": {"order": [None]}},
+])
+def test_tmall_facts_validate_trade_identity_and_unique_child(db, changes):
+    add_facts_order(db)
+
+    def read(*args):
+        body = refund_facts(*args)
+        body["trade"].update(changes)
+        return body
+
+    result = facts_run(db, read_status=read, dry_run=False)
+    assert result["failed"] == 1 and result["updated"] == 0
+    assert row_values(db)["refund_financial_status"] == "UNKNOWN"
+
+
+@pytest.mark.parametrize("child_time", [None, "", "0000-00-00 00:00:00", "bad"])
+def test_facts_parent_or_sibling_shipping_does_not_prove_refund_child_shipped(db, child_time):
+    add_facts_order(db)
+
+    def read(*args):
+        body = refund_facts(*args)
+        body["trade"]["orders"]["order"][0]["consign_time"] = child_time
+        return body
+
+    result = facts_run(db, read_status=read, dry_run=False)
+    assert result["updated"] == 1 and result["outcomes"]["shipping_unchanged"] == 1
+    assert row_values(db)["order_shipping_status"] == "UNKNOWN"
+    assert row_values(db)["refund_financial_status"] == "SUCCESS"
+
+
+def test_facts_partial_refund_is_not_reclassified_or_turned_into_intercept(db):
+    add_facts_order(db, after_sales_type="ONLY_REFUND", workflow_status="PARTIAL_REFUND_EXCLUDED")
+
+    def read(*args):
+        body = refund_facts(*args)
+        body["refund"]["has_good_return"] = False
+        return body
+
+    assert facts_run(db, read_status=read, dry_run=False)["updated"] == 1
+    assert row_values(db)["workflow_status"] == "PARTIAL_REFUND_EXCLUDED"
+    assert row_values(db)["platform_order_amount"] == Decimal("3.88")
+    assert db.query(AftersalesActionTask).count() == 0
+
+
+@pytest.mark.parametrize("prior,child_status,expected", [
+    ("DELIVERED", "TRADE_CLOSED", "DELIVERED"),
+    ("IN_TRANSIT", "TRADE_FINISHED", "DELIVERED"),
+    ("UNKNOWN", "WAIT_BUYER_CONFIRM_GOODS", "IN_TRANSIT"),
+])
+def test_facts_preserve_shipping_and_use_exact_child_status(db, prior, child_status, expected):
+    add_facts_order(db, order_shipping_status=prior)
+
+    def read(*args):
+        body = refund_facts(*args)
+        body["trade"]["orders"]["order"][0]["status"] = child_status
+        return body
+
+    assert facts_run(db, read_status=read, dry_run=False)["updated"] == 1
+    assert row_values(db)["order_shipping_status"] == expected
+
+
+def test_facts_selection_requires_ids_and_excludes_active_completed_and_new_records(db):
+    for number, changes in enumerate([
+        {"shop_id": 1}, {"refund_financial_status": "SUCCESS"},
+        {"platform_after_sales_status_text": "WAIT_SELLER_AGREE"},
+        {"platform_order_status_text": "TRADE_CLOSED"},
+        {"order_shipping_status": "UNSHIPPED"}, {"order_shipping_status": "PACKED_NOT_SHIPPED"},
+        {"workflow_status": "MANUAL_PROCESSING"}, {"forward_tracking_number": "tracking"},
+        {"after_sales_type": "EXCHANGE"}, {}, {}, {},
+    ], start=1):
+        add_facts_order(db, number, **changes)
+    for number, status in [(10, "PENDING"), (11, "SUCCEEDED")]:
+        db.add(AftersalesActionTask(
+            id=number, after_sales_sn=f"af-{number}", action_type="TMALL_AGREE_REFUND",
+            action_status=status, idempotency_key=f"task-{number}",
+        ))
+    db.commit()
+    add_facts_order(db, 100)
+    with pytest.raises(ValueError, match="点名"):
+        facts_run(db, record_ids=None)
+    result = facts_run(db, record_ids=(*range(1, 13), 100), dry_run=False)
+    assert result["scanned"] == result["updated"] == 1
+    assert row_values(db, 12)["refund_financial_status"] == "SUCCESS"
+    assert row_values(db, 100)["refund_financial_status"] == "UNKNOWN"
+    assert db.query(AftersalesActionTask).count() == 2
+
+
+@pytest.mark.parametrize("change", ["financial", "shipping", "new_task"])
+def test_facts_concurrent_changes_or_created_task_prevent_backfill(db, change):
+    add_facts_order(db)
+
+    def read(*args):
+        if change == "new_task":
+            db.add(AftersalesActionTask(
+                id=1, after_sales_sn="af-1", action_type="TMALL_AGREE_REFUND",
+                action_status="PENDING", idempotency_key="concurrent-task",
+            ))
+        else:
+            values = (
+                {"refund_financial_status": "CLOSED"} if change == "financial"
+                else {"order_shipping_status": "DELIVERED"}
+            )
+            db.execute(update(AfterSalesOrder).where(AfterSalesOrder.id == 1).values(**values))
+        db.commit()
+        return refund_facts(*args)
+
+    result = facts_run(db, read_status=read, dry_run=False)
+    assert result["skipped_changed"] == 1 and result["updated"] == 0
+    assert row_values(db)["platform_after_sales_status_text"] is None
+
+
+def test_facts_reader_errors_redacted_and_stops_after_three(db):
+    for number in range(1, 5):
+        add_facts_order(db, number)
+
+    def read(*args):
+        raise RuntimeError("session=secret-must-not-appear")
+
+    result = facts_run(db, record_ids=(1, 2, 3, 4), read_status=read, dry_run=False)
+    assert result["failed"] == 3 and result["stopped_early"]
+    assert "secret-must-not-appear" not in str(result)
+    assert db.query(AutomationPollState).count() == 3
+    assert db.query(AftersalesActionTask).count() == 0
+
+
+@pytest.mark.parametrize("body", [{}, {"refund": {}, "trade": None}])
+def test_facts_empty_response_is_not_success(body):
+    with pytest.raises(SupplementDataError):
+        verified_tmall_refund_facts(body, {})
