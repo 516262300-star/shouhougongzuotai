@@ -12,3 +12,5 @@ The "人工待办" navigation and the order summary's "待人工" metric must re
 售后工作台必须保留“接入能力”总览，用平台与店铺两级矩阵明确展示售后同步、售后归因、退款统计、退款权限以及模块 1/2/3 的开通状态；未开启与尚未接入必须区分，并显示可执行的缺失原因，状态只能来自当前配置和本地店铺登记，不得暴露凭证明文。
 
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
+
+人工待办页面保留“自动发布给业务员”实时开关；关闭仅停止 ERP 待办发布，不停止生成本地待办，也不影响其他自动化。开启前明确告知积压待发送数量，使用后端持久化状态、版本校验和操作记录，不用浏览器本地存储伪造开关；发送审计与原因详情必须保留。

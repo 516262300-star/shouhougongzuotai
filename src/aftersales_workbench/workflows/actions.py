@@ -34,6 +34,11 @@ from aftersales_workbench.integrations.tmall.client import (
 from aftersales_workbench.integrations.tmall.shops import (
     load_refund_enabled_tmall_shops,
 )
+from aftersales_workbench.services.manual_todo_control import (
+    ManualTodoPublishingPaused,
+    read_publish_enabled,
+    require_publish_enabled,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -631,6 +636,12 @@ class ExternalActionExecutor:
             if AutomationActionType.ERP_CREATE_MANUAL_TODO in present_types:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
+                if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    try:
+                        require_publish_enabled(self.session, self.settings)
+                    except ManualTodoPublishingPaused:
+                        result.skipped += 1
+                        continue
                 if not self._claim(task.id):
                     result.skipped += 1
                     continue
@@ -712,6 +723,20 @@ class ExternalActionExecutor:
                         result_payload=result_payload,
                     )
                     result.succeeded += 1
+                except ManualTodoPublishingPaused:
+                    # 只会在 ERP POST 之前抛出；未发送，不算失败，不消耗重试次数。
+                    self.session.execute(update(AftersalesActionTask).where(
+                        AftersalesActionTask.id == task.id,
+                        AftersalesActionTask.action_type
+                        == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+                        AftersalesActionTask.action_status == AutomationTaskStatus.RUNNING,
+                    ).values(
+                        action_status=AutomationTaskStatus.PENDING,
+                        attempts=AftersalesActionTask.attempts - 1,
+                        last_error=None,
+                    ))
+                    self.session.commit()
+                    result.skipped += 1
                 except Exception as exc:
                     ActionCoordinator(self.session).record_external_failure(task.id, str(exc))
                     result.failed += 1
@@ -850,9 +875,9 @@ class ExternalActionExecutor:
         }.intersection(action_types) and not self.settings.tmall_write_enabled:
             raise WorkflowTransitionError("TMALL_WRITE_ENABLED=false，不能执行平台退款")
         if AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types:
-            if not self.settings.erp_todo_publish_enabled:
+            if not read_publish_enabled(self.session, self.settings):
                 raise WorkflowTransitionError(
-                    "ERP_TODO_PUBLISH_ENABLED=false，不能发布管理系统待办"
+                    "人工待办发布开关关闭（未保存网页设置时取 ERP_TODO_PUBLISH_ENABLED），不能发布"
                 )
             if not self.settings.erp_write_enabled:
                 raise WorkflowTransitionError("ERP_WRITE_ENABLED=false，不能发布管理系统待办")
@@ -971,6 +996,7 @@ class ExternalActionExecutor:
             username=username,
             password=password,
             timeout_seconds=self.settings.erp_web_timeout_seconds,
+            before_publish=lambda: require_publish_enabled(self.session, self.settings),
         )
 
     @staticmethod

@@ -46,7 +46,11 @@ def test_external_executor_accepts_notice_with_valid_preflight_credential() -> N
     assert blocked == 0
 
 
-def test_external_executor_requires_both_erp_todo_write_gates() -> None:
+def test_external_executor_requires_both_erp_todo_write_gates(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "aftersales_workbench.workflows.actions.read_publish_enabled",
+        lambda session, settings: settings.erp_todo_publish_enabled,
+    )
     executor = ExternalActionExecutor(  # type: ignore[arg-type]
         None,
         Settings(

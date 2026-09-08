@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -73,6 +74,7 @@ class ErpTodoClient:
         password: str,
         timeout_seconds: float = 15,
         http_client: httpx.Client | None = None,
+        before_publish: Callable[[], None] | None = None,
     ) -> None:
         if not username.strip() or not password.strip():
             raise ErpTodoConfigurationError("ERP 待办发布缺少管理系统登录凭据")
@@ -91,6 +93,7 @@ class ErpTodoClient:
             },
         )
         self._logged_in = False
+        self._before_publish = before_publish
 
     def close(self) -> None:
         self._client.close()
@@ -116,6 +119,9 @@ class ErpTodoClient:
         if "welcome/loginpage" in str(form_response.url):
             raise ErpTodoPublishError("ERP 管理系统登录状态失效")
 
+        # 登录和幂等回查可能耗时，真正提交前再次读取实时开关。
+        if self._before_publish is not None:
+            self._before_publish()
         response = self._client.post(
             "/leedis/index.php/wunderlist/stdnew",
             data={

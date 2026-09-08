@@ -22,6 +22,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { ScrapWorkspace } from "./ScrapWorkspace.jsx";
+import { ManualTodoPublishing } from "./ManualTodoPublishing.jsx";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
 const PLATFORM_OPTIONS = [
@@ -974,7 +975,7 @@ function ManualTodoWorkspace() {
   const reset = () => { const initial = createManualFilters(); setDraft(initial); setFilters(initial); setPage(1); };
   return (
     <>
-      <main className="workspace manual-workspace"><header className="topbar"><div className="page-title"><User size={22} /><h1>人工待办</h1><span className="read-only-badge">发送审计</span></div><div className="sync-status"><span />最近更新 {formatDateTime(data.last_updated_at, true)}</div></header><div className="workspace-body"><ManualTodoSummary summary={data.summary} /><ManualTodoFilters draft={draft} setDraft={setDraft} assignees={data.assignees ?? []} busy={loading} onSubmit={submit} onReset={reset} /><ManualTodoTable items={data.items ?? []} selected={selectedId} onSelect={setSelectedId} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} /><div className="workspace-actions"><span className="table-total">共 <strong>{data.pagination.total}</strong> 条人工待办</span><button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />刷新</button><Pagination pagination={data.pagination} onPage={(nextPage) => { if (nextPage >= 1 && nextPage <= data.pagination.pages) setPage(nextPage); }} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></div></main>
+      <main className="workspace manual-workspace"><header className="topbar"><div className="page-title"><User size={22} /><h1>人工待办</h1><span className="read-only-badge">发送审计</span></div><div className="sync-status"><span />最近更新 {formatDateTime(data.last_updated_at, true)}</div></header><div className="workspace-body"><ManualTodoPublishing /><ManualTodoSummary summary={data.summary} /><ManualTodoFilters draft={draft} setDraft={setDraft} assignees={data.assignees ?? []} busy={loading} onSubmit={submit} onReset={reset} /><ManualTodoTable items={data.items ?? []} selected={selectedId} onSelect={setSelectedId} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} /><div className="workspace-actions"><span className="table-total">共 <strong>{data.pagination.total}</strong> 条人工待办</span><button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />刷新</button><Pagination pagination={data.pagination} onPage={(nextPage) => { if (nextPage >= 1 && nextPage <= data.pagination.pages) setPage(nextPage); }} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></div></main>
       <ManualTodoDetail item={selected} />
     </>
   );

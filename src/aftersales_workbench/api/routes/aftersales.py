@@ -90,7 +90,7 @@ def list_manual_todos(
     task_status: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
     | None = None,
     assignee: Annotated[str | None, Query(max_length=50)] = None,
-    origin: Literal["module1", "module3"] | None = None,
+    origin: Literal["module1", "module2", "module3"] | None = None,
     started_on: date | None = None,
     ended_on: date | None = None,
     keyword: Annotated[str | None, Query(max_length=100)] = None,

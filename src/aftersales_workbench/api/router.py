@@ -4,6 +4,7 @@ from aftersales_workbench.api.routes import (
     aftersales,
     attribution,
     health,
+    manual_todo_control,
     monitor,
     scrap,
     warehouse,
@@ -11,6 +12,11 @@ from aftersales_workbench.api.routes import (
 
 api_router = APIRouter()
 api_router.include_router(health.router, prefix="/health", tags=["健康检查"])
+api_router.include_router(
+    manual_todo_control.router,
+    prefix="/api/v1/aftersales",
+    tags=["人工待办发布开关"],
+)
 api_router.include_router(
     aftersales.router,
     prefix="/api/v1/aftersales",

@@ -26,6 +26,26 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from aftersales_workbench.db.base import Base
 
 
+class AutomationSwitch(Base):
+    __tablename__ = "automation_switches"
+
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    enabled: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class AutomationSwitchEvent(Base):
+    __tablename__ = "automation_switch_events"
+
+    key: Mapped[str] = mapped_column(String(50), primary_key=True)
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    enabled: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    previous_enabled: Mapped[int] = mapped_column(SmallInteger, nullable=False)
+    changed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    source: Mapped[str] = mapped_column(String(50), nullable=False)
+
+
 class AutomationPollState(Base):
     """独立于订单更新时间的检查进度；避免同步或旧任务反复占用批次。"""
 

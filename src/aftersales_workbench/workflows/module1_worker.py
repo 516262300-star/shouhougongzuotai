@@ -1315,7 +1315,10 @@ class Module1WorkerRuntime:
         return WorkerStageResult.completed(details)
 
     def _process_erp_todos(self) -> WorkerStageResult:
-        apply = self.settings.erp_todo_publish_enabled
+        from aftersales_workbench.services.manual_todo_control import read_publish_enabled
+
+        with SessionLocal() as control_session:
+            apply = read_publish_enabled(control_session, self.settings)
         if apply and not self.settings.erp_write_enabled:
             raise RuntimeError(
                 "ERP 待办发布已启用，但 ERP_WRITE_ENABLED=false"
