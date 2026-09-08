@@ -8,15 +8,17 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import httpx
 from sqlalchemy import and_, or_, select, update
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
+from sqlalchemy.orm.attributes import set_committed_value
 
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
+    AfterSalesItem,
     AfterSalesOrder,
     AfterSalesType,
     AutomationActionType,
@@ -25,6 +27,9 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
+if TYPE_CHECKING:
+    from aftersales_workbench.integrations.erp.closure import ErpClosureEvidence
+
 
 class ErpReturnMatchConfigurationError(ValueError):
     """ERP 退货单只读匹配缺少必要配置。"""
@@ -32,6 +37,7 @@ class ErpReturnMatchConfigurationError(ValueError):
 
 class ErpReturnMatchStatus(StrEnum):
     CLOSED_LOOP = "closed_loop"
+    REFUND_UNVERIFIED = "refund_unverified"
     STAGED = "staged"
     RECEIVABLE_OPEN = "receivable_open"
     ITEM_MISMATCH = "item_mismatch"
@@ -81,6 +87,7 @@ class ErpReturnMatchLookup:
     return_order_sn: str | None = None
     rows: tuple[ErpReturnRow, ...] = ()
     source_location: str | None = None
+    closure_evidence: ErpClosureEvidence | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +103,9 @@ class ErpReturnMatchLookup:
             "return_order_sn": self.return_order_sn,
             "rows": [row.safe_dict() for row in self.rows],
             "source_location": self.source_location,
+            "closure_evidence": (
+                self.closure_evidence.safe_dict() if self.closure_evidence else None
+            ),
         }
 
 
@@ -106,6 +116,7 @@ class ErpReturnMatchSyncResult:
     tasks_requeued: int = 0
     scanned: int = 0
     closed_loop: int = 0
+    refund_unverified: int = 0
     combined_closed_loop: int = 0
     staged: int = 0
     receivable_open: int = 0
@@ -400,8 +411,8 @@ class ErpWebReturnMatcher:
                 source_location="customer_profile",
             )
         return ErpReturnMatchLookup(
-            status=ErpReturnMatchStatus.CLOSED_LOOP,
-            message="ERP 退货单匹配且客户累计应收已归零，售后闭环完成",
+            status=ErpReturnMatchStatus.REFUND_UNVERIFIED,
+            message="ERP 退货单匹配且余额在容差内，仍需逐单核验退款流水和零应收",
             customer_name=customer_name,
             sales_owner=sales_owner,
             receivable_amount=receivable,
@@ -409,6 +420,20 @@ class ErpWebReturnMatcher:
             rows=rows,
             source_location="customer_profile",
         )
+
+    def verify_closure(self, order, lookup, *, expected_items=None):
+        from aftersales_workbench.integrations.erp.closure import verify_closure
+        from aftersales_workbench.integrations.erp.unshipped_refund import (
+            ErpWebUnshippedRefundClient,
+        )
+
+        # 共用只读查询会话；不关闭共享客户端、不调用 execute 方法。
+        client = ErpWebUnshippedRefundClient(
+            base_url=self.base_url, username=self.username, password=self.password,
+            http_client=self._client,
+        )
+        client._logged_in = self._logged_in
+        return verify_closure(order, lookup, client, expected_items=expected_items)
 
     def _lookup_customer(self, order_sn: str) -> tuple[str | None, str | None]:
         response = self._get_response(
@@ -556,6 +581,17 @@ class ErpReturnMatchSyncService:
         self.session = session
         self.matcher = matcher
 
+    def verify_closure(self, order, lookup, *, expected_items=None):
+        from aftersales_workbench.integrations.erp.closure import unverified
+
+        if lookup.status not in {ErpReturnMatchStatus.REFUND_UNVERIFIED,
+                                 ErpReturnMatchStatus.CLOSED_LOOP}:
+            return lookup
+        verifier = getattr(self.matcher, "verify_closure", None)
+        if verifier is None:
+            return unverified(lookup, "未配置逐单 ERP 退款核验，不能登记闭环")
+        return verifier(order, lookup, expected_items=expected_items)
+
     def run(
         self,
         *,
@@ -627,6 +663,9 @@ class ErpReturnMatchSyncService:
                 tracking_number=order.forward_tracking_number or "",
                 expected_items=expected_items,
             )
+            lookup = self.verify_closure(order, lookup, expected_items=expected_items)
+            if not dry_run:
+                lookup = self.apply_lookup(task, order, lookup, datetime.now(UTC))
             result.scanned += 1
             setattr(result, lookup.status.value, getattr(result, lookup.status.value) + 1)
             combined_match = (
@@ -636,7 +675,6 @@ class ErpReturnMatchSyncService:
             if combined_match:
                 result.combined_closed_loop += 1
             if not dry_run:
-                self.apply_lookup(task, order, lookup, now)
                 if combined_match:
                     task.payload = {
                         **(task.payload or {}),
@@ -647,6 +685,8 @@ class ErpReturnMatchSyncService:
                     }
                 if lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
                     self._cancel_obsolete_actions(order.after_sales_sn)
+                # 最终核验使用锁定读，逐笔提交释放锁，不跨下一笔 ERP 网络查询持锁。
+                self.session.commit()
         if not dry_run:
             self.session.commit()
         return result
@@ -799,8 +839,15 @@ class ErpReturnMatchSyncService:
         checked_at: datetime | None = None,
     ) -> bool:
         """将指定历史订单的已验证闭环事实补记到本地工作台。"""
+        from aftersales_workbench.integrations.erp.closure import closure_evidence_error
+
+        if lookup.closure_evidence is None:
+            lookup = self.verify_closure(order, lookup)
         if lookup.status is not ErpReturnMatchStatus.CLOSED_LOOP:
-            raise ValueError("只有 ERP 已匹配且累计应收归零的订单才能补记闭环")
+            raise ValueError(lookup.message)
+        error = closure_evidence_error(order, lookup)
+        if error:
+            raise ValueError(error)
         if AfterSalesType(order.after_sales_type) is not AfterSalesType.ONLY_REFUND:
             raise ValueError("历史闭环补记只支持模块1发货后仅退款订单")
         if not platform_refund_completed(order):
@@ -834,9 +881,12 @@ class ErpReturnMatchSyncService:
             raise ValueError("ERP 退货匹配任务正在执行，不能并发补记")
         else:
             task.action_status = AutomationTaskStatus.PENDING
-        self.apply_lookup(task, order, lookup, checked_at or datetime.now(UTC))
-        self._cancel_obsolete_actions(order.after_sales_sn)
+        applied = self.apply_lookup(task, order, lookup, checked_at or datetime.now(UTC))
+        if applied.status is ErpReturnMatchStatus.CLOSED_LOOP:
+            self._cancel_obsolete_actions(order.after_sales_sn)
         self.session.commit()
+        if applied.status is not ErpReturnMatchStatus.CLOSED_LOOP:
+            raise ValueError(applied.message)
         return created
 
     def _cancel_obsolete_actions(self, after_sales_sn: str) -> None:
@@ -880,7 +930,30 @@ class ErpReturnMatchSyncService:
         order: AfterSalesOrder,
         lookup: ErpReturnMatchLookup,
         checked_at: datetime,
-    ) -> None:
+    ) -> ErpReturnMatchLookup:
+        from aftersales_workbench.integrations.erp.closure import closure_evidence_error, unverified
+
+        if lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
+            # MySQL 锁定读取得当前退款事实，避免长事务快照/ORM缓存放行已变化的订单。
+            db = object_session(order) if isinstance(order, AfterSalesOrder) else None
+            if db is not None:
+                with db.no_autoflush:
+                    db.refresh(order, attribute_names=[
+                        "refund_financial_status", "platform_after_sales_status",
+                        "platform_order_refund_status", "platform_order_sn", "after_sales_sn",
+                        "forward_tracking_number", "merchant_receivable_amount",
+                        "after_sales_type", "order_shipping_status", "erp_customer_name",
+                        "shop_id",
+                    ], with_for_update=True)
+                    items = db.scalars(select(AfterSalesItem).where(
+                        AfterSalesItem.after_sales_sn == order.after_sales_sn,
+                    ).order_by(AfterSalesItem.id).with_for_update().execution_options(
+                        populate_existing=True,
+                    )).all()
+                    set_committed_value(order, "items", items)
+            error = closure_evidence_error(order, lookup)
+            if error:
+                lookup = unverified(lookup, error)
         payload = task.payload or {}
         task.payload = {
             **payload,
@@ -898,9 +971,13 @@ class ErpReturnMatchSyncService:
             "erp_return_order_sn": lookup.return_order_sn,
             "erp_return_rows": [row.safe_dict() for row in lookup.rows],
         }
-        if lookup.customer_name:
+        retain_customer = (
+            lookup.status is ErpReturnMatchStatus.REFUND_UNVERIFIED
+            and order.erp_customer_name and order.erp_customer_name != lookup.customer_name
+        )
+        if lookup.customer_name and not retain_customer:
             order.erp_customer_name = lookup.customer_name
-        if lookup.sales_owner:
+        if lookup.sales_owner and not retain_customer:
             order.erp_sales_owner = lookup.sales_owner
 
         if lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
@@ -911,14 +988,19 @@ class ErpReturnMatchSyncService:
                 "result_code": "RETURN_ORDER_MATCHED",
                 "reference_sn": lookup.return_order_sn,
                 "closed_loop_at": checked_at.isoformat(),
+                "erp_closure_evidence": lookup.closure_evidence.safe_dict(),
+                "erp_refund_reference_sn": lookup.closure_evidence.reference_sn,
             }
             order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
             order.exception_type = None
-            return
+            return lookup
 
         task.action_status = AutomationTaskStatus.PENDING
+        task.payload = {k: v for k, v in task.payload.items()
+                        if k not in {"closed_loop_at", "result_code", "erp_closure_evidence"}}
         order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
         messages = {
+            ErpReturnMatchStatus.REFUND_UNVERIFIED: "退货已匹配，等待核验对应退款流水",
             ErpReturnMatchStatus.STAGED: "退货单在暂存列表，等待认领",
             ErpReturnMatchStatus.RECEIVABLE_OPEN: "退货单已入客户名下，累计应收未归零",
             ErpReturnMatchStatus.ITEM_MISMATCH: "ERP退货单型号颜色数量不一致",
@@ -932,6 +1014,7 @@ class ErpReturnMatchSyncService:
             if lookup.status is ErpReturnMatchStatus.UNAVAILABLE
             else None
         )
+        return lookup
 
 
 def build_erp_return_matcher(settings: Settings) -> ErpWebReturnMatcher:

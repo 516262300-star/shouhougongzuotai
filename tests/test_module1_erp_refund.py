@@ -7,6 +7,7 @@ from aftersales_workbench.db.models import AutomationTaskStatus, WorkflowStatus
 from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchLookup,
     ErpReturnMatchStatus,
+    ErpReturnRow,
 )
 from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundLookup,
@@ -29,6 +30,10 @@ def _task_order():
         after_sales_sn="AS-1",
         forward_tracking_number="JT-1",
         merchant_receivable_amount=Decimal("74.51"),
+        shop=SimpleNamespace(platform="PDD"),
+        after_sales_type="ONLY_REFUND",
+        order_shipping_status="IN_TRANSIT",
+        refund_financial_status="SUCCESS",
         items=[
             SimpleNamespace(
                 sku_code="6050-单孔#铜本色",
@@ -52,6 +57,9 @@ def _return_lookup(status: ErpReturnMatchStatus, receivable: str):
         sales_owner="金博敏",
         receivable_amount=Decimal(receivable),
         return_order_sn="TH-1",
+        source_location="customer_profile",
+        rows=(ErpReturnRow("TH-1", "2026-09-08", "6050-单孔", "铜本色", "JT-1",
+                           Decimal("1"), Decimal("74.51"), Decimal("-74.51")),),
     )
 
 
@@ -158,6 +166,8 @@ def test_apply_rechecks_return_closed_loop_before_local_completion() -> None:
                 message="completed",
                 platform_order_sn="PDD-1",
                 reference_sn="SK-1",
+                customer_name="p3-客户", erp_order_sn="DD-1",
+                refund_amount=Decimal("74.51"), receivable_amount=Decimal("0"),
             )
 
     session = _FakeSession()
@@ -174,3 +184,27 @@ def test_apply_rechecks_return_closed_loop_before_local_completion() -> None:
     assert order.workflow_status is WorkflowStatus.INTERCEPT_SUCCESS
     assert session.commits == 1
     assert session.updates == 1
+
+
+def test_zero_balance_without_refund_bill_cannot_cancel_todo_or_supplement() -> None:
+    task, order = _task_order()
+
+    class Matcher:
+        def lookup(self, **kwargs):
+            return _return_lookup(ErpReturnMatchStatus.REFUND_UNVERIFIED, "0")
+
+    class Client:
+        def inspect_shipped_return(self, **kwargs):
+            return ErpUnshippedRefundLookup(
+                status=ErpUnshippedRefundStatus.NOT_FOUND, message="missing",
+                platform_order_sn="PDD-1",
+            )
+
+        def execute_shipped_return(self, *args, **kwargs):
+            raise AssertionError("缺流水时不能借闭环查询执行补单")
+
+    session = _FakeSession()
+    result = _FakeService(session, Matcher(), Client(), [(task, order)]).run(dry_run=False)
+    assert result.already_completed == result.applied == 0
+    assert result.refund_unverified == 1
+    assert task.action_status == "PENDING" and session.updates == 0

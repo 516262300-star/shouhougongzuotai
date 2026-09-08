@@ -754,6 +754,7 @@ class ErpWebUnshippedRefundClient:
             },
         )
         normalized_order_id = erp_order_sn.removeprefix("DD-")
+        references: set[str] = set()
         for record in records:
             amount = _decimal(record.get("收款金额", ""))
             if amount is None or amount != -abs(expected_amount):
@@ -766,8 +767,8 @@ class ErpWebUnshippedRefundClient:
                 continue
             reference = record.get("单据编号", "").strip()
             if reference.startswith("SK-"):
-                return reference
-        return None
+                references.add(reference)
+        return next(iter(references)) if len(references) == 1 else None
 
     @staticmethod
     def _lookup(

@@ -110,7 +110,7 @@ def _expected(product: str = "6050-单孔") -> tuple[ExpectedReturnItem, ...]:
     )
 
 
-def test_web_matcher_closes_only_when_return_matches_and_receivable_is_zero() -> None:
+def test_web_matcher_zero_balance_still_requires_refund_evidence() -> None:
     matcher = _matcher()
     try:
         result = matcher.lookup(
@@ -121,7 +121,7 @@ def test_web_matcher_closes_only_when_return_matches_and_receivable_is_zero() ->
     finally:
         matcher.close()
 
-    assert result.status is ErpReturnMatchStatus.CLOSED_LOOP
+    assert result.status is ErpReturnMatchStatus.REFUND_UNVERIFIED
     assert result.return_order_sn == "TH-1"
     assert result.receivable_amount == Decimal("0")
     assert result.rows[0].amount == Decimal("-3.73")
@@ -230,7 +230,7 @@ def test_web_matcher_blocks_quantity_subset_match() -> None:
     assert result.status is ErpReturnMatchStatus.ITEM_MISMATCH
 
 
-def test_closed_lookup_marks_task_succeeded_and_order_completed() -> None:
+def test_closed_label_without_evidence_cannot_complete_order() -> None:
     task = SimpleNamespace(
         payload={"origin": "module1"},
         action_status=AutomationTaskStatus.PENDING,
@@ -258,10 +258,10 @@ def test_closed_lookup_marks_task_succeeded_and_order_completed() -> None:
         datetime(2026, 9, 1, tzinfo=UTC),
     )
 
-    assert task.action_status is AutomationTaskStatus.SUCCEEDED
-    assert task.payload["result_code"] == "RETURN_ORDER_MATCHED"
-    assert order.workflow_status is WorkflowStatus.INTERCEPT_SUCCESS
-    assert order.exception_type is None
+    assert task.action_status is AutomationTaskStatus.PENDING
+    assert "closed_loop_at" not in task.payload
+    assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    assert task.payload["erp_match_status"] == "refund_unverified"
 
 
 def test_staged_lookup_remains_pending_for_next_poll() -> None:
@@ -425,7 +425,7 @@ def test_tracking_expectations_combine_refunded_orders_with_same_tracking() -> N
         matcher.close()
 
     assert grouped_sns == ("AS-1", "AS-2")
-    assert result.status is ErpReturnMatchStatus.CLOSED_LOOP
+    assert result.status is ErpReturnMatchStatus.REFUND_UNVERIFIED
 
 
 def test_tracking_expectations_fall_back_when_customers_conflict() -> None:

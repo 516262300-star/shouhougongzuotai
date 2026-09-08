@@ -88,6 +88,7 @@ class Module2ErpIntakeService:
         ErpReturnMatchStatus.STAGED,
         ErpReturnMatchStatus.RECEIVABLE_OPEN,
         ErpReturnMatchStatus.CLOSED_LOOP,
+        ErpReturnMatchStatus.REFUND_UNVERIFIED,
         ErpReturnMatchStatus.ITEM_MISMATCH,
     }
 

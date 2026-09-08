@@ -17,6 +17,7 @@ from aftersales_workbench.db.models import (
     ShippingStatus,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.closure import platform_closure_error, verify_closure
 from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchStatus,
     ErpReturnMatchSyncService,
@@ -25,7 +26,6 @@ from aftersales_workbench.integrations.erp.return_match import (
 )
 from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedItem,
-    ErpUnshippedRefundError,
     ErpUnshippedRefundLookup,
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
@@ -39,6 +39,7 @@ class Module1ErpRefundRunResult:
     ready: int = 0
     applied: int = 0
     already_completed: int = 0
+    refund_unverified: int = 0
     not_found: int = 0
     blocked: int = 0
     unavailable: int = 0
@@ -98,23 +99,33 @@ class Module1ErpRefundService:
         )
         for task, order in rows:
             result.scanned += 1
+            if platform_closure_error(order):
+                result.refund_unverified += 1
+                continue
             expected_return_items = expected_items_from_order(order)
             return_lookup = self.return_matcher.lookup(
                 platform_order_sn=order.platform_order_sn,
                 tracking_number=order.forward_tracking_number or "",
                 expected_items=expected_return_items,
             )
-            if return_lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
-                result.already_completed += 1
+            if return_lookup.status in {
+                ErpReturnMatchStatus.CLOSED_LOOP, ErpReturnMatchStatus.REFUND_UNVERIFIED,
+            }:
+                return_lookup = verify_closure(order, return_lookup, self.refund_client)
                 if not dry_run:
-                    ErpReturnMatchSyncService.apply_lookup(
+                    return_lookup = ErpReturnMatchSyncService.apply_lookup(
                         task,
                         order,
                         return_lookup,
                         datetime.now(UTC),
                     )
-                    self._cancel_pending_todo(order.after_sales_sn)
+                    if return_lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
+                        self._cancel_pending_todo(order.after_sales_sn)
                     self.session.commit()
+                if return_lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
+                    result.already_completed += 1
+                else:
+                    result.refund_unverified += 1
                 self._append_detail(result, task, order, return_lookup.status.value, None)
                 continue
             expected_amount = order.merchant_receivable_amount
@@ -167,11 +178,10 @@ class Module1ErpRefundService:
                     tracking_number=order.forward_tracking_number or "",
                     expected_items=expected_return_items,
                 )
-                if post_lookup.status is not ErpReturnMatchStatus.CLOSED_LOOP:
-                    raise ErpUnshippedRefundError(
-                        "ERP 补单已执行，但退货明细与累计应收未能确认闭环"
-                    )
-                ErpReturnMatchSyncService.apply_lookup(
+                post_lookup = verify_closure(
+                    order, post_lookup, self.refund_client, refund_result=completed,
+                )
+                post_lookup = ErpReturnMatchSyncService.apply_lookup(
                     task,
                     order,
                     post_lookup,
@@ -183,7 +193,10 @@ class Module1ErpRefundService:
                     "erp_refund_record_id": refund_lookup.record_id,
                     "erp_refund_reference_sn": completed.reference_sn,
                 }
-                self._cancel_pending_todo(order.after_sales_sn)
+                if post_lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
+                    self._cancel_pending_todo(order.after_sales_sn)
+                else:
+                    result.refund_unverified += 1
                 result.applied += 1
             self.session.commit()
         return result

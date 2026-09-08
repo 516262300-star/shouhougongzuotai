@@ -931,6 +931,7 @@ class AftersalesRecordService:
         if match_status:
             return {
                 "closed_loop": "已匹配·应收归零",
+                "refund_unverified": "退货已匹配·待核验退款流水",
                 "staged": "暂存待认领",
                 "receivable_open": "已开退货单·待平账",
                 "item_mismatch": "退货明细不一致",
@@ -963,6 +964,7 @@ class AftersalesRecordService:
         status = str(payload.get("erp_match_status") or "").strip()
         tone = {
             "closed_loop": "success",
+            "refund_unverified": "warning",
             "staged": "warning",
             "receivable_open": "warning",
             "item_mismatch": "danger",
@@ -1275,6 +1277,7 @@ class AftersalesRecordService:
                 "item_mismatch",
                 "customer_conflict",
                 "unavailable",
+                "refund_unverified",
             )
         if stage == "CLOSED_LOOP":
             return AfterSalesOrder.workflow_status == WorkflowStatus.INTERCEPT_SUCCESS

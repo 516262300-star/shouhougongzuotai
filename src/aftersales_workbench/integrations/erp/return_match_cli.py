@@ -49,6 +49,7 @@ def main() -> None:
                     tracking_number=order.forward_tracking_number or "",
                     expected_items=expected_items_from_order(order),
                 )
+                lookup = ErpReturnMatchSyncService(session, matcher).verify_closure(order, lookup)
                 created = None
                 if args.apply:
                     created = ErpReturnMatchSyncService(
