@@ -6,6 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
+from aftersales_workbench.integrations.tmall.shipping import classify_shipping
 
 
 class TmallDataMappingError(ValueError):
@@ -127,19 +128,6 @@ def _matching_trade_order(trade: dict[str, Any], oid: str) -> dict[str, Any]:
     return {}
 
 
-def _shipping_status(refund: dict[str, Any], trade: dict[str, Any]) -> ShippingStatus:
-    status = _nonempty(refund.get("order_status")) or _nonempty(trade.get("status")) or ""
-    if status in {"TRADE_FINISHED", "TRADE_SUCCESS"}:
-        return ShippingStatus.DELIVERED
-    if status in {
-        "WAIT_BUYER_CONFIRM_GOODS",
-        "SELLER_CONSIGNED_PART",
-        "TRADE_BUYER_SIGNED",
-    }:
-        return ShippingStatus.IN_TRANSIT
-    return ShippingStatus.UNSHIPPED
-
-
 def normalize_forward_logistics(body: dict[str, Any] | None) -> tuple[str | None, str | None]:
     response = (body or {}).get("logistics_orders_get_response")
     shippings_node = response.get("shippings") if isinstance(response, dict) else None
@@ -228,7 +216,7 @@ def normalize_refund(
         platform_order_status_text=(
             _nonempty(merged.get("order_status")) or _nonempty(trade.get("status"))
         ),
-        order_shipping_status=_shipping_status(merged, trade),
+        order_shipping_status=classify_shipping(merged, trade, logistics),
         item=NormalizedTmallRefundItem(
             sku_code=sku_code,
             applied_quantity=_positive_int(quantity, field="num"),

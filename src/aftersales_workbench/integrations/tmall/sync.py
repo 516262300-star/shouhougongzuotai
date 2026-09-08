@@ -249,7 +249,7 @@ class TmallRefundSyncService:
                 refund = normalize_refund(list_record, detail, trade_cache[tid])
                 if (
                     refund.after_sales_type.value == "ONLY_REFUND"
-                    and refund.order_shipping_status.value == "IN_TRANSIT"
+                    and refund.order_shipping_status.value in {"IN_TRANSIT", "UNKNOWN"}
                 ):
                     if tid not in logistics_cache:
                         try:

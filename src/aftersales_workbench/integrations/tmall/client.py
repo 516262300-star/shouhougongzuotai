@@ -408,8 +408,9 @@ class TmallClient:
         if tid < 1:
             raise ValueError("tid 必须大于 0")
         fields = (
-            "tid,status,payment,total_fee,post_fee,orders.oid,orders.outer_iid,"
-            "orders.outer_sku_id,orders.sku_properties_name,orders.title,orders.num"
+            "tid,status,consign_time,payment,total_fee,post_fee,orders.oid,orders.outer_iid,"
+            "orders.outer_sku_id,orders.sku_properties_name,orders.title,orders.num,"
+            "orders.status,orders.consign_time"
         )
         return self.execute_read(TAOBAO_TRADE_FULLINFO_GET, fields=fields, tid=tid)
 

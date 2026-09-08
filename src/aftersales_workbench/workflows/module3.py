@@ -17,6 +17,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.module3_shipping_guard import tmall_unshipped_filter
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +106,7 @@ class SqlAlchemyModule3Repository:
                         Shop.platform == Platform.TMALL,
                         AfterSalesOrder.id >= tmall_min_order_id,
                         AfterSalesOrder.refund_financial_status == "SUCCESS",
+                        tmall_unshipped_filter(),
                     ),
                 ),
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,

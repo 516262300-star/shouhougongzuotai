@@ -74,6 +74,7 @@ class ShippingStatus(StrEnum):
     PACKED_NOT_SHIPPED = "PACKED_NOT_SHIPPED"
     IN_TRANSIT = "IN_TRANSIT"
     DELIVERED = "DELIVERED"
+    UNKNOWN = "UNKNOWN"
 
 
 class WorkflowStatus(StrEnum):

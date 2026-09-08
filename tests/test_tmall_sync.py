@@ -130,3 +130,36 @@ def test_sync_maps_refund_and_advances_cursor() -> None:
     assert result.records_created == 1
     assert repository.cursor_end == 3600
     assert repository.refunds[0].item.sku_code == "SKU-1"
+
+
+def test_closed_only_refund_also_queries_shipping_evidence():
+    class ClosedClient(FakeClient):
+        logistics_calls = 0
+
+        def get_refund(self, **kwargs):
+            body = super().get_refund(**kwargs)
+            body["refund_get_response"]["refund"].update(
+                has_good_return=False, order_status="TRADE_CLOSED", status="SUCCESS",
+            )
+            return body
+
+        def get_trade_fullinfo(self, **_kwargs):
+            return {"trade_fullinfo_get_response": {"trade": {"status": "TRADE_CLOSED"}}}
+
+        def get_logistics_orders(self, *, tid):
+            self.logistics_calls += 1
+            assert tid == 8001
+            return {"logistics_orders_get_response": {"shippings": {"shipping": [{
+                "tid": 8001, "status": "CLOSED", "seller_confirm": "yes",
+            }]}}}
+
+    repository = FakeRepository()
+    client = ClosedClient()
+    service = TmallRefundSyncService(
+        repository, Settings(_env_file=None, tmall_sync_initial_lookback_hours=1),
+        client_factory=lambda _: client, now=lambda: 3600,
+    )
+    result = service.sync_all([_shop()], max_windows=1)[0]
+    assert result.ok and client.logistics_calls == 1
+    assert repository.refunds[0].order_shipping_status == "IN_TRANSIT"
+    assert repository.refunds[0].platform_after_sales_status_text == "SUCCESS"

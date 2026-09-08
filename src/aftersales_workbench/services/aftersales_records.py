@@ -535,6 +535,15 @@ class AftersalesRecordService:
                 logistics,
                 after_sales_type=after_sales_type,
             )
+        elif (
+            shop.platform == Platform.TMALL
+            and order.order_shipping_status == ShippingStatus.UNKNOWN
+            and workflow in {"PENDING_CHECK", "PARTIAL_REFUND_EXCLUDED"}
+        ):
+            decision_note = (
+                "发货状态待核实：交易关闭或资料缺失不能证明未发货，已阻止按未发货取消排单、"
+                "锁包或自动补单。平台退款结果单独显示，不代表退货已平账。"
+            )
         else:
             decision_note = (
                 order.logistics_last_error

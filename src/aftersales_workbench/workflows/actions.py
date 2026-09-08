@@ -43,6 +43,10 @@ from aftersales_workbench.workflows.module1_logistics import (
 from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
 )
+from aftersales_workbench.workflows.module3_shipping_guard import (
+    TMALL_BLOCK_REASON,
+    tmall_unshipped_confirmed,
+)
 from aftersales_workbench.workflows.pdd_reconciliation import PddFailedRefundReconciler
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 from aftersales_workbench.workflows.refund_preflight import verify_pdd_refund
@@ -136,6 +140,21 @@ class ActionCoordinator:
                 return
 
             order = self._get_order(task.after_sales_sn)
+            module3_action = action_type in {
+                AutomationActionType.ERP_CHECK_FULFILLMENT,
+                AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER,
+                AutomationActionType.ERP_LOCK_PACKING,
+            } or (
+                action_type is AutomationActionType.ERP_CREATE_REFUND_RECORD
+                and (task.payload or {}).get("origin") == "module3"
+            )
+            if (
+                module3_action and self._get_order_platform(order) is Platform.TMALL
+                and not (action_type is AutomationActionType.ERP_CHECK_FULFILLMENT
+                         and result_code is ErpResultCode.SHIPPED)
+                and not tmall_unshipped_confirmed(order)
+            ):
+                raise WorkflowTransitionError(TMALL_BLOCK_REASON)
             task.action_status = AutomationTaskStatus.SUCCEEDED
             task.last_error = None
             task.attempts = (task.attempts or 0) + 1

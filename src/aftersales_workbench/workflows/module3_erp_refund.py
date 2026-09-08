@@ -15,7 +15,9 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
     ShippingStatus,
+    Shop,
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.unshipped_refund import (
@@ -191,8 +193,11 @@ class Module3ErpRefundService:
                 AfterSalesOrder,
                 AfterSalesOrder.after_sales_sn == AftersalesActionTask.after_sales_sn,
             )
+            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .options(selectinload(AfterSalesOrder.items))
             .where(
+                # 当前客户端 inspect/execute 固定查拼多多 ERP 页面，不允许跨平台借用。
+                Shop.platform == Platform.PDD,
                 AftersalesActionTask.action_type == AutomationActionType.ERP_CHECK_FULFILLMENT,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
