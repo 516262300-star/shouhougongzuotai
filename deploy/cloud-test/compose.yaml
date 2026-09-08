@@ -1,0 +1,77 @@
+name: lds-aftersales-test
+
+x-app: &app
+  image: lds-aftersales-test:local
+  build:
+    context: ../..
+    dockerfile: deploy/cloud-test/Dockerfile
+  environment: &environment
+    APP_ENV: production
+    APP_DEBUG: "false"
+    DATABASE_URL: mysql+pymysql://aftersales:${MYSQL_PASSWORD:?Run init-env.sh first}@mysql:3306/aftersales_test?charset=utf8mb4
+    DB_POOL_SIZE: "3"
+    DB_MAX_OVERFLOW: "3"
+    PDD_WRITE_ENABLED: "false"
+    TMALL_WRITE_ENABLED: "false"
+    ERP_WRITE_ENABLED: "false"
+    QYWX_WRITE_ENABLED: "false"
+    ERP_TODO_PUBLISH_ENABLED: "false"
+    MODULE1_NOTIFICATION_TRANSPORT: disabled
+    MODULE1_DESKTOP_SEND_ENABLED: "false"
+    TZ: Asia/Shanghai
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: aftersales_test
+      MYSQL_USER: aftersales
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Run init-env.sh first}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Run init-env.sh first}
+      TZ: Asia/Shanghai
+    command: ["--innodb-buffer-pool-size=256M", "--max-connections=60"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_PASSWORD\" mysql -h 127.0.0.1 -u\"$$MYSQL_USER\" -D\"$$MYSQL_DATABASE\" -Nse 'SELECT 1' >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:18000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=4).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  mysql_data:
