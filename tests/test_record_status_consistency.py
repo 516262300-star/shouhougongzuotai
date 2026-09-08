@@ -152,13 +152,13 @@ def test_refund_scope_is_not_payment_status(paid, requested, label):
 
 @pytest.mark.parametrize(
     "platform,number,options,status",
-    [("JD", 1, {}, "unsupported"), ("TAOBAO", 1, {}, "unsupported"),
-     ("1688", 1, {}, "unsupported"), ("DOUYIN", 1, {}, "unsupported"),
-     ("TMALL", 1, {}, "history_excluded"), ("TMALL", 10, {}, "pending"),
+    [("JD", 1, {}, "pending"), ("TAOBAO", 1, {}, "pending"),
+     ("1688", 1, {}, "pending"), ("DOUYIN", 1, {}, "pending"),
+     ("TMALL", 1, {}, "pending"), ("TMALL", 10, {}, "pending"),
      ("PDD", 1, {}, "pending"),
      ("PDD", 1, {"erp_web_lookup_enabled": False}, "not_configured"),
      ("PDD", 1, {"erp_sales_owner_sync_enabled": False}, "sync_disabled"),
-     ("TMALL", 10, {"tmall_module123_trial_enabled": False}, "sync_disabled")],
+     ("TMALL", 10, {"tmall_module123_trial_enabled": False}, "pending")],
 )
 def test_missing_owner_explains_actual_reason(platform, number, options, status):
     service = AftersalesRecordService(None, NoExternalLookup(), settings(**options))
@@ -181,7 +181,7 @@ def test_owner_cache_not_mixed_by_same_platform_order_number():
     ]
     owners = service._owners_for_rows(rows)
     assert owners["af-1"].sales_owner == "甲"
-    assert owners["af-2"].status == "unsupported"
+    assert owners["af-2"].status == "pending"
 
 
 def test_detail_explains_cached_failure_and_missing_amount_without_external_calls(db):

@@ -858,6 +858,7 @@ class Module1WorkerRuntime:
             ).sync_stale(
                 limit=self.settings.erp_sales_owner_sync_batch_size,
                 refresh_seconds=self.settings.erp_sales_owner_refresh_seconds,
+                all_platforms=True,
                 include_tmall=self._tmall_trial_active,
                 tmall_min_order_id=self.settings.tmall_module123_min_order_id,
             )

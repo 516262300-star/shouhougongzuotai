@@ -22,6 +22,7 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.sales_owner import (
+    ALL_OWNER_PLATFORMS,
     SalesOwnerLookup,
     SalesOwnerResolver,
     get_erp_sales_owner_resolver,
@@ -1077,18 +1078,12 @@ class AftersalesRecordService:
         cached = self._cached_owner(order)
         if cached is not None:
             return cached
-        if shop.platform not in {Platform.PDD, Platform.TMALL}:
+        if shop.platform not in getattr(
+            self.sales_owner_resolver, "supported_platforms", ALL_OWNER_PLATFORMS,
+        ):
             return self._unsupported_platform_owner(shop.platform)
-        if shop.platform == Platform.TMALL:
-            if not self.settings.tmall_module123_trial_enabled:
-                return SalesOwnerLookup(
-                    None, None, "sync_disabled", "天猫业务链路未开启，归属查询尚未进入后台同步。"
-                )
-            if (order.id or 0) < self.settings.tmall_module123_min_order_id:
-                return SalesOwnerLookup(
-                    None, None, "history_excluded",
-                    "该天猫历史单早于当前自动化起始范围，尚未查询归属；不代表 ERP 中没有客户。",
-                )
+        if shop.is_active == 0:
+            return SalesOwnerLookup(None, None, "sync_disabled", "店铺已停用，未纳入归属查询。")
         configured = bool(self.settings.erp_read_database_url) or (
             self.settings.erp_web_lookup_enabled
             and bool(self.settings.erp_web_username)

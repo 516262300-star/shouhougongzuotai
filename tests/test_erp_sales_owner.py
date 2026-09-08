@@ -311,7 +311,9 @@ def test_sales_owner_sync_marks_completed_pdd_fast_refund_as_not_required() -> N
 
         def scalars(self, _statement):
             self.scalars_calls += 1
-            return ScalarRows([order] if self.scalars_calls == 1 else [7])
+            return ScalarRows([order] if self.scalars_calls == 1 else [
+                SimpleNamespace(shop_id=7, platform="PDD"),
+            ])
 
         def commit(self):
             pass

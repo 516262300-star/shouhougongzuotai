@@ -26,6 +26,13 @@ from aftersales_workbench.workflows.platform_state import platform_refund_comple
 
 logger = logging.getLogger(__name__)
 _RETRY_STATUSES = ("unavailable", "not_configured")
+ALL_OWNER_PLATFORMS = frozenset(Platform)
+# 非拼多多旧映射曾将关闭/缺资料默认成 UNSHIPPED，需额外的明确未发货状态。
+_EXPLICIT_UNSHIPPED_TEXT = frozenset({
+    "WAIT_SELLER_SEND_GOODS", "WAIT_BUYER_PAY", "TRADE_NO_CREATE_PAY",
+    "WAITSELLERSEND", "WAITBUYERPAY", "WAIT_SELLER_STOCK_OUT",
+    "UNSHIPPED", "待发货", "未发货",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -105,6 +112,9 @@ def _aggregate_lookup(
 
 class ErpSalesOwnerResolver:
     """通过旧管理系统客户档案只读反查平台订单的归属业务员。"""
+
+    # 此旧 SQL 适配器仍固定查 pdd 前缀，不能拿其空结果判断其他平台未入 ERP。
+    supported_platforms = frozenset({Platform.PDD})
 
     _QUERY = text(
         """
@@ -222,6 +232,8 @@ class ErpSalesOwnerResolver:
 
 class ErpWebSalesOwnerResolver:
     """登录旧管理系统，通过客户自动补全接口只读查询归属业务员。"""
+
+    supported_platforms = ALL_OWNER_PLATFORMS
 
     def __init__(
         self,
@@ -369,14 +381,23 @@ class ErpSalesOwnerSyncService:
         self.resolver = resolver
 
     @staticmethod
-    def _is_fast_refund_without_erp(order: AfterSalesOrder) -> bool:
+    def _is_fast_refund_without_erp(
+        order: AfterSalesOrder, platform: Platform | str = Platform.PDD,
+    ) -> bool:
         financial = str(getattr(order, "refund_financial_status", "") or "").upper()
+        if platform not in ALL_OWNER_PLATFORMS:
+            return False
+        if platform != Platform.PDD:
+            raw = str(getattr(order, "platform_order_status_text", "") or "").strip().upper()
+            if financial != "SUCCESS" or raw not in _EXPLICIT_UNSHIPPED_TEXT:
+                return False
         return (
             getattr(order, "after_sales_type", None) == AfterSalesType.ONLY_REFUND
             and getattr(order, "order_shipping_status", None)
             == ShippingStatus.UNSHIPPED
             and platform_refund_completed(order)
             and financial in {"", "UNKNOWN", "SUCCESS"}
+            and not getattr(order, "forward_tracking_number", None)
         )
 
     def sync_stale(
@@ -388,6 +409,7 @@ class ErpSalesOwnerSyncService:
         tmall_min_order_id: int = 0,
         platform_order_sns: Iterable[str] | None = None,
         dry_run: bool = False,
+        all_platforms: bool = False,
     ) -> SalesOwnerSyncResult:
         if limit < 1:
             raise ValueError("limit 必须大于 0")
@@ -414,6 +436,12 @@ class ErpSalesOwnerSyncService:
                 AfterSalesOrder.id >= tmall_min_order_id,
             ),
         )
+        supported = getattr(self.resolver, "supported_platforms", ALL_OWNER_PLATFORMS)
+        if all_platforms:
+            # 客户归属是只读能力，独立于模块1/2/3资金动作的天猫试运行范围。
+            platform_scope = and_(Shop.is_active == 1, Shop.platform.in_(supported))
+        else:
+            platform_scope = and_(platform_scope, Shop.platform.in_(supported))
         stale_total = int(
             self.session.scalar(
                 select(func.count())
@@ -448,23 +476,10 @@ class ErpSalesOwnerSyncService:
             .order_by(priority, eligible.c.synced_at.asc(), AfterSalesOrder.id.desc())
             .limit(limit)
         ).all())
-        fast_refund_shop_ids = {
-            order.shop_id
-            for order in orders
-            if self._is_fast_refund_without_erp(order)
-        }
-        pdd_shop_ids = (
-            set(
-                self.session.scalars(
-                    select(Shop.shop_id).where(
-                        Shop.platform == Platform.PDD,
-                        Shop.shop_id.in_(fast_refund_shop_ids),
-                    )
-                ).all()
-            )
-            if fast_refund_shop_ids
-            else set()
-        )
+        shop_ids = {getattr(order, "shop_id", None) for order in orders} - {None}
+        shops = self.session.scalars(select(Shop).where(Shop.shop_id.in_(shop_ids))).all() \
+            if shop_ids else []
+        platforms = {shop.shop_id: shop.platform for shop in shops}
         lookups = self.resolver.resolve_many(
             order.platform_order_sn for order in orders
         )
@@ -489,8 +504,9 @@ class ErpSalesOwnerSyncService:
                 lookup.status == "not_found"
                 and not lookup.customer_name
                 and not getattr(order, "erp_customer_name", None)
-                and getattr(order, "shop_id", None) in pdd_shop_ids
-                and self._is_fast_refund_without_erp(order)
+                and self._is_fast_refund_without_erp(
+                    order, platforms.get(getattr(order, "shop_id", None), ""),
+                )
             ):
                 lookup = SalesOwnerLookup(
                     None,
