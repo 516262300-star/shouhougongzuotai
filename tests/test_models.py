@@ -3,9 +3,11 @@ from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AfterSalesItem,
     AfterSalesOrder,
+    AutomationPollState,
     ErpReturnRowRecord,
     ErpReturnScrapDecision,
     ErpScrapSyncState,
+    MarketplaceSyncIssue,
     NegativeReview,
     PddSyncCursor,
     PlatformSyncCursor,
@@ -20,6 +22,8 @@ from aftersales_workbench.db.models import (
 def test_global_schema_contains_all_master_tables() -> None:
     expected = {
         Shop.__tablename__,
+        AutomationPollState.__tablename__,
+        MarketplaceSyncIssue.__tablename__,
         AfterSalesOrder.__tablename__,
         AfterSalesItem.__tablename__,
         ReturnScrapRecord.__tablename__,

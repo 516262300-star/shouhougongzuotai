@@ -6,8 +6,10 @@ from dataclasses import replace
 from typing import Protocol
 
 from aftersales_workbench.core.config import Settings
+from aftersales_workbench.integrations.marketplace.issues import SyncIssueRepository
 from aftersales_workbench.integrations.marketplace.models import (
     ConfiguredMarketplaceShop,
+    MarketplaceRefundIssue,
     MarketplaceShopSyncResult,
     NormalizedMarketplaceRefund,
 )
@@ -91,9 +93,7 @@ class MarketplaceRefundSyncService:
             ok=True,
         )
         now_at = int(self._now())
-        initial_hours = (
-            lookback_hours or self.settings.marketplace_sync_initial_lookback_hours
-        )
+        initial_hours = lookback_hours or self.settings.marketplace_sync_initial_lookback_hours
         with self.client_factory(shop) as client:
             platform_shop_id, shop_name = client.identity()
             effective_shop = replace(
@@ -103,6 +103,21 @@ class MarketplaceRefundSyncService:
             )
             shop_id = self.repository.upsert_shop(effective_shop)
             self.repository.commit()
+            issues = (
+                SyncIssueRepository(self.repository.session)
+                if callable(getattr(client, "fetch_refund", None))
+                else None
+            )
+            if issues is not None:
+                for refund_id in issues.due(shop_id):
+                    try:
+                        refund = client.fetch_refund(refund_id)
+                    except ValueError as exc:
+                        issues.record(shop_id, refund_id, str(exc))
+                    else:
+                        self.repository.upsert_refund(effective_shop, shop_id, refund)
+                        result.issues_recovered += int(issues.resolve(shop_id, refund_id))
+                    self.repository.commit()
             scope = f"refunds:{shop.platform.value.lower()}"
             cursor_end = self.repository.get_cursor_end(shop_id, scope)
             start_at = (
@@ -129,11 +144,26 @@ class MarketplaceRefundSyncService:
                     page_size=self.settings.marketplace_sync_page_size,
                 ):
                     result.records_seen += 1
+                    if isinstance(refund, MarketplaceRefundIssue):
+                        if issues is None:
+                            raise ValueError("平台未配置持久化异常单重试能力，禁止跳过")
+                        issues.record(shop_id, refund.after_sales_sn, refund.error)
+                        result.records_quarantined += 1
+                        continue
                     if self.repository.upsert_refund(effective_shop, shop_id, refund):
                         result.records_created += 1
                     else:
                         result.records_updated += 1
+                    if issues is not None:
+                        result.issues_recovered += int(
+                            issues.resolve(shop_id, refund.after_sales_sn)
+                        )
                 self.repository.advance_cursor(shop_id, scope, window_end)
                 self.repository.commit()
                 result.windows += 1
+            if issues is not None:
+                unresolved = issues.outstanding(shop_id)
+                if unresolved:
+                    result.ok = False
+                    result.error = f"正常售后同步已推进；另有 {unresolved} 笔异常单已隔离，等待重查"
         return result

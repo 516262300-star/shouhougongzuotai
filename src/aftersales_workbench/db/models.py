@@ -26,6 +26,34 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from aftersales_workbench.db.base import Base
 
 
+class AutomationPollState(Base):
+    """独立于订单更新时间的检查进度；避免同步或旧任务反复占用批次。"""
+
+    __tablename__ = "automation_poll_states"
+    __table_args__ = (Index("idx_poll_scope_due", "scope", "next_check_at"),)
+
+    scope: Mapped[str] = mapped_column(String(50), primary_key=True)
+    reference: Mapped[str] = mapped_column(String(100), primary_key=True)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    next_check_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+
+
+class MarketplaceSyncIssue(Base):
+    """只保存异常单标识和诊断，不保存买家资料、原始响应或凭据。"""
+
+    __tablename__ = "marketplace_sync_issues"
+    __table_args__ = (Index("idx_sync_issue_due", "shop_id", "resolved_at", "next_retry_at"),)
+
+    shop_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    after_sales_sn: Mapped[str] = mapped_column(String(100), primary_key=True)
+    last_error: Mapped[str] = mapped_column(String(500), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    next_retry_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class Platform(StrEnum):
     PDD = "PDD"
     TMALL = "TMALL"

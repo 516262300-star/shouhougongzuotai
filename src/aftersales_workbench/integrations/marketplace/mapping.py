@@ -27,6 +27,8 @@ def money(value: Any, *, field: str, divisor: int = 1) -> Decimal | None:
         amount = amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ZeroDivisionError) as exc:
         raise ValueError(f"{field} 不是有效金额") from exc
+    if not amount.is_finite():
+        raise ValueError(f"{field} 不是有限金额")
     if amount < 0:
         raise ValueError(f"{field} 不能小于 0")
     return amount

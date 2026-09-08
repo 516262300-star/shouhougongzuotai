@@ -43,7 +43,9 @@ from aftersales_workbench.workflows.module1_logistics import (
 from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
 )
+from aftersales_workbench.workflows.pdd_reconciliation import PddFailedRefundReconciler
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
+from aftersales_workbench.workflows.refund_preflight import verify_pdd_refund
 
 
 class WorkflowTransitionError(ValueError):
@@ -161,8 +163,7 @@ class ActionCoordinator:
                     order.order_shipping_status = ShippingStatus.IN_TRANSIT
                 else:
                     raise WorkflowTransitionError(
-                        "ERP_CHECK_FULFILLMENT 必须回填 NOT_PACKED、"
-                        "PACKED_NOT_SHIPPED 或 SHIPPED"
+                        "ERP_CHECK_FULFILLMENT 必须回填 NOT_PACKED、PACKED_NOT_SHIPPED 或 SHIPPED"
                     )
             elif action_type is AutomationActionType.ERP_CANCEL_UNSHIPPED_ORDER:
                 self._require_completed(result_code)
@@ -256,9 +257,7 @@ class ActionCoordinator:
                     or int(getattr(order, "id", 0) or 0) < self.tmall_min_order_id
                 ):
                     order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
-                    order.exception_type = (
-                        "天猫试运行：该店未配置退款子账号，等待人工审核"
-                    )
+                    order.exception_type = "天猫试运行：该店未配置退款子账号，等待人工审核"
                     self.session.commit()
                     return False
             next_action = (
@@ -332,9 +331,7 @@ class ActionCoordinator:
                             },
                         )
                     else:
-                        order.workflow_status = (
-                            WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
-                        )
+                        order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
                 else:
                     self._enqueue(
                         task.after_sales_sn,
@@ -358,9 +355,7 @@ class ActionCoordinator:
                     "platform_request_completed_at": datetime.now(UTC).isoformat(),
                 }
             elif action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
-                external_todo_id = str(
-                    (result_payload or {}).get("external_todo_id") or ""
-                ).strip()
+                external_todo_id = str((result_payload or {}).get("external_todo_id") or "").strip()
                 if not external_todo_id:
                     raise WorkflowTransitionError("ERP 待办成功结果缺少待办 ID")
                 task.payload = {
@@ -392,9 +387,7 @@ class ActionCoordinator:
 
     def _get_order(self, after_sales_sn: str) -> AfterSalesOrder:
         order = self.session.execute(
-            select(AfterSalesOrder).where(
-                AfterSalesOrder.after_sales_sn == after_sales_sn
-            )
+            select(AfterSalesOrder).where(AfterSalesOrder.after_sales_sn == after_sales_sn)
         ).scalar_one_or_none()
         if order is None:
             raise WorkflowTransitionError("关联售后单不存在")
@@ -420,9 +413,7 @@ class ActionCoordinator:
             return Platform(explicit)
         if getattr(order, "shop_id", None) is None:
             return Platform.PDD
-        value = self.session.scalar(
-            select(Shop.platform).where(Shop.shop_id == order.shop_id)
-        )
+        value = self.session.scalar(select(Shop.platform).where(Shop.shop_id == order.shop_id))
         if value is None:
             raise WorkflowTransitionError("关联售后单店铺平台不存在")
         return Platform(value)
@@ -433,9 +424,7 @@ class ActionCoordinator:
             return explicit
         if getattr(order, "shop_id", None) is None:
             return ""
-        value = self.session.scalar(
-            select(Shop.shop_code).where(Shop.shop_id == order.shop_id)
-        )
+        value = self.session.scalar(select(Shop.shop_code).where(Shop.shop_id == order.shop_id))
         return str(value or "")
 
     def _enqueue(
@@ -484,9 +473,7 @@ class ActionCoordinator:
                 task.last_error = "快递拦截失败，已取消自动退款"
                 changed = True
             elif status in {AutomationTaskStatus.RUNNING, AutomationTaskStatus.SUCCEEDED}:
-                raise WorkflowTransitionError(
-                    "平台退款任务已执行或正在执行，不能直接回填拦截失败"
-                )
+                raise WorkflowTransitionError("平台退款任务已执行或正在执行，不能直接回填拦截失败")
         return changed
 
 
@@ -517,6 +504,8 @@ class ExternalActionExecutor:
         invalid = set(selected).difference(self._EXTERNAL_TYPES)
         if invalid:
             raise ValueError("只允许执行企微通知、平台退款和 ERP 人工待办动作")
+        if not dry_run and AutomationActionType.PDD_AGREE_REFUND in selected:
+            PddFailedRefundReconciler(self.session, self.settings).run(limit=limit, dry_run=False)
         listed_tasks = self._list_pending(selected, limit)
         tasks, preflight_blocked = self._filter_notification_preflight(listed_tasks)
         result = ExternalActionRunResult(
@@ -544,8 +533,7 @@ class ExternalActionExecutor:
             for task in tasks
         )
         result.erp_todos = sum(
-            task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO
-            for task in tasks
+            task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO for task in tasks
         )
         if dry_run:
             return result
@@ -561,16 +549,17 @@ class ExternalActionExecutor:
             and str(task.payload.get("origin") or "") == "module1"
         )
         if module1_refunds:
+            preflight_ids = {task.id for task in tasks}
             self._refresh_module1_refund_gates(module1_refunds)
-            listed_tasks = self._list_pending(selected, limit)
-            tasks, preflight_blocked = self._filter_notification_preflight(
-                listed_tasks
-            )
+            # 复查期间新入队的任务未经过本次物流闸门，留到下轮，禁止混入。
+            listed_tasks = [
+                task for task in self._list_pending(selected, limit) if task.id in preflight_ids
+            ]
+            tasks, preflight_blocked = self._filter_notification_preflight(listed_tasks)
             result.scanned = len(listed_tasks)
             result.preflight_blocked = preflight_blocked
             result.qywx_notices = sum(
-                task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY
-                for task in tasks
+                task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY for task in tasks
             )
             result.pdd_refunds = sum(
                 task.action_type
@@ -589,8 +578,7 @@ class ExternalActionExecutor:
                 for task in tasks
             )
             result.erp_todos = sum(
-                task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO
-                for task in tasks
+                task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO for task in tasks
             )
         present_types = tuple({task.action_type for task in tasks})
         self._validate_write_gates(present_types)
@@ -610,8 +598,7 @@ class ExternalActionExecutor:
             AutomationActionType.TMALL_AGREE_RETURN_REFUND,
         }.intersection(present_types):
             configured_tmall_shops = {
-                shop.shop_code: shop
-                for shop in load_refund_enabled_tmall_shops(self.settings)
+                shop.shop_code: shop for shop in load_refund_enabled_tmall_shops(self.settings)
             }
         qywx_client = QywxWebhookClient(
             self.settings.qywx_intercept_webhook_url,
@@ -652,13 +639,10 @@ class ExternalActionExecutor:
                             )
                             pdd_clients[task.shop_code] = client
                         already_refunded = False
-                        if (
-                            task.action_type
-                            is AutomationActionType.PDD_AGREE_RETURN_REFUND
-                        ):
+                        if task.action_type is AutomationActionType.PDD_AGREE_RETURN_REFUND:
                             already_refunded = self._validate_module2_refund_task(task)
                         if not already_refunded:
-                            self._agree_pdd(client, task)
+                            already_refunded = self._agree_pdd(client, task)
                         result_payload = {
                             "platform_already_refunded": already_refunded,
                         }
@@ -682,10 +666,7 @@ class ExternalActionExecutor:
                             )
                             tmall_clients[task.shop_code] = client
                         already_refunded = False
-                        if (
-                            task.action_type
-                            is AutomationActionType.TMALL_AGREE_RETURN_REFUND
-                        ):
+                        if task.action_type is AutomationActionType.TMALL_AGREE_RETURN_REFUND:
                             already_refunded = self._validate_module2_refund_task(task)
                         response = (
                             {"already_refunded": True}
@@ -693,9 +674,7 @@ class ExternalActionExecutor:
                             else self._agree_tmall(client, shop.refund_credentials(), task)
                         )
                         result_payload = {
-                            "platform_already_refunded": bool(
-                                response.get("already_refunded")
-                            ),
+                            "platform_already_refunded": bool(response.get("already_refunded")),
                             "platform_request_id": (
                                 response.get("agree_request_id")
                                 or response.get("review_request_id")
@@ -743,9 +722,7 @@ class ExternalActionExecutor:
             ready.append(task)
         return ready, blocked
 
-    def _refresh_module1_refund_gates(
-        self, after_sales_sns: tuple[str, ...]
-    ) -> None:
+    def _refresh_module1_refund_gates(self, after_sales_sns: tuple[str, ...]) -> None:
         client = build_kuaidi100_client(self.settings)
         try:
             default_phone = (
@@ -761,8 +738,7 @@ class ExternalActionExecutor:
                 polling_policy=build_logistics_polling_policy(self.settings),
                 business_hours=build_refund_business_hours(self.settings),
                 tmall_refund_shop_codes={
-                    shop.shop_code
-                    for shop in load_refund_enabled_tmall_shops(self.settings)
+                    shop.shop_code for shop in load_refund_enabled_tmall_shops(self.settings)
                 },
                 tmall_min_order_id=self.settings.tmall_module123_min_order_id,
             ).run(
@@ -806,10 +782,8 @@ class ExternalActionExecutor:
         ):
             statement = statement.where(
                 or_(
-                    AftersalesActionTask.action_type
-                    != AutomationActionType.QYWX_INTERCEPT_NOTIFY,
-                    AftersalesActionTask.id
-                    >= self.settings.module1_notification_min_task_id,
+                    AftersalesActionTask.action_type != AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                    AftersalesActionTask.id >= self.settings.module1_notification_min_task_id,
                 )
             )
         return [
@@ -840,29 +814,21 @@ class ExternalActionExecutor:
         self.session.commit()
         return result.rowcount == 1
 
-    def _validate_write_gates(
-        self, action_types: tuple[AutomationActionType, ...]
-    ) -> None:
+    def _validate_write_gates(self, action_types: tuple[AutomationActionType, ...]) -> None:
         if (
             AutomationActionType.QYWX_INTERCEPT_NOTIFY in action_types
             and not self.settings.qywx_write_enabled
         ):
             raise WorkflowTransitionError("QYWX_WRITE_ENABLED=false，不能发送拦截通知")
-        if (
-            {
-                AutomationActionType.PDD_AGREE_REFUND,
-                AutomationActionType.PDD_AGREE_RETURN_REFUND,
-            }.intersection(action_types)
-            and not self.settings.pdd_write_enabled
-        ):
+        if {
+            AutomationActionType.PDD_AGREE_REFUND,
+            AutomationActionType.PDD_AGREE_RETURN_REFUND,
+        }.intersection(action_types) and not self.settings.pdd_write_enabled:
             raise WorkflowTransitionError("PDD_WRITE_ENABLED=false，不能执行平台退款")
-        if (
-            {
-                AutomationActionType.TMALL_AGREE_REFUND,
-                AutomationActionType.TMALL_AGREE_RETURN_REFUND,
-            }.intersection(action_types)
-            and not self.settings.tmall_write_enabled
-        ):
+        if {
+            AutomationActionType.TMALL_AGREE_REFUND,
+            AutomationActionType.TMALL_AGREE_RETURN_REFUND,
+        }.intersection(action_types) and not self.settings.tmall_write_enabled:
             raise WorkflowTransitionError("TMALL_WRITE_ENABLED=false，不能执行平台退款")
         if AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types:
             if not self.settings.erp_todo_publish_enabled:
@@ -870,9 +836,7 @@ class ExternalActionExecutor:
                     "ERP_TODO_PUBLISH_ENABLED=false，不能发布管理系统待办"
                 )
             if not self.settings.erp_write_enabled:
-                raise WorkflowTransitionError(
-                    "ERP_WRITE_ENABLED=false，不能发布管理系统待办"
-                )
+                raise WorkflowTransitionError("ERP_WRITE_ENABLED=false，不能发布管理系统待办")
 
     @staticmethod
     def _send_qywx(client: QywxWebhookClient, task: ExternalTaskSnapshot) -> None:
@@ -892,14 +856,29 @@ class ExternalActionExecutor:
             )
         )
 
-    @staticmethod
-    def _agree_pdd(client: PddClient, task: ExternalTaskSnapshot) -> None:
+    def _agree_pdd(self, client: PddClient, task: ExternalTaskSnapshot) -> bool:
         if not task.after_sales_sn.isdigit():
             raise WorkflowTransitionError("拼多多售后单号不是数字，已阻止退款")
+        order = self.session.scalar(
+            select(AfterSalesOrder).where(
+                AfterSalesOrder.after_sales_sn == task.after_sales_sn,
+            )
+        )
+        if order is None or order.platform_order_sn != task.platform_order_sn:
+            raise WorkflowTransitionError("退款任务关联订单已变化，禁止执行")
+        already_refunded = verify_pdd_refund(
+            client,
+            order,
+            origin=str(task.payload.get("origin") or ""),
+        )
+        if already_refunded:
+            order.platform_after_sales_status = 10
+            return True
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),
             order_sn=task.platform_order_sn,
         )
+        return False
 
     @staticmethod
     def _agree_tmall(
@@ -924,9 +903,7 @@ class ExternalActionExecutor:
         except (TypeError, ValueError) as exc:
             raise WorkflowTransitionError("模块 2 平台退款任务缺少有效收货记录") from exc
         order = self.session.scalar(
-            select(AfterSalesOrder).where(
-                AfterSalesOrder.after_sales_sn == task.after_sales_sn
-            )
+            select(AfterSalesOrder).where(AfterSalesOrder.after_sales_sn == task.after_sales_sn)
         )
         if order is None:
             raise WorkflowTransitionError("模块 2 平台退款任务关联售后单不存在")
@@ -954,13 +931,9 @@ class ExternalActionExecutor:
                 "WAIT_SELLER_AGREE",
                 "WAIT_SELLER_CONFIRM_GOODS",
             }:
-                raise WorkflowTransitionError(
-                    "天猫售后状态不属于可退款状态，已阻止模块 2 自动退款"
-                )
+                raise WorkflowTransitionError("天猫售后状态不属于可退款状态，已阻止模块 2 自动退款")
         elif order.platform_after_sales_status not in {2, 3}:
-            raise WorkflowTransitionError(
-                "平台售后状态不属于可退款状态，已阻止模块 2 自动退款"
-            )
+            raise WorkflowTransitionError("平台售后状态不属于可退款状态，已阻止模块 2 自动退款")
         return False
 
     def _build_erp_todo_client(self) -> ErpTodoClient:
@@ -986,18 +959,14 @@ class ExternalActionExecutor:
         payload = task.payload
         required = ("assignee", "started_at", "content", "marker")
         if any(not str(payload.get(key) or "").strip() for key in required):
-            raise WorkflowTransitionError(
-                "ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识"
-            )
+            raise WorkflowTransitionError("ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识")
         content = str(payload["content"])
         marker = str(payload["marker"])
         legacy_markers: tuple[str, ...] = ()
         origin = str(payload.get("origin") or "").strip()
         if origin in {"module1", "module3"}:
             module_label = "M1" if origin == "module1" else "M3"
-            public_marker = (
-                f"【售后工作台 {module_label}订单:{task.platform_order_sn}】"
-            )
+            public_marker = f"【售后工作台 {module_label}订单:{task.platform_order_sn}】"
             if marker != public_marker:
                 legacy_markers = (marker,)
                 content = content.replace(marker, public_marker)

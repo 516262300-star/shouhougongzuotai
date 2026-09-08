@@ -21,6 +21,7 @@ from aftersales_workbench.integrations.marketplace.mapping import (
 from aftersales_workbench.integrations.marketplace.models import (
     ConfiguredMarketplaceShop,
     MarketplaceApiError,
+    MarketplaceRefundIssue,
     NormalizedMarketplaceItem,
     NormalizedMarketplaceRefund,
 )
@@ -136,26 +137,31 @@ class Alibaba1688ReadClient(RetryingJsonClient):
             records = list_of_mappings(result.get("opOrderRefundModels"))
             for record in records:
                 refund_id = required_text(record.get("refundId"), field="refundId")
-                detail_body = self.get_refund_detail(refund_id)
-                detail_result = detail_body.get("result")
-                detail = (
-                    detail_result.get("opOrderRefundModelDetail")
-                    if isinstance(detail_result, dict)
-                    else None
-                )
-                if not isinstance(detail, dict):
-                    raise ValueError(f"1688 售后 {refund_id} 缺少退款详情")
-                order_id = required_text(detail.get("orderId"), field="orderId")
-                order_body = self.get_order_detail(order_id)
-                order = order_body.get("result")
-                if not isinstance(order, dict):
-                    order = {}
-                yield normalize_1688_refund(detail, order)
+                try:
+                    yield self.fetch_refund(refund_id)
+                except ValueError as exc:
+                    # 窗口推进前必须由同步器把异常标识落库；不丢弃、不造金额。
+                    yield MarketplaceRefundIssue(refund_id, str(exc)[:500])
             if len(records) < 20:
                 break
             page += 1
             if page > 1000:
                 raise ValueError("1688 退款分页超过 1000 页")
+
+    def fetch_refund(self, refund_id: str) -> NormalizedMarketplaceRefund:
+        detail_body = self.get_refund_detail(refund_id)
+        detail_result = detail_body.get("result")
+        detail = (
+            detail_result.get("opOrderRefundModelDetail")
+            if isinstance(detail_result, dict) else None
+        )
+        if not isinstance(detail, dict):
+            raise ValueError(f"1688 售后 {refund_id} 缺少退款详情")
+        if str(detail.get("refundId") or "") != refund_id:
+            raise ValueError("1688 返回的售后号与请求不一致")
+        order_id = required_text(detail.get("orderId"), field="orderId")
+        order = self.get_order_detail(order_id).get("result")
+        return normalize_1688_refund(detail, order if isinstance(order, dict) else {})
 
 
 def _shipping_status(order: dict[str, Any]) -> ShippingStatus:

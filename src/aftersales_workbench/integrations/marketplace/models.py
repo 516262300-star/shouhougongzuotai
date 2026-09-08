@@ -36,6 +36,12 @@ class ConfiguredMarketplaceShop:
 
 
 @dataclass(frozen=True, slots=True)
+class MarketplaceRefundIssue:
+    after_sales_sn: str
+    error: str
+
+
+@dataclass(frozen=True, slots=True)
 class NormalizedMarketplaceItem:
     sku_code: str
     applied_quantity: int
@@ -75,6 +81,8 @@ class MarketplaceShopSyncResult:
     records_created: int = 0
     records_updated: int = 0
     details_unavailable: int = 0
+    records_quarantined: int = 0
+    issues_recovered: int = 0
     error: str | None = None
 
     def safe_dict(self) -> dict[str, object]:
@@ -88,5 +96,7 @@ class MarketplaceShopSyncResult:
             "records_created": self.records_created,
             "records_updated": self.records_updated,
             "details_unavailable": self.details_unavailable,
+            "records_quarantined": self.records_quarantined,
+            "issues_recovered": self.issues_recovered,
             "error": self.error,
         }

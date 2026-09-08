@@ -91,6 +91,11 @@ class SqlAlchemyPddSyncRepository:
             )
             self.session.add(order)
         else:
+            existing_platform = self.session.scalar(
+                select(Shop.platform).where(Shop.shop_id == order.shop_id)
+            )
+            if existing_platform != Platform.PDD or order.shop_id != shop_id:
+                raise ValueError("拼多多售后号已属于其他平台或店铺，拒绝覆盖")
             order.shop_id = shop_id
             order.platform_order_sn = refund.platform_order_sn
             order.after_sales_type = refund.after_sales_type

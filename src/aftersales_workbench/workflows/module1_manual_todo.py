@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
 class ManualTodoEnqueueResult(StrEnum):
@@ -99,12 +100,8 @@ class Module1ManualTodoCandidate:
                 f"平台订单号：{self.platform_order_sn}",
                 f"发货运单：{self.tracking_number}",
             ]
-            return_order_sn = str(
-                erp_payload.get("erp_return_order_sn") or ""
-            ).strip()
-            receivable_amount = str(
-                erp_payload.get("erp_receivable_amount") or ""
-            ).strip()
+            return_order_sn = str(erp_payload.get("erp_return_order_sn") or "").strip()
+            receivable_amount = str(erp_payload.get("erp_receivable_amount") or "").strip()
             if return_order_sn:
                 details.append(f"ERP退货单：{return_order_sn}")
             if receivable_amount:
@@ -117,9 +114,7 @@ class Module1ManualTodoCandidate:
                 color = str(row.get("color") or "").strip()
                 quantity = str(row.get("quantity") or "").strip()
                 if product and quantity:
-                    row_summaries.append(
-                        f"{product}/{color or '颜色待核'}×{quantity}"
-                    )
+                    row_summaries.append(f"{product}/{color or '颜色待核'}×{quantity}")
                 if len(row_summaries) >= 5:
                     break
             if row_summaries:
@@ -136,9 +131,7 @@ class Module1ManualTodoCandidate:
                 f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
             )
         assignee = (
-            str(self.sales_owner or "").strip()
-            if self.sales_owner_status == "matched"
-            else ""
+            str(self.sales_owner or "").strip() if self.sales_owner_status == "matched" else ""
         )
         payload = {
             "origin": "module1",
@@ -159,9 +152,7 @@ class Module1ManualTodoCandidate:
                 {
                     "erp_match_status": erp_payload.get("erp_match_status"),
                     "erp_return_order_sn": erp_payload.get("erp_return_order_sn"),
-                    "erp_receivable_amount": erp_payload.get(
-                        "erp_receivable_amount"
-                    ),
+                    "erp_receivable_amount": erp_payload.get("erp_receivable_amount"),
                 }
             )
         return payload
@@ -233,8 +224,7 @@ class SqlAlchemyModule1ManualTodoRepository:
             AfterSalesOrder.workflow_status.in_(self._LOGISTICS_WORKFLOWS),
         )
         return_match_state = and_(
-            AfterSalesOrder.workflow_status
-            == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+            AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
             AfterSalesOrder.exception_type.in_(self._ACTIONABLE_RETURN_EXCEPTIONS),
         )
         statement = (
@@ -243,17 +233,14 @@ class SqlAlchemyModule1ManualTodoRepository:
             .outerjoin(
                 AftersalesActionTask,
                 and_(
-                    AftersalesActionTask.after_sales_sn
-                    == AfterSalesOrder.after_sales_sn,
-                    AftersalesActionTask.action_type
-                    == AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                    AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                    AftersalesActionTask.action_type == AutomationActionType.ERP_MATCH_RETURN_ORDER,
                 ),
             )
             .where(
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.platform_order_amount.is_not(None),
-                AfterSalesOrder.refund_amount
-                == AfterSalesOrder.platform_order_amount,
+                AfterSalesOrder.refund_amount == AfterSalesOrder.platform_order_amount,
                 AfterSalesOrder.order_shipping_status.in_(
                     (ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED)
                 ),
@@ -263,6 +250,12 @@ class SqlAlchemyModule1ManualTodoRepository:
             )
             .order_by(AfterSalesOrder.id)
             .limit(limit)
+        )
+        statement = due_first(
+            statement,
+            scope="module1_todo",
+            reference=AfterSalesOrder.after_sales_sn,
+            tie_breaker=AfterSalesOrder.id,
         )
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
@@ -293,6 +286,12 @@ class SqlAlchemyModule1ManualTodoRepository:
         max_attempts: int,
     ) -> ManualTodoEnqueueResult:
         action_type = AutomationActionType.ERP_CREATE_MANUAL_TODO
+        record_poll(
+            self.session,
+            scope="module1_todo",
+            reference=candidate.after_sales_sn,
+            delay_seconds=300,
+        )
         existing = self.session.execute(
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == candidate.after_sales_sn,
@@ -301,15 +300,11 @@ class SqlAlchemyModule1ManualTodoRepository:
         ).scalar_one_or_none()
         payload = candidate.task_payload(started_at=started_at)
         if existing is not None:
-            if (
-                AutomationTaskStatus(existing.action_status)
-                is AutomationTaskStatus.PENDING
-            ):
+            if AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.PENDING:
                 existing.payload = payload
                 return ManualTodoEnqueueResult.EXISTING
             if (
-                AutomationTaskStatus(existing.action_status)
-                is AutomationTaskStatus.FAILED
+                AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.FAILED
                 and int(existing.attempts or 0) < max_attempts
             ):
                 existing.action_status = AutomationTaskStatus.PENDING
@@ -323,9 +318,7 @@ class SqlAlchemyModule1ManualTodoRepository:
                 after_sales_sn=candidate.after_sales_sn,
                 action_type=action_type,
                 action_status=AutomationTaskStatus.PENDING,
-                idempotency_key=(
-                    f"module1:{candidate.after_sales_sn}:{action_type.value}"
-                ),
+                idempotency_key=(f"module1:{candidate.after_sales_sn}:{action_type.value}"),
                 payload=payload,
                 attempts=0,
             )

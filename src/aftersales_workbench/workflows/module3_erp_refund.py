@@ -25,6 +25,7 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
 )
+from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
 @dataclass(slots=True)
@@ -86,28 +87,38 @@ class Module3ErpRefundService:
         if refresh_seconds < 0 or refresh_seconds > 86400:
             raise ValueError("refresh_seconds 必须在 0–86400 之间")
         rows = self._list_candidates(
-            limit=500 if refresh_seconds else limit,
+            limit=limit,
             platform_order_sn=platform_order_sn,
         )
         result = Module3ErpRefundRunResult(
             dry_run=dry_run,
             details=[] if include_details else None,
         )
-        checked_at = datetime.now(UTC)
         for task, order in rows:
             if result.scanned >= limit:
                 break
-            if self._checked_recently(task, checked_at, refresh_seconds):
-                result.skipped_recent += 1
-                continue
             expected_items = expected_items_from_order(order)
-            lookup = self.client.inspect(
-                platform_order_sn=order.platform_order_sn,
-                after_sales_sn=order.after_sales_sn,
-                expected_amount=order.merchant_receivable_amount,
-                expected_items=expected_items,
-            )
             result.scanned += 1
+            try:
+                lookup = self.client.inspect(
+                    platform_order_sn=order.platform_order_sn,
+                    after_sales_sn=order.after_sales_sn,
+                    expected_amount=order.merchant_receivable_amount,
+                    expected_items=expected_items,
+                )
+            except Exception as exc:
+                self.session.rollback()
+                result.unavailable += 1
+                if not dry_run:
+                    record_poll(
+                        self.session,
+                        scope="module3_erp",
+                        reference=order.after_sales_sn,
+                        delay_seconds=max(refresh_seconds, 300),
+                        error=f"ERP 未发货核验失败（{type(exc).__name__}）",
+                    )
+                    self.session.commit()
+                continue
             count_field = (
                 "already_completed"
                 if lookup.status is ErpUnshippedRefundStatus.COMPLETED
@@ -119,6 +130,20 @@ class Module3ErpRefundService:
                     result.details.append(self._safe_detail(task, order, lookup))
                 continue
             self._save_lookup(task, lookup)
+            record_poll(
+                self.session,
+                scope="module3_erp",
+                reference=order.after_sales_sn,
+                delay_seconds=refresh_seconds,
+                error=lookup.message
+                if lookup.status
+                in {
+                    ErpUnshippedRefundStatus.BLOCKED,
+                    ErpUnshippedRefundStatus.NOT_FOUND,
+                    ErpUnshippedRefundStatus.UNAVAILABLE,
+                }
+                else None,
+            )
             if lookup.status is ErpUnshippedRefundStatus.READY:
                 lookup = self.client.execute(
                     lookup,
@@ -168,8 +193,7 @@ class Module3ErpRefundService:
             )
             .options(selectinload(AfterSalesOrder.items))
             .where(
-                AftersalesActionTask.action_type
-                == AutomationActionType.ERP_CHECK_FULFILLMENT,
+                AftersalesActionTask.action_type == AutomationActionType.ERP_CHECK_FULFILLMENT,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
@@ -183,10 +207,15 @@ class Module3ErpRefundService:
             .order_by(AftersalesActionTask.id)
             .limit(limit)
         )
-        if platform_order_sn:
-            statement = statement.where(
-                AfterSalesOrder.platform_order_sn == platform_order_sn
+        if not platform_order_sn:
+            statement = due_first(
+                statement,
+                scope="module3_erp",
+                reference=AfterSalesOrder.after_sales_sn,
+                tie_breaker=AftersalesActionTask.id,
             )
+        if platform_order_sn:
+            statement = statement.where(AfterSalesOrder.platform_order_sn == platform_order_sn)
         return list(self.session.execute(statement).all())
 
     @staticmethod
@@ -222,9 +251,7 @@ class Module3ErpRefundService:
                 str(lookup.refund_amount) if lookup.refund_amount is not None else None
             ),
             "erp_receivable_amount": (
-                str(lookup.receivable_amount)
-                if lookup.receivable_amount is not None
-                else None
+                str(lookup.receivable_amount) if lookup.receivable_amount is not None else None
             ),
         }
         task.last_error = (
@@ -309,14 +336,10 @@ class Module3ErpRefundService:
 
 def build_erp_unshipped_refund_client(settings: Settings) -> ErpWebUnshippedRefundClient:
     username = (
-        settings.erp_web_username.get_secret_value().strip()
-        if settings.erp_web_username
-        else ""
+        settings.erp_web_username.get_secret_value().strip() if settings.erp_web_username else ""
     )
     password = (
-        settings.erp_web_password.get_secret_value().strip()
-        if settings.erp_web_password
-        else ""
+        settings.erp_web_password.get_secret_value().strip() if settings.erp_web_password else ""
     )
     if not settings.erp_web_lookup_enabled or not username or not password:
         raise ErpUnshippedRefundConfigurationError(
