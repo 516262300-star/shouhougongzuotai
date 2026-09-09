@@ -411,6 +411,8 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 # 可选：改用其他本机端口
 & .\scripts\module1-autostart.ps1 -Action Install -WebPort 8080
 # 不再需要时再显式卸载
+2026-09-09 已补齐[重启恢复保护](docs/mysql-startup-path-recovery.md#登录守护增强)：安装时登记原库 UUID、原目录及联接路径，并备份启动 JSON；缺失联接只在原库身份一致时恢复，错误目标/缺失数据拒绝启动，绝不建空库。JSON 缺失或损坏可从有效副本恢复；Watch 配置读取失败不会退出，失败后30秒复查、正常仍按5分钟检查（计划任务 Run 模式仍由其5分钟调度负责）。启动顺序为 MySQL → Web → 业务后台；Web和业务后台分别尝试，彼此报错不阻塞另一项。文件锁防止重复守护/启动检查，最近启动检查写入 `.runtime/module1-autostart-status.json`。这些重试只涉及基础服务启动，不重试平台退款、企微消息或ERP资金请求。
+
 & .\scripts\module1-autostart.ps1 -Action Uninstall
 ```
 
@@ -435,7 +437,7 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 - 拼多多优惠后实付金额缺失：该售后不会进入拦截、人工待办或平台退款动作；先运行 `pdd-backfill-refund-amounts` 只读预演，确认接口能够返回金额后再使用 `--apply`；
 - 通知出口为 `disabled`：属于预期暂停，待办保留，选择发送方式后可以继续执行；
 - 快递 100 整体未配置或预检阶段异常：采用失败关闭，当前周期不发送任何通知；单票查询无结果时保留拦截通知但冻结自动退款，下个周期继续重查；
-- 电脑重启：登录当前 Windows 用户后，自启动守护会依次恢复 MySQL、后台运行器和工作台 Web；打开 `http://127.0.0.1:8000/` 即可。若 Web 未恢复，先执行 `& .\scripts\module1-autostart.ps1 -Action Run`；
+- 电脑重启：登录当前 Windows 用户后，自启动守护会先恢复 MySQL，再分别启动工作台 Web 与业务后台；打开 `http://127.0.0.1:8000/` 即可。启动目录入口可能受 Windows 登录启动延迟影响，不等于未登录时已启动的系统服务。若 Web 未恢复，先执行 `& .\scripts\module1-autostart.ps1 -Action Status` 查看最近启动检查，再按故障说明处理；
 - 自启动守护失败：执行 `& .\scripts\module1-autostart.ps1 -Action Status`，再检查 `.runtime/module1-autostart.log`；MySQL 启动失败另查 `.runtime/mysql-autostart-error.log`，Web 启动失败另查 `.runtime/workbench-web-error.log`。MySQL 原配置在开机阶段缺失时会自动从 `.runtime/mysql-defaults-backup.ini` 恢复并记入日志；若原配置与恢复副本都丢失，先手动启动 MySQL，再重新执行 `Install`。如果 MySQL、工作区路径或 Web 端口发生变化，也要重新执行 `Install` 刷新本机配置和恢复副本；
 - 重复启动：启停脚本通过 PID 文件阻止第二个后台进程。不要绕过脚本同时启动多个 `--forever` 实例。
 

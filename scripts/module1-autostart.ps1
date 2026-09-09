@@ -1,6 +1,6 @@
 ﻿[CmdletBinding()]
 param(
-    [ValidateSet('Install', 'Uninstall', 'Run', 'Watch', 'Status')]
+    [ValidateSet('Install', 'Uninstall', 'Run', 'Watch', 'StartWatch', 'StopWatch', 'Status')]
     [string]$Action = 'Status',
     [string]$MySqlExe,
     [string]$MySqlDefaultsFile,
@@ -16,6 +16,8 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $runtimeDir = Join-Path $projectRoot '.runtime'
 $configFile = Join-Path $runtimeDir 'module1-autostart.json'
+$configBackupFile = Join-Path $runtimeDir 'module1-autostart.backup.json'
+$stateFile = Join-Path $runtimeDir 'module1-autostart-status.json'
 $mysqlDefaultsBackupFile = Join-Path $runtimeDir 'mysql-defaults-backup.ini'
 $mysqlStdoutLog = Join-Path $runtimeDir 'mysql-autostart.log'
 $mysqlStderrLog = Join-Path $runtimeDir 'mysql-autostart-error.log'
@@ -130,14 +132,157 @@ function Get-RunningMySqlConfiguration {
     return $null
 }
 
-function Get-AutostartConfiguration {
-    if (-not (Test-Path -LiteralPath $configFile)) {
-        throw "缺少本机启动配置，请先执行：& .\scripts\module1-autostart.ps1 -Action Install"
+function Read-AutostartConfiguration {
+    param([string]$Path)
+    $config = Get-Content -LiteralPath $Path -Raw -Encoding utf8 | ConvertFrom-Json
+    foreach ($name in @('MySqlExe', 'MySqlDefaultsFile', 'MySqlHost')) {
+        if (-not $config.$name) { throw "启动配置缺少字段：$name" }
     }
-    # 安装动作可能由 PowerShell 7 执行，其 UTF-8 输出默认不带 BOM。
-    # Windows PowerShell 5.1 守护进程若按系统代码页读取，中文项目路径会
-    # 乱码并让 JSON 中的反斜杠转义失效，因此读取时必须显式指定 UTF-8。
-    return Get-Content -LiteralPath $configFile -Raw -Encoding utf8 | ConvertFrom-Json
+    if ([int]$config.MySqlPort -lt 1 -or [int]$config.MySqlPort -gt 65535 -or
+        [int]$config.WatchdogMinutes -lt 1 -or [int]$config.WatchdogMinutes -gt 60) {
+        throw '启动配置端口或守护间隔无效'
+    }
+    if ($null -ne $config.PSObject.Properties['WebPort'] -and
+        ([int]$config.WebPort -lt 1 -or [int]$config.WebPort -gt 65535)) {
+        throw '启动配置 Web 端口无效'
+    }
+    foreach ($pathName in @('MySqlExe', 'MySqlDefaultsFile')) {
+        if (-not [System.IO.Path]::IsPathRooted([string]$config.$pathName)) {
+            throw "启动配置路径必须是绝对路径：$pathName"
+        }
+    }
+    $identityNames = @('MySqlDataDirectory', 'MySqlDataSourceDirectory', 'MySqlServerUuid')
+    $identityCount = @($identityNames | Where-Object { $config.$_ }).Count
+    if ($identityCount -ne 0 -and $identityCount -ne 3) { throw '数据库身份配置不完整' }
+    return $config
+}
+
+function Get-AutostartConfiguration {
+    param([switch]$ReadOnly)
+    try { return Read-AutostartConfiguration -Path $configFile }
+    catch {
+        # 只回退到本机安装时保存的有效副本；不生成默认配置、更不创建空库。
+        try { $backup = Read-AutostartConfiguration -Path $configBackupFile }
+        catch { throw '本机启动配置与恢复副本均不可用，请检查 .runtime 中的配置文件' }
+        if ($ReadOnly) { return $backup }
+        if (Test-Path -LiteralPath $configFile -PathType Leaf) {
+            $invalidCopy = "$configFile.invalid.$([guid]::NewGuid().ToString('N'))"
+            Copy-Item -LiteralPath $configFile -Destination $invalidCopy
+        }
+        Copy-Item -LiteralPath $configBackupFile -Destination $configFile -Force
+        Write-AutostartLog '本机启动配置缺失或损坏，已从有效副本恢复；原损坏文件已保留'
+        return $backup
+    }
+}
+
+function Get-MySqlDataDirectory {
+    param([string]$DefaultsFile)
+    $inServerSection = $false
+    $dataPaths = @()
+    foreach ($line in (Get-Content -LiteralPath $DefaultsFile -Encoding utf8)) {
+        $value = $line.Trim()
+        if ($value -match '^\[(.+)\]$') { $inServerSection = $Matches[1] -eq 'mysqld' }
+        elseif ($inServerSection -and $value -match '^datadir\s*=\s*(.+)$') {
+            $dataPaths += $Matches[1].Trim().Trim('"').Trim("'")
+        }
+        elseif ($value -match '^!include') { throw '配置包含外部 include，需人工确认数据目录' }
+    }
+    if ($dataPaths.Count -ne 1 -or -not [System.IO.Path]::IsPathRooted($dataPaths[0])) {
+        throw 'MySQL 配置必须明确指定唯一的绝对数据目录，禁止猜测或初始化'
+    }
+    return [System.IO.Path]::GetFullPath($dataPaths[0]).TrimEnd('\', '/')
+}
+
+function Get-MySqlServerUuid {
+    param([string]$DataDirectory)
+    $identity = Get-Content -LiteralPath (Join-Path $DataDirectory 'auto.cnf') -Raw -Encoding utf8
+    if ($identity -notmatch '(?m)^server-uuid\s*=\s*([0-9a-fA-F-]{36})\s*$') {
+        throw '原数据目录中没有可核验的 MySQL 身份'
+    }
+    $uuid = [guid]::Parse($Matches[1]).ToString()
+    foreach ($dataFile in @('ibdata1', 'mysql.ibd')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $DataDirectory $dataFile) -PathType Leaf)) {
+            throw "原数据文件缺失：$dataFile；禁止自动初始化或恢复旧数据覆盖"
+        }
+    }
+    return $uuid
+}
+
+function Get-MySqlDataIdentity {
+    param([string]$DefaultsFile)
+    $dataPath = Get-MySqlDataDirectory -DefaultsFile $DefaultsFile
+    $item = Get-Item -LiteralPath $dataPath -Force
+    $source = $dataPath
+    if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        if ($item.LinkType -ne 'Junction') { throw '只支持已核实的目录联接，不跟随未知链接' }
+        $source = [System.IO.Path]::GetFullPath([string]$item.Target).TrimEnd('\', '/')
+    }
+    $sourceItem = Get-Item -LiteralPath $source -Force
+    if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw '原库目标必须为实际目录，不允许多层联接'
+    }
+    return @{
+        MySqlDataDirectory = $dataPath
+        MySqlDataSourceDirectory = $source
+        MySqlServerUuid = Get-MySqlServerUuid -DataDirectory $source
+    }
+}
+
+function Restore-MySqlDataDirectory {
+    param($Config)
+    $dataPath = Get-MySqlDataDirectory -DefaultsFile $Config.MySqlDefaultsFile
+    if (-not $Config.MySqlServerUuid) {
+        # 兼容未登记身份的旧部署：只能使用已存在的目录，绝不凭空修复。
+        Get-MySqlServerUuid -DataDirectory $dataPath | Out-Null
+        return
+    }
+    $pinnedPath = [System.IO.Path]::GetFullPath([string]$Config.MySqlDataDirectory).TrimEnd('\', '/')
+    $source = [System.IO.Path]::GetFullPath([string]$Config.MySqlDataSourceDirectory).TrimEnd('\', '/')
+    if ($dataPath -ne $pinnedPath) { throw 'MySQL 配置数据目录与登记路径不同，暂停启动' }
+    $sourceItem = Get-Item -LiteralPath $source -Force
+    if ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+        throw '登记的原库目标已变为联接，暂停启动'
+    }
+    if ((Get-MySqlServerUuid -DataDirectory $source) -ne $Config.MySqlServerUuid) {
+        throw '原库 UUID 与登记身份不一致，禁止连接另一份数据库'
+    }
+    $item = Get-Item -LiteralPath $dataPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) {
+        if ($dataPath -eq $source -or $dataPath -match '[^\x00-\x7F]') {
+            throw '只能恢复已登记的英文路径联接，不能创建原库'
+        }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $dataPath) -Force | Out-Null
+        New-Item -ItemType Junction -Path $dataPath -Target $source | Out-Null
+        Write-AutostartLog '已核验原库身份并恢复缺失的数据目录联接，未移动数据'
+    }
+    $actual = Get-MySqlDataIdentity -DefaultsFile $Config.MySqlDefaultsFile
+    if ($actual.MySqlDataSourceDirectory -ne $source -or $actual.MySqlServerUuid -ne $Config.MySqlServerUuid) {
+        throw '现有数据目录指向错误目标，禁止覆盖或自动切库'
+    }
+}
+
+function Open-AutostartLock {
+    param([string]$Name)
+    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    try {
+        return [System.IO.File]::Open((Join-Path $runtimeDir $Name),
+            [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None)
+    }
+    catch [System.IO.IOException] {
+        if (($_.Exception.HResult -band 0xffff) -in @(32, 33)) { return $null }
+        throw
+    }
+}
+
+function Write-AutostartState {
+    param([string]$Status, [string]$Message = '')
+    [ordered]@{
+        checked_at = (Get-Date).ToString('o')
+        status = $Status
+        message = $Message
+        checker_pid = $PID
+    } | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding utf8
 }
 
 function Restore-MySqlDefaultsFile {
@@ -176,6 +321,7 @@ function Start-WorkbenchMySql {
         throw "MySQL 程序不存在：$($Config.MySqlExe)"
     }
     Restore-MySqlDefaultsFile -Config $Config
+    Restore-MySqlDataDirectory -Config $Config
     $mysqlArgument = "--defaults-file=`"$($Config.MySqlDefaultsFile)`""
     $lastExitCode = $null
     for ($startAttempt = 1; $startAttempt -le 3; $startAttempt++) {
@@ -381,12 +527,35 @@ function Get-WatchdogProcess {
 }
 
 function Start-AftersalesRuntime {
-    $config = Get-AutostartConfiguration
-    $mysqlReady = Test-TcpPort -HostName $config.MySqlHost -Port $config.MySqlPort
-    if (-not $mysqlReady) {
-        Start-WorkbenchMySql -Config $config
+    $cycleLock = Open-AutostartLock -Name 'module1-autostart-cycle.lock'
+    if ($null -eq $cycleLock) {
+        Write-Output '已有启动检查正在执行，本次不重复启动'
+        return
     }
+    try {
+        $config = Get-AutostartConfiguration
+        Write-AutostartState -Status 'checking'
+        $mysqlReady = Test-TcpPort -HostName $config.MySqlHost -Port $config.MySqlPort
+        if (-not $mysqlReady) { Start-WorkbenchMySql -Config $config }
+        $failures = @()
+        # Web 与后台各自启动：后台故障不能让用户连排查页面都打不开。
+        try { Start-WorkbenchWeb -Config $config | Out-Null }
+        catch { $failures += "Web：$($_.Exception.Message)" }
+        try {
+            Start-WorkbenchWorker
+        }
+        catch { $failures += "后台：$($_.Exception.Message)" }
+        if ($failures.Count) { throw ($failures -join '；') }
+        Write-AutostartState -Status 'healthy'
+    }
+    catch {
+        Write-AutostartState -Status 'failed' -Message $_.Exception.Message
+        throw
+    }
+    finally { $cycleLock.Dispose() }
+}
 
+function Start-WorkbenchWorker {
     $worker = Get-Module1WorkerProcess
     if ($null -eq $worker) {
         & $workerScript -Action Start | ForEach-Object { Write-AutostartLog $_ }
@@ -397,7 +566,6 @@ function Start-AftersalesRuntime {
         Write-AutostartLog "售后后台运行器（模块1+模块2+模块3）守护启动成功，PID=$($worker.Id)"
     }
 
-    Start-WorkbenchWeb -Config $config | Out-Null
 }
 
 function Start-WatchdogProcess {
@@ -418,29 +586,38 @@ function Start-WatchdogProcess {
         -WorkingDirectory $projectRoot `
         -WindowStyle Hidden `
         -PassThru
-    Set-Content -LiteralPath $watchdogPidFile -Value $process.Id -Encoding ascii
-    Start-Sleep -Milliseconds 500
-    if ($process.HasExited) {
-        throw "模块1守护进程启动失败，请查看 $logFile"
+    # PID 由持有单例锁的 Watch 自己写入，启动器不得覆盖真正的守护进程 PID。
+    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+        Start-Sleep -Milliseconds 500
+        $registered = Get-WatchdogProcess
+        if ($null -ne $registered) { return $registered.ProcessId }
+        $process.Refresh()
+        if ($process.HasExited) {
+            throw "模块1守护进程启动失败，请查看 $logFile"
+        }
     }
-    return $process.Id
+    throw "守护进程15秒内未登记 PID，请检查 $logFile，勿重复启动"
 }
 
 function Start-WatchdogLoop {
-    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
-    Set-Content -LiteralPath $watchdogPidFile -Value $PID -Encoding ascii
-    Remove-Item -LiteralPath $watchdogStopFile -Force -ErrorAction SilentlyContinue
-    $config = Get-AutostartConfiguration
-    Write-AutostartLog "无管理员权限守护进程已启动，PID=$PID"
+    $existing = Get-WatchdogProcess
+    if ($null -ne $existing -and $existing.ProcessId -ne $PID) { return }
+    $watchLock = Open-AutostartLock -Name 'module1-autostart-watch.lock'
+    if ($null -eq $watchLock) { return }
     try {
+        Set-Content -LiteralPath $watchdogPidFile -Value $PID -Encoding ascii
+        Remove-Item -LiteralPath $watchdogStopFile -Force -ErrorAction SilentlyContinue
+        Write-AutostartLog "无管理员权限守护进程已启动，PID=$PID"
         while (-not (Test-Path -LiteralPath $watchdogStopFile)) {
+            $waitSeconds = 30
             try {
                 Start-AftersalesRuntime
+                $config = Get-AutostartConfiguration
+                $waitSeconds = [int]$config.WatchdogMinutes * 60
             }
             catch {
-                Write-AutostartLog "守护检查失败：$($_.Exception.Message)"
+                Write-AutostartLog "守护检查失败，30秒后重查：$($_.Exception.Message)"
             }
-            $waitSeconds = [int]$config.WatchdogMinutes * 60
             for ($elapsed = 0; $elapsed -lt $waitSeconds; $elapsed++) {
                 if (Test-Path -LiteralPath $watchdogStopFile) {
                     break
@@ -453,6 +630,7 @@ function Start-WatchdogLoop {
         Remove-Item -LiteralPath $watchdogPidFile -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $watchdogStopFile -Force -ErrorAction SilentlyContinue
         Write-AutostartLog '无管理员权限守护进程已停止'
+        $watchLock.Dispose()
     }
 }
 
@@ -470,11 +648,13 @@ function Install-AutostartTask {
     }
     $resolvedMySqlExe = (Resolve-Path -LiteralPath $MySqlExe).Path
     $resolvedDefaultsFile = (Resolve-Path -LiteralPath $MySqlDefaultsFile).Path
+    # 身份不明确时先拒绝安装，不能先覆盖旧的有效恢复副本。
+    $dataIdentity = Get-MySqlDataIdentity -DefaultsFile $resolvedDefaultsFile
     Copy-Item `
         -LiteralPath $resolvedDefaultsFile `
         -Destination $mysqlDefaultsBackupFile `
         -Force
-    [ordered]@{
+    $savedConfig = [ordered]@{
         MySqlExe = $resolvedMySqlExe
         MySqlDefaultsFile = $resolvedDefaultsFile
         MySqlDefaultsBackupFile = $mysqlDefaultsBackupFile
@@ -485,7 +665,10 @@ function Install-AutostartTask {
         WatchdogMinutes = $WatchdogMinutes
         InstalledAt = (Get-Date).ToString('s')
         InstalledBy = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    } | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
+    }
+    foreach ($key in $dataIdentity.Keys) { $savedConfig[$key] = $dataIdentity[$key] }
+    $savedConfig | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
+    Copy-Item -LiteralPath $configFile -Destination $configBackupFile -Force
 
     $scriptPath = [System.IO.Path]::GetFullPath($PSCommandPath)
     $powershellExe = Get-PowerShellExecutable
@@ -562,6 +745,13 @@ function Install-AutostartTask {
 }
 
 function Show-AutostartStatus {
+    if (Test-Path -LiteralPath $stateFile) {
+        try {
+            $state = Get-Content -LiteralPath $stateFile -Raw -Encoding utf8 | ConvertFrom-Json
+            Write-Output "最近启动检查：$($state.checked_at)，$($state.status) $($state.message)"
+        }
+        catch { Write-Output '最近启动检查状态暂时不可读取' }
+    }
     $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
     if ($null -eq $task) {
         Write-Output '开机自启动计划任务：未安装'
@@ -586,7 +776,7 @@ function Show-AutostartStatus {
         Write-Output '无管理员权限守护进程：未运行'
     }
     if (Test-Path -LiteralPath $configFile) {
-        $config = Get-AutostartConfiguration
+        $config = Get-AutostartConfiguration -ReadOnly
         $mysqlReady = Test-TcpPort -HostName $config.MySqlHost -Port $config.MySqlPort
         Write-Output "MySQL：$(if ($mysqlReady) { '运行中' } else { '未运行' })"
     }
@@ -601,7 +791,7 @@ function Show-AutostartStatus {
         Write-Output "售后后台运行器（模块1+模块2+模块3）：运行中，PID=$($worker.Id)"
     }
     if (Test-Path -LiteralPath $configFile) {
-        $endpoint = Get-WorkbenchWebEndpoint -Config (Get-AutostartConfiguration)
+        $endpoint = Get-WorkbenchWebEndpoint -Config (Get-AutostartConfiguration -ReadOnly)
         $webProcess = Get-WorkbenchWebProcess
         $webHealthy = Test-WorkbenchWebHealth -Endpoint $endpoint
         if ($webHealthy -and $null -ne $webProcess) {
@@ -640,6 +830,13 @@ switch ($Action) {
     }
     'Watch' {
         Start-WatchdogLoop
+    }
+    'StartWatch' {
+        Start-WatchdogProcess | Out-Null
+    }
+    'StopWatch' {
+        New-Item -ItemType File -Path $watchdogStopFile -Force | Out-Null
+        Write-Output '已请求守护进程自然退出，不停止数据库、网页或业务后台'
     }
     'Status' {
         Show-AutostartStatus
