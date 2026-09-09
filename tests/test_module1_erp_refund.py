@@ -71,6 +71,11 @@ class _FakeSession:
     def execute(self, _statement):
         self.updates += 1
 
+    def scalar(self, statement):
+        # 正常订单的隔离查询；真实 SQL 隔离行为在集成测试中验证。
+        assert "marketplace_sync_issues" in str(statement)
+        return 1
+
     def commit(self) -> None:
         self.commits += 1
 

@@ -17,6 +17,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +89,7 @@ class SqlAlchemyModule1Repository:
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
+                sync_safe_order_filter(),
                 or_(
                     Shop.platform == Platform.PDD,
                     and_(

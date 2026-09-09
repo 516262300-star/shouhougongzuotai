@@ -40,6 +40,7 @@ from aftersales_workbench.workflows.module2 import (
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 from aftersales_workbench.workflows.polling import due_first, record_poll
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 @dataclass(slots=True)
@@ -240,6 +241,7 @@ class Module2ErpIntakeService:
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .options(selectinload(AfterSalesOrder.items))
             .where(
+                sync_safe_order_filter(),
                 or_(
                     and_(
                         Shop.platform == Platform.PDD,
@@ -289,6 +291,7 @@ class Module2ErpIntakeService:
             select(AfterSalesOrder)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
+                sync_safe_order_filter(),
                 or_(
                     and_(
                         Shop.platform == Platform.PDD,

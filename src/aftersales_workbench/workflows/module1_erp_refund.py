@@ -30,6 +30,10 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
 )
+from aftersales_workbench.workflows.sync_safety import (
+    require_sync_safe_order,
+    sync_safe_order_filter,
+)
 
 
 @dataclass(slots=True)
@@ -168,6 +172,7 @@ class Module1ErpRefundService:
                 continue
             self._save_preflight(task, refund_lookup)
             if refund_lookup.status is ErpUnshippedRefundStatus.READY:
+                require_sync_safe_order(self.session, order.after_sales_sn)
                 completed = self.refund_client.execute_shipped_return(
                     refund_lookup,
                     after_sales_sn=order.after_sales_sn,
@@ -215,6 +220,7 @@ class Module1ErpRefundService:
             )
             .options(selectinload(AfterSalesOrder.items))
             .where(
+                sync_safe_order_filter(),
                 AftersalesActionTask.action_type
                 == AutomationActionType.ERP_MATCH_RETURN_ORDER,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,

@@ -28,6 +28,10 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpWebUnshippedRefundClient,
 )
 from aftersales_workbench.workflows.polling import due_first, record_poll
+from aftersales_workbench.workflows.sync_safety import (
+    require_sync_safe_order,
+    sync_safe_order_filter,
+)
 
 
 @dataclass(slots=True)
@@ -147,6 +151,7 @@ class Module3ErpRefundService:
                 else None,
             )
             if lookup.status is ErpUnshippedRefundStatus.READY:
+                require_sync_safe_order(self.session, order.after_sales_sn)
                 lookup = self.client.execute(
                     lookup,
                     after_sales_sn=order.after_sales_sn,
@@ -196,6 +201,7 @@ class Module3ErpRefundService:
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .options(selectinload(AfterSalesOrder.items))
             .where(
+                sync_safe_order_filter(),
                 # 当前客户端 inspect/execute 固定查拼多多 ERP 页面，不允许跨平台借用。
                 Shop.platform == Platform.PDD,
                 AftersalesActionTask.action_type == AutomationActionType.ERP_CHECK_FULFILLMENT,

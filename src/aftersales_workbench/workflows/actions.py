@@ -59,6 +59,11 @@ from aftersales_workbench.workflows.module3_shipping_guard import (
 from aftersales_workbench.workflows.pdd_reconciliation import PddFailedRefundReconciler
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 from aftersales_workbench.workflows.refund_preflight import verify_pdd_refund
+from aftersales_workbench.workflows.sync_safety import (
+    require_sync_safe_order,
+    sync_safe_order_filter,
+    sync_safe_task_filter,
+)
 
 
 class WorkflowTransitionError(ValueError):
@@ -515,9 +520,13 @@ class ExternalActionExecutor:
         AutomationActionType.ERP_CREATE_MANUAL_TODO,
     )
 
-    def __init__(self, session: Session, settings: Settings) -> None:
+    def __init__(
+        self, session: Session, settings: Settings, *,
+        pdd_shop_codes: tuple[str, ...] | None = None,
+    ) -> None:
         self.session = session
         self.settings = settings
+        self.pdd_shop_codes = pdd_shop_codes
 
     def run(
         self,
@@ -836,6 +845,7 @@ class ExternalActionExecutor:
             .where(
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AftersalesActionTask.action_type.in_(action_types),
+                sync_safe_order_filter(self.pdd_shop_codes),
             )
             .order_by(AftersalesActionTask.id)
             .limit(limit)
@@ -868,6 +878,7 @@ class ExternalActionExecutor:
             .where(
                 AftersalesActionTask.id == task_id,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                sync_safe_task_filter(self.pdd_shop_codes),
             )
             .values(
                 action_status=AutomationTaskStatus.RUNNING,
@@ -930,6 +941,7 @@ class ExternalActionExecutor:
         )
         if order is None or order.platform_order_sn != task.platform_order_sn:
             raise WorkflowTransitionError("退款任务关联订单已变化，禁止执行")
+        require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         already_refunded = verify_pdd_refund(
             client,
             order,
@@ -938,6 +950,7 @@ class ExternalActionExecutor:
         if already_refunded:
             order.platform_after_sales_status = 10
             return True
+        require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),
             order_sn=task.platform_order_sn,

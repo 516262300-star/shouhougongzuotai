@@ -29,6 +29,7 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     is_kuaidi100_no_trace_error,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 _CARRIER_ALIASES = {
     "极兔速递": "jtexpress",
@@ -394,6 +395,7 @@ class Module1LogisticsGateService:
         statement = (
             select(AfterSalesOrder)
             .where(
+                sync_safe_order_filter(),
                 AfterSalesOrder.workflow_status.in_(self._CANDIDATE_STATUSES),
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",

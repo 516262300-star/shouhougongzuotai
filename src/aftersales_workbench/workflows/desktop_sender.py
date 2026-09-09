@@ -20,6 +20,7 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlan
+from aftersales_workbench.workflows.sync_safety import require_sync_safe_order
 
 
 class DesktopNoticeSendError(RuntimeError):
@@ -378,10 +379,13 @@ class DesktopNoticeSendService:
         session: Session,
         gateway: DesktopWeComGateway | None,
         ledger: DesktopNoticeLedger,
+        *,
+        pdd_shop_codes: tuple[str, ...] | None = None,
     ) -> None:
         self.session = session
         self.gateway = gateway
         self.ledger = ledger
+        self.pdd_shop_codes = pdd_shop_codes
 
     def run(self, plans: list[DesktopNoticePlan]) -> DesktopNoticeSendResult:
         result = DesktopNoticeSendResult(scanned=len(plans))
@@ -468,6 +472,15 @@ class DesktopNoticeSendService:
         if AutomationTaskStatus(task.action_status) is not AutomationTaskStatus.PENDING:
             raise DesktopBeforePasteError("动作任务不再是 PENDING，禁止输入消息")
         group = self._notification_group(task_id)
+        try:
+            require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
+            for group_task, group_order in group:
+                if AutomationTaskStatus(group_task.action_status) is AutomationTaskStatus.PENDING:
+                    require_sync_safe_order(
+                        self.session, group_order.after_sales_sn, self.pdd_shop_codes,
+                    )
+        except ValueError as exc:
+            raise DesktopBeforePasteError(str(exc)) from exc
         if any(
             AutomationTaskStatus(group_task.action_status)
             is AutomationTaskStatus.RUNNING

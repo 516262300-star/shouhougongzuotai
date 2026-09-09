@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.module3_shipping_guard import tmall_unshipped_filter
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +94,7 @@ class SqlAlchemyModule3Repository:
             select(AfterSalesOrder.after_sales_sn, AfterSalesOrder.order_shipping_status)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
+                sync_safe_order_filter(),
                 or_(
                     and_(
                         Shop.platform == Platform.PDD,

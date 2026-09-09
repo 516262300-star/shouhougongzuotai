@@ -77,6 +77,10 @@ class _FakeSession:
     def get(self, _model, task_id):
         return self.tasks.get(task_id)
 
+    def scalar(self, statement):
+        # 此发送状态机测试只模拟无隔离订单；隔离 SQL 由真实 SQLite 集成测试覆盖。
+        return self.execute(statement).scalar_one_or_none()
+
     def execute(self, statement):
         descriptions = statement.column_descriptions
         params = {str(value).strip().upper() for value in statement.compile().params.values()}

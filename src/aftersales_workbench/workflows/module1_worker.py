@@ -183,7 +183,17 @@ class Module1WorkerCycleResult:
             "sync": {
                 "status": self.sync.status if self.sync else "missing",
                 "shops_ok": sum(bool(shop.get("ok")) for shop in sync_shops),
-                "shops_failed": sum(not bool(shop.get("ok")) for shop in sync_shops),
+                "shops_failed": sum(
+                    not (shop.get("ok") or shop.get("normal_sync_completed"))
+                    for shop in sync_shops
+                ),
+                "shops_warning": sum(
+                    not shop.get("ok") and bool(shop.get("normal_sync_completed"))
+                    for shop in sync_shops
+                ),
+                "automation_shop_codes": list(
+                    self.sync.details.get("automation_shop_codes", []) if self.sync else []
+                ),
                 "records_seen": sum(int(shop.get("records_seen") or 0) for shop in sync_shops),
                 "records_created": sum(
                     int(shop.get("records_created") or 0) for shop in sync_shops
@@ -443,12 +453,13 @@ class Module1WorkerRuntime:
         self.shop_codes = self.pdd_shop_codes + self.tmall_shop_codes
         self._notification_preflight_completed = False
         self._pdd_sync_completed = False
+        self._pdd_ready_shop_codes: tuple[str, ...] = ()
         self._tmall_sync_completed = False
 
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
         result.sync = self._capture(self._sync)
-        self._pdd_sync_completed = result.sync.status == "completed"
+        self._accept_pdd_sync_result(result.sync)
         result.tmall_sync = self._capture(self._sync_tmall)
         self._tmall_sync_completed = result.tmall_sync.status == "completed"
         result.marketplace_sync = self._capture(self._sync_marketplaces)
@@ -731,9 +742,30 @@ class Module1WorkerRuntime:
         )
 
     @property
+    def _active_pdd_shop_codes(self) -> tuple[str, ...]:
+        return self._pdd_ready_shop_codes if self._pdd_sync_completed else ()
+
+    def _accept_pdd_sync_result(self, result: WorkerStageResult) -> None:
+        rows = result.details.get("shops")
+        if isinstance(rows, list):
+            allowed = {
+                row.get("shop_code") for row in rows
+                if row.get("ok") or row.get("normal_sync_completed")
+            }
+            self._pdd_ready_shop_codes = tuple(
+                code for code in self.pdd_shop_codes if code in allowed
+            )
+        else:
+            # 兼容完整成功的旧阶段返回；异常/缺结果绝不能沿用上一轮放行状态。
+            self._pdd_ready_shop_codes = (
+                self.pdd_shop_codes if result.status == "completed" else ()
+            )
+        self._pdd_sync_completed = bool(self._pdd_ready_shop_codes)
+
+    @property
     def _active_module12_shop_codes(self) -> tuple[str, ...]:
         return (
-            (self.pdd_shop_codes if self._pdd_sync_completed else ())
+            self._active_pdd_shop_codes
             + (self.tmall_refund_shop_codes if self._tmall_trial_active else ())
         )
 
@@ -747,6 +779,9 @@ class Module1WorkerRuntime:
                 max_windows=self.options.max_sync_windows,
             )
         details = [item.safe_dict() for item in sync_results]
+        ready_codes = [
+            item.shop_code for item in sync_results if item.ok or item.normal_sync_completed
+        ]
         if not all(item.ok for item in sync_results):
             failures = [
                 f"{item.shop_number}店: {item.error or '未知错误'}"
@@ -754,11 +789,13 @@ class Module1WorkerRuntime:
                 if not item.ok
             ]
             return WorkerStageResult(
-                status="failed",
-                details={"shops": details},
-                error="拼多多同步存在失败店铺: " + "; ".join(failures),
+                status="warning" if len(ready_codes) == len(sync_results) else "failed",
+                details={"shops": details, "automation_shop_codes": ready_codes},
+                error="拼多多同步提醒（仅阻止异常订单/失败店铺）: " + "; ".join(failures),
             )
-        return WorkerStageResult.completed({"shops": details})
+        return WorkerStageResult.completed({
+            "shops": details, "automation_shop_codes": ready_codes,
+        })
 
     def _sync_tmall(self) -> WorkerStageResult:
         if not self.settings.tmall_sync_enabled:
@@ -905,7 +942,9 @@ class Module1WorkerRuntime:
                 "通知出口为 qywx_webhook，但 QYWX_WRITE_ENABLED=false"
             )
         with SessionLocal() as session:
-            run = ExternalActionExecutor(session, self.settings).run(
+            run = ExternalActionExecutor(
+                session, self.settings, pdd_shop_codes=self._active_pdd_shop_codes,
+            ).run(
                 action_types=(AutomationActionType.QYWX_INTERCEPT_NOTIFY,),
                 limit=self.options.task_limit,
                 dry_run=not apply,
@@ -967,6 +1006,7 @@ class Module1WorkerRuntime:
                     notification_min_task_id=(
                         self.settings.module1_notification_min_task_id
                     ),
+                    pdd_shop_codes=self._active_pdd_shop_codes,
                 ).run(limit=limit)
                 details: dict[str, Any] = {
                     "transport": "desktop",
@@ -986,6 +1026,7 @@ class Module1WorkerRuntime:
                         process_name=self.settings.module1_desktop_process_name
                     ),
                     ledger,
+                    pdd_shop_codes=self._active_pdd_shop_codes,
                 ).run(preview.plans)
         details.update(run.safe_dict())
         if run.paused or run.error:
@@ -1071,7 +1112,9 @@ class Module1WorkerRuntime:
                 "后台退款执行已启用，但 PDD_WRITE_ENABLED=false"
             )
         with SessionLocal() as session:
-            run = ExternalActionExecutor(session, self.settings).run(
+            run = ExternalActionExecutor(
+                session, self.settings, pdd_shop_codes=self._active_pdd_shop_codes,
+            ).run(
                 action_types=(AutomationActionType.PDD_AGREE_REFUND,),
                 limit=self.options.task_limit,
                 dry_run=not apply,
@@ -1105,7 +1148,9 @@ class Module1WorkerRuntime:
                 "模块1天猫退款执行已启用，但 TMALL_WRITE_ENABLED=false"
             )
         with SessionLocal() as session:
-            run = ExternalActionExecutor(session, self.settings).run(
+            run = ExternalActionExecutor(
+                session, self.settings, pdd_shop_codes=self._active_pdd_shop_codes,
+            ).run(
                 action_types=(AutomationActionType.TMALL_AGREE_REFUND,),
                 limit=self.options.task_limit,
                 dry_run=not apply,
@@ -1147,7 +1192,9 @@ class Module1WorkerRuntime:
                 "模块2退款执行已启用，但 PDD_WRITE_ENABLED=false"
             )
         with SessionLocal() as session:
-            run = ExternalActionExecutor(session, self.settings).run(
+            run = ExternalActionExecutor(
+                session, self.settings, pdd_shop_codes=self._active_pdd_shop_codes,
+            ).run(
                 action_types=(AutomationActionType.PDD_AGREE_RETURN_REFUND,),
                 limit=self.options.task_limit,
                 dry_run=not apply,
@@ -1189,7 +1236,9 @@ class Module1WorkerRuntime:
                 "模块2天猫退款执行已启用，但 TMALL_WRITE_ENABLED=false"
             )
         with SessionLocal() as session:
-            run = ExternalActionExecutor(session, self.settings).run(
+            run = ExternalActionExecutor(
+                session, self.settings, pdd_shop_codes=self._active_pdd_shop_codes,
+            ).run(
                 action_types=(AutomationActionType.TMALL_AGREE_RETURN_REFUND,),
                 limit=self.options.task_limit,
                 dry_run=not apply,

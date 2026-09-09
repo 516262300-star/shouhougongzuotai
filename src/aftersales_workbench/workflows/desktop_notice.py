@@ -21,6 +21,7 @@ from aftersales_workbench.workflows.module1_preflight import (
     notification_preflight_ready,
 )
 from aftersales_workbench.workflows.module1_preview import mask_identifier
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 class DesktopNoticeConfigurationError(ValueError):
@@ -153,12 +154,14 @@ class DesktopNoticePreviewService:
         planner: DesktopNoticePlanner,
         *,
         notification_min_task_id: int = 0,
+        pdd_shop_codes: tuple[str, ...] | None = None,
     ) -> None:
         if notification_min_task_id < 0:
             raise ValueError("notification_min_task_id 不能小于 0")
         self.session = session
         self.planner = planner
         self.notification_min_task_id = notification_min_task_id
+        self.pdd_shop_codes = pdd_shop_codes
 
     def run(self, *, limit: int = 20) -> DesktopNoticePreviewResult:
         if limit < 1 or limit > 100:
@@ -179,6 +182,7 @@ class DesktopNoticePreviewService:
             )
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
+                sync_safe_order_filter(self.pdd_shop_codes),
                 AftersalesActionTask.action_type
                 == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,

@@ -32,6 +32,7 @@ from aftersales_workbench.workflows.module1_logistics import (
     route_logistics_no_trace_to_manual,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 @dataclass(slots=True)
@@ -122,6 +123,7 @@ class Module1NotificationPreflightService:
                 AfterSalesOrder.after_sales_sn == AftersalesActionTask.after_sales_sn,
             )
             .where(
+                sync_safe_order_filter(),
                 AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 or_(

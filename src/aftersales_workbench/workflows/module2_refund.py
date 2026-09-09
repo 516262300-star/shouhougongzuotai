@@ -19,6 +19,7 @@ from aftersales_workbench.db.models import (
     WarehouseReturnRecord,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,7 @@ class SqlAlchemyModule2RefundRepository:
                 WarehouseReturnRecord.after_sales_sn == AfterSalesOrder.after_sales_sn,
             )
             .where(
+                sync_safe_order_filter(),
                 or_(
                     and_(
                         Shop.platform == Platform.PDD,

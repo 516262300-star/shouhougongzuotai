@@ -75,6 +75,7 @@ class ShopSyncResult:
     records_quarantined: int = 0
     records_recovered: int = 0
     outstanding_issues: int = 0
+    normal_sync_completed: bool = False
     error: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -203,8 +204,9 @@ class PddRefundSyncService:
                 result.windows += 1
             self._retry_issues(client, shop_id=shop_id, result=result)
             result.outstanding_issues = self.repository.outstanding_issues(shop_id)
+            result.normal_sync_completed = True
             if result.outstanding_issues:
-                # 数据窗口可以推进，但现有资金自动化仍按同步未完全成功保护。
+                # 异常仍告警，但已提交的正常单可以处理；动作层单独排除隔离订单。
                 result.ok = False
                 result.error = (
                     f"正常售后同步已推进；另有 {result.outstanding_issues} 笔异常单已隔离，等待重查"
