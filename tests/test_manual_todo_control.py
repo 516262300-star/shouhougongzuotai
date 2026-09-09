@@ -294,3 +294,66 @@ def test_worker_reads_database_switch_each_cycle_without_restarting(db, monkeypa
     control.set_enabled(enabled=False, expected_version=1)
     runtime._process_erp_todos()
     assert observed == [True, False, True]
+
+
+@pytest.mark.parametrize("field,reason", [
+    ("reason_text", "快递100连续6次查询无轨迹，请人工核对运单号和快递公司"),
+    ("content", "历史事项；快递100连续12次查询无轨迹，已停止自动查询，需人工核对。"),
+])
+def test_no_trace_todo_cancelled_before_claim_other_todo_still_sent(db, monkeypatch, field, reason):
+    add_tasks(db)
+    task = db.get(Task, 1)
+    task.payload = {**task.payload, field: reason}
+    db.commit()
+    control = ManualTodoControlService(db, settings())
+    control.set_enabled(enabled=True, expected_version=0)
+    sent = []
+
+    class FakeClient:
+        def create_todo(self, request):
+            sent.append(request)
+            return SimpleNamespace(todo_id="sent-other", created=True)
+
+        def close(self):
+            pass
+
+    executor = ExternalActionExecutor(db, settings())
+    monkeypatch.setattr(executor, "_build_erp_todo_client", FakeClient)
+    result = executor.run(
+        action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False,
+    )
+    assert result.skipped == result.succeeded == 1 and result.failed == 0
+    assert len(sent) == 1
+    db.expire_all()
+    assert db.get(Task, 1).action_status == "CANCELLED"
+    assert db.get(Task, 1).attempts == 0
+    assert db.get(Task, 1).idempotency_key == "test-1"
+    assert "不发送给业务员" in db.get(Task, 1).payload["cancel_reason"]
+    assert db.get(Task, 2).action_status == "SUCCEEDED"
+
+
+def test_no_trace_excluded_before_candidate_limit_and_refund_freeze_preserved(db):
+    from aftersales_workbench.workflows.module1_manual_todo import (
+        SqlAlchemyModule1ManualTodoRepository,
+    )
+
+    add_tasks(db, count=0)
+    order = db.get(AfterSalesOrder, 1)
+    order.platform_order_amount = Decimal("2.00")
+    order.forward_tracking_number = "no-trace"
+    order.exception_type = "快递100连续6次查询无轨迹，请人工核对运单号和快递公司"
+    db.add(AfterSalesOrder(
+        id=2, shop_id=1, after_sales_sn="af-2", platform_order_sn="order-2",
+        after_sales_type="ONLY_REFUND", order_shipping_status="IN_TRANSIT",
+        workflow_status="MANUAL_PROCESSING", refund_amount=Decimal("2.00"),
+        platform_order_amount=Decimal("2.00"), forward_tracking_number="other",
+        exception_type=None,
+    ))
+    db.commit()
+    candidates = SqlAlchemyModule1ManualTodoRepository(db).list_candidates(
+        shop_codes=None, limit=1,
+    )
+    assert [c.after_sales_sn for c in candidates] == ["af-2"]
+    db.refresh(order)
+    assert order.workflow_status == "MANUAL_PROCESSING"
+    assert "连续6次查询无轨迹" in order.exception_type

@@ -18,6 +18,10 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.services.manual_todo_policy import (
+    NO_TRACE_REASON_LIKE,
+    is_no_trace_reason,
+)
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -166,6 +170,7 @@ class Module1ManualTodoRunResult:
     tasks_existing: int = 0
     tasks_requeued: int = 0
     skipped_missing_owner: int = 0
+    skipped_no_trace: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
         return asdict(self)
@@ -247,6 +252,10 @@ class SqlAlchemyModule1ManualTodoRepository:
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 or_(manual_state, logistics_state, return_match_state),
+                or_(
+                    AfterSalesOrder.exception_type.is_(None),
+                    AfterSalesOrder.exception_type.not_like(NO_TRACE_REASON_LIKE),
+                ),
             )
             .order_by(AfterSalesOrder.id)
             .limit(limit)
@@ -356,6 +365,9 @@ class Module1ManualTodoService:
             )
             result.scanned = len(candidates)
             for candidate in candidates:
+                if is_no_trace_reason(candidate.exception_type):
+                    result.skipped_no_trace += 1
+                    continue
                 if (
                     candidate.sales_owner_status != "matched"
                     or not str(candidate.sales_owner or "").strip()

@@ -39,6 +39,10 @@ from aftersales_workbench.services.manual_todo_control import (
     read_publish_enabled,
     require_publish_enabled,
 )
+from aftersales_workbench.services.manual_todo_policy import (
+    NO_TRACE_CANCEL_REASON,
+    suppress_manual_todo,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -637,6 +641,22 @@ class ExternalActionExecutor:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    if suppress_manual_todo(task.payload):
+                        self.session.execute(update(AftersalesActionTask).where(
+                            AftersalesActionTask.id == task.id,
+                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                        ).values(
+                            action_status=AutomationTaskStatus.CANCELLED,
+                            last_error=NO_TRACE_CANCEL_REASON,
+                            payload={
+                                **task.payload,
+                                "cancel_reason": NO_TRACE_CANCEL_REASON,
+                                "cancelled_at": datetime.now().isoformat(),
+                            },
+                        ))
+                        self.session.commit()
+                        result.skipped += 1
+                        continue
                     try:
                         require_publish_enabled(self.session, self.settings)
                     except ManualTodoPublishingPaused:

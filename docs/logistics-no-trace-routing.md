@@ -10,7 +10,7 @@
 - “查询无结果”“暂无轨迹”“暂无物流”或成功响应中的空轨迹统一记为 `no_trace`，不再把整个物流闸门阶段判为失败。运行日志同时输出无轨迹售后数和去重后的无轨迹包裹数。
 - 第1至第5次无轨迹继续按5、10、20、30、30分钟退避复查；自动退款始终冻结。
 - 连续第6次无轨迹后，订单转为 `MANUAL_PROCESSING`，清空下次物流检查时间并退出自动物流查询队列；待发送的拦截通知和待执行的平台退款任务会被取消。
-- 模块1人工待办阶段按现有幂等键创建业务员待办，说明连续无轨迹次数，并要求核对运单号和快递公司。已有失败次数达到阈值的旧记录会直接转人工，不会为了分流再请求一次快递100。
+- 连续无轨迹只保留工作台本地异常，供人工核对运单号和快递公司，不再创建或发送业务员待办（2026-09-09 用户要求）。候选查询在分页前排除此类异常；发送阶段也检查历史任务的原因和事项，命中后取消发送、保留原因及幂等键，不消耗发送次数。规则适用于连续6次以及其他连续次数，不影响拦截失败、ERP退货差异等其他待办。已有失败次数达到阈值的旧记录会直接转人工，不会为了分流再请求一次快递100。
 - 网络、HTTP、配置和返回格式异常仍计入 `failed`，用于运行监控告警；它们不会被误当成包裹无轨迹。
 
 ## 安全边界
@@ -25,8 +25,12 @@
 上线前运行：
 
 ```powershell
-.\.venv\Scripts\pytest.exe tests/test_kuaidi100_client.py tests/test_module1_logistics.py tests/test_module1_preflight.py tests/test_module1_manual_todo.py
+.\.venv\Scripts\pytest.exe tests/test_kuaidi100_client.py tests/test_module1_logistics.py tests/test_module1_preflight.py tests/test_module1_manual_todo.py tests/test_manual_todo_control.py
 .\.venv\Scripts\ruff.exe check src/aftersales_workbench/integrations/logistics/kuaidi100.py src/aftersales_workbench/workflows/module1_logistics.py src/aftersales_workbench/workflows/module1_preflight.py tests/test_kuaidi100_client.py tests/test_module1_logistics.py tests/test_module1_preflight.py tests/test_module1_manual_todo.py
 ```
 
 部署时使用 `scripts/module1-worker.ps1 -Action Stop` 等待当前事务完成，再执行 `Start`。如需回退，停止后台运行器、回退本次代码提交后重新启动；本次不涉及数据库迁移。
+
+本次分流规则需要重启后台生效。先读取并保留实际发布开关；检查、备份并取消尚未发送的同类任务，业务资料和审计仅存放在 Git 忽略的 `.runtime/audits/`。已发送的远端待办不会自动撤回。回退前保持发布关闭，以免旧版重新创建此类待办；历史取消记录不要批量恢复为待发送。
+
+2026-09-09 分流调整验证：物流、预检、人工待办及开关72项测试通过，外部动作预检、状态转换及ERP待办25项测试通过，修改代码 Ruff 通过。测试覆盖分页前排除无轨迹异常、历史任务提交前取消且不消耗尝试次数、其他待办正常发送，以及本地人工处理状态继续保留。

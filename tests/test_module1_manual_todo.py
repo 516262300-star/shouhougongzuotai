@@ -107,18 +107,19 @@ def test_manual_todo_failed_intercept_uses_exception_reason() -> None:
     assert candidate.reason_text == "极兔反馈拦截失败"
 
 
-def test_manual_todo_explains_logistics_no_trace_routing() -> None:
+def test_manual_todo_does_not_enqueue_logistics_no_trace_routing() -> None:
     candidate = _candidate(
         workflow=WorkflowStatus.MANUAL_PROCESSING,
         logistics_state="UNKNOWN",
         exception_type="快递100连续6次查询无轨迹，请人工核对运单号和快递公司",
     )
 
-    payload = candidate.task_payload(started_at="2026-09-09 10:00:00")
-
-    assert candidate.reason_code == "MANUAL_PROCESSING"
-    assert "连续6次查询无轨迹" in payload["reason_text"]
-    assert "物流状态：待核实" in payload["content"]
+    repository = FakeRepository([candidate, _candidate()])
+    result = Module1ManualTodoService(repository).run(dry_run=False)
+    assert result.skipped_no_trace == 1
+    assert result.tasks_created == 1
+    assert len(repository.enqueued) == 1
+    assert repository.enqueued[0][0].reason_code == "OUT_FOR_DELIVERY"
 
 
 def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
