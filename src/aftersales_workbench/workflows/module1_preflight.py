@@ -165,7 +165,7 @@ class Module1NotificationPreflightService:
                         )
                     continue
                 try:
-                    state, latest_context = self._inspect(order, query_cache)
+                    state, latest_context, events = self._inspect(order, query_cache)
                 except Exception as exc:
                     no_trace = is_kuaidi100_no_trace_error(exc)
                     if no_trace:
@@ -199,6 +199,7 @@ class Module1NotificationPreflightService:
                         latest_context=latest_context,
                         checked_at=checked_at,
                         policy=self.polling_policy,
+                        events=events,
                     )
                     task.last_error = None
                     self._apply(task, order, state, checked_at=checked_at)
@@ -214,7 +215,7 @@ class Module1NotificationPreflightService:
         self,
         order: AfterSalesOrder,
         query_cache: LogisticsQueryCache,
-    ) -> tuple[LogisticsState, str]:
+    ) -> tuple[LogisticsState, str, list]:
         raw_carrier = str(order.carrier_code or "").strip()
         carrier_code = resolve_logistics_carrier(raw_carrier, self.carrier_map)
         events = query_logistics_cached(
@@ -224,7 +225,7 @@ class Module1NotificationPreflightService:
             tracking_number=str(order.forward_tracking_number or ""),
             phone=self.default_phone,
         )
-        return classify_logistics_trace(events), events[0].context
+        return classify_logistics_trace(events), events[0].context, events
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:

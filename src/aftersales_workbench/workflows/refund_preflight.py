@@ -13,6 +13,7 @@ from aftersales_workbench.workflows.uncollected_refund import validate_shipping_
 
 def verify_pdd_refund(
     client, order, *, origin: str, uncollected_confirmation=None, auto_uncollected_evidence=None,
+    no_trace_risk_evidence=None,
 ) -> bool:
     """返回 True 表示平台明确已退款；此函数绝不调用写接口。"""
     if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
@@ -55,6 +56,12 @@ def verify_pdd_refund(
     if expected != {(current.item.sku_code, current.item.applied_quantity)}:
         raise ValueError("平台退款型号或数量已变化，需重新验货或审核")
     if origin == "module1":
+        if no_trace_risk_evidence is not None:
+            from datetime import UTC, datetime
+
+            from aftersales_workbench.workflows.no_trace_risk import validate_shipping
+
+            validate_shipping(info, no_trace_risk_evidence, now=datetime.now(UTC))
         if auto_uncollected_evidence is not None:
             from datetime import UTC, datetime
 

@@ -265,6 +265,7 @@ class AfterSalesOrder(Base):
     logistics_state: Mapped[str | None] = mapped_column(String(30))
     logistics_latest_context: Mapped[str | None] = mapped_column(String(500))
     logistics_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    logistics_physical_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
     logistics_return_detected_at: Mapped[datetime | None] = mapped_column(DateTime)
     logistics_query_failures: Mapped[int] = mapped_column(
         Integer, default=0, server_default=text("0"), nullable=False

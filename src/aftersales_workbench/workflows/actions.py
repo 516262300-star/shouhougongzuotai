@@ -801,6 +801,8 @@ class ExternalActionExecutor:
         return ready, blocked
 
     def _refresh_module1_refund_gates(self, after_sales_sns: tuple[str, ...]) -> None:
+        from aftersales_workbench.workflows.no_trace_risk import NoTraceRiskVerifier
+
         client = build_kuaidi100_client(self.settings)
         try:
             default_phone = (
@@ -815,6 +817,8 @@ class ExternalActionExecutor:
                 default_phone=default_phone,
                 polling_policy=build_logistics_polling_policy(self.settings),
                 business_hours=build_refund_business_hours(self.settings),
+                risk_verifier=(NoTraceRiskVerifier(self.session, self.settings)
+                               if self.settings.module1_no_trace_risk_refund_enabled else None),
                 tmall_refund_shop_codes={
                     shop.shop_code for shop in load_refund_enabled_tmall_shops(self.settings)
                 },
@@ -949,6 +953,11 @@ class ExternalActionExecutor:
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         confirmation = None
         auto_evidence = None
+        risk_evidence = None
+        if task.payload.get("refund_gate") == "DUAL_NO_TRACE_RISK":
+            from aftersales_workbench.workflows.no_trace_risk import require_execution
+
+            risk_evidence = require_execution(self.session, order, task.id, self.settings)
         if task.payload.get("refund_gate") == "UNCOLLECTED":
             from aftersales_workbench.workflows.auto_uncollected import require_auto_execution
 
@@ -963,6 +972,7 @@ class ExternalActionExecutor:
             origin=str(task.payload.get("origin") or ""),
             **({"uncollected_confirmation": confirmation} if confirmation is not None else {}),
             **({"auto_uncollected_evidence": auto_evidence} if auto_evidence is not None else {}),
+            **({"no_trace_risk_evidence": risk_evidence} if risk_evidence is not None else {}),
         )
         if already_refunded:
             order.platform_after_sales_status = 10
@@ -972,7 +982,9 @@ class ExternalActionExecutor:
             require_execution_confirmation(self.session, order, task.id, self.settings)
         if auto_evidence is not None:
             require_auto_execution(self.session, order, task.id, self.settings)
-        if confirmation is not None or auto_evidence is not None:
+        if risk_evidence is not None:
+            require_execution(self.session, order, task.id, self.settings)
+        if confirmation is not None or auto_evidence is not None or risk_evidence is not None:
             mark_request_started(self.session, task.id)
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),

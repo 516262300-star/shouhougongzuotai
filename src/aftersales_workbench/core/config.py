@@ -84,6 +84,7 @@ class Settings(BaseSettings):
     module1_refund_business_timezone: str = "Asia/Shanghai"
     module1_refund_business_start_hour: int = Field(default=9, ge=0, le=23)
     module1_refund_business_end_hour: int = Field(default=21, ge=1, le=24)
+    module1_no_trace_risk_refund_enabled: bool = False
     module1_notification_transport: Literal[
         "disabled", "qywx_webhook", "desktop"
     ] = "disabled"

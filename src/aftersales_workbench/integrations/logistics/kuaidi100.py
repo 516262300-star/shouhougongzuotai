@@ -20,6 +20,12 @@ class Kuaidi100ConfigurationError(Kuaidi100Error):
 class Kuaidi100NoTraceError(Kuaidi100Error):
     """快递 100 正常响应，但当前运单没有可用轨迹。"""
 
+    def __init__(self, message: str, *, evidence: dict | None = None,
+                 history_observed: bool = False):
+        super().__init__(message)
+        self.evidence = evidence
+        self.history_observed = history_observed
+
 
 _NO_TRACE_MESSAGE_MARKERS = (
     "查询无结果",
@@ -146,7 +152,24 @@ class Kuaidi100Client:
         if str(body.get("status")) != "200":
             message = str(body.get("message") or body.get("result") or "查询失败")
             if is_kuaidi100_no_trace_error(message):
-                raise Kuaidi100NoTraceError(f"快递 100 暂无物流轨迹: {message}")
+                # 官方1.9定义returnCode=500为无结果，501/502才是服务器故障。
+                # HTTP必须成功，JSON业务码/结果/原文必须同时吻合，旧宽泛分类不等于放款凭证。
+                verified = (
+                    body.get("status") is None
+                    and str(body.get("returnCode")) == "500"
+                    and body.get("result") is False
+                    and message.strip().rstrip("。") == "查询无结果，请隔段时间再查"
+                    and body.get("data") in (None, [])
+                    and str(body.get("com") or carrier_code).lower() == carrier_code.lower()
+                    and str(body.get("nu") or tracking_number) == tracking_number
+                    and body.get("state") in (None, "", "1", 1)
+                    and str(body.get("ischeck") or "0").lower() in {"0", "false"}
+                )
+                raise Kuaidi100NoTraceError(f"快递 100 暂无物流轨迹: {message}", evidence=(
+                    {"source": "KUAIDI100", "return_code": "500", "result": "NO_TRACE",
+                     "carrier_code": carrier_code, "tracking_number": tracking_number}
+                    if verified else None
+                ), history_observed=isinstance(body.get("data"), list) and bool(body["data"]))
             raise Kuaidi100Error(f"快递 100 查询失败: {message}")
         records = body.get("data")
         if not isinstance(records, list):

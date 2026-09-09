@@ -1091,6 +1091,7 @@ class Module1WorkerRuntime:
                     default_phone=default_phone,
                     polling_policy=build_logistics_polling_policy(self.settings),
                     business_hours=build_refund_business_hours(self.settings),
+                    risk_verifier=self._no_trace_risk_verifier(session),
                     tmall_refund_shop_codes=set(self.tmall_refund_shop_codes),
                     tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 ).run(limit=self.options.task_limit, dry_run=False)
@@ -1104,6 +1105,12 @@ class Module1WorkerRuntime:
                 error=f"物流闸门查询失败 {run.failed} 笔",
             )
         return WorkerStageResult.completed(details)
+
+    def _no_trace_risk_verifier(self, session):
+        from aftersales_workbench.workflows.no_trace_risk import NoTraceRiskVerifier
+
+        return (NoTraceRiskVerifier(session, self.settings)
+                if self.settings.module1_no_trace_risk_refund_enabled else None)
 
     def _process_pdd_refunds(self) -> WorkerStageResult:
         apply = self.options.pdd_refund_execution_enabled

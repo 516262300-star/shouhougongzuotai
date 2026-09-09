@@ -1651,6 +1651,8 @@ class AftersalesRecordService:
             action = _enum_value(task.action_type)
             status = _enum_value(task.action_status)
             description = ACTION_STATUS_LABELS.get(status, status)
+            if (task.payload or {}).get("refund_gate") == "DUAL_NO_TRACE_RISK":
+                description += "：按已授权双接口无轨迹风险规则处理，非确定未揽收"
             if action == AutomationActionType.ERP_CREATE_MANUAL_TODO.value:
                 payload = task.payload or {}
                 assignee = str(payload.get("assignee") or "").strip()

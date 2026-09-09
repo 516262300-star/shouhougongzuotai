@@ -11,6 +11,7 @@ from aftersales_workbench.workflows.module1_logistics import (
     build_logistics_polling_policy,
     build_refund_business_hours,
 )
+from aftersales_workbench.workflows.no_trace_risk import NoTraceRiskVerifier
 
 
 def _secret(value) -> str | None:
@@ -41,6 +42,8 @@ def main(argv: list[str] | None = None) -> int:
                 default_phone=_secret(settings.kuaidi100_default_phone),
                 polling_policy=build_logistics_polling_policy(settings),
                 business_hours=build_refund_business_hours(settings),
+                risk_verifier=(NoTraceRiskVerifier(session, settings)
+                               if settings.module1_no_trace_risk_refund_enabled else None),
             ).run(limit=args.limit, dry_run=not args.apply, force_refresh=True)
     finally:
         client.close()

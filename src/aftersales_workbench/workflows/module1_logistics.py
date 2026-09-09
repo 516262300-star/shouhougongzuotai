@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
@@ -245,6 +245,8 @@ class LogisticsGateRunResult:
     dry_run: bool
     scanned: int = 0
     allowed_refunds: int = 0
+    no_trace_risk_allowed: int = 0
+    no_trace_risk_blocked: int = 0
     held_outside_business_hours: int = 0
     blocked_delivery: int = 0
     return_detected: int = 0
@@ -331,7 +333,13 @@ def record_logistics_query_success(
     latest_context: str,
     checked_at: datetime,
     policy: LogisticsPollingPolicy,
+    events: list[LogisticsEvent] | None = None,
 ) -> None:
+    from aftersales_workbench.workflows.no_trace_risk import PHYSICAL_STATES, remember_history
+
+    remember_history(order, events or [], checked_at=checked_at)
+    if state.value in PHYSICAL_STATES and not getattr(order, "logistics_physical_seen_at", None):
+        order.logistics_physical_seen_at = checked_at
     order.logistics_state = state.value
     order.logistics_latest_context = latest_context[:500]
     order.logistics_checked_at = checked_at
@@ -409,6 +417,7 @@ class Module1LogisticsGateService:
         tmall_refund_shop_codes: set[str] | None = None,
         tmall_min_order_id: int = 0,
         now_provider: Callable[[], datetime] | None = None,
+        risk_verifier=None,
     ) -> None:
         self.session = session
         self.query = query
@@ -419,6 +428,7 @@ class Module1LogisticsGateService:
         self.tmall_refund_shop_codes = tmall_refund_shop_codes or set()
         self.tmall_min_order_id = tmall_min_order_id
         self.now_provider = now_provider or _utcnow_naive
+        self.risk_verifier = risk_verifier
 
     def run(
         self,
@@ -431,11 +441,24 @@ class Module1LogisticsGateService:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
         now = self.now_provider()
+        candidate_filter = AfterSalesOrder.workflow_status.in_(self._CANDIDATE_STATUSES)
+        if self.risk_verifier is not None:
+            from aftersales_workbench.services.manual_todo_policy import NO_TRACE_REASON_LIKE
+            from aftersales_workbench.workflows.no_trace_risk import SHANGHAI
+
+            midnight = utc(now).astimezone(SHANGHAI).replace(
+                hour=0, minute=0, second=0, microsecond=0,
+            ).replace(tzinfo=None)
+            candidate_filter = or_(candidate_filter, and_(
+                AfterSalesOrder.workflow_status == WorkflowStatus.MANUAL_PROCESSING,
+                AfterSalesOrder.exception_type.like(NO_TRACE_REASON_LIKE),
+                AfterSalesOrder.created_at >= midnight,
+            ))
         statement = (
             select(AfterSalesOrder)
             .where(
                 sync_safe_order_filter(),
-                AfterSalesOrder.workflow_status.in_(self._CANDIDATE_STATUSES),
+                candidate_filter,
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 AfterSalesOrder.carrier_code.is_not(None),
@@ -461,6 +484,7 @@ class Module1LogisticsGateService:
             if (
                 logistics_no_trace_manual_required(order, policy=self.polling_policy)
                 and pending_confirmation(self.session, order, now=now) is None
+                and self.risk_verifier is None
             ):
                 result.no_trace += 1
                 no_trace_packages.add(
@@ -515,6 +539,7 @@ class Module1LogisticsGateService:
                         checked_at=now,
                         business_open=business_open,
                         auto_evidence=auto_evidence,
+                        events=events,
                     )
                     self.session.commit()
             except Exception as exc:
@@ -526,7 +551,54 @@ class Module1LogisticsGateService:
                 )
                 allow_uncollected = (
                     confirmed_task is not None and self.business_hours.is_open(now)
+                    and not getattr(exc, "history_observed", False)
                 )
+                risk_evidence = None
+                risk_error = None
+                if isinstance(exc, Kuaidi100NoTraceError) and self.risk_verifier is not None:
+                    try:
+                        risk_evidence = self.risk_verifier.evaluate(
+                            order, exc, now=now,
+                            carrier_code=self._resolve_carrier(str(order.carrier_code)),
+                        )
+                    except Exception as risk_exc:
+                        from aftersales_workbench.integrations.pdd.logistics import (
+                            PddTraceNeedsReview,
+                        )
+
+                        if isinstance(risk_exc, PddTraceNeedsReview) and not dry_run:
+                            # 含义未核实的成功响应也保守锁存，绝不称为“已确认无历史物流”。
+                            order.logistics_physical_seen_at = (
+                                order.logistics_physical_seen_at or now
+                            )
+                        risk_error = str(risk_exc)[:400]
+                        result.no_trace_risk_blocked += 1
+                if risk_evidence is not None:
+                    from aftersales_workbench.workflows.no_trace_risk import EVIDENCE_KEY, GATE
+
+                    result.no_trace_risk_allowed += 1
+                    result.allowed_refunds += 1
+                    result.no_trace += 1
+                    no_trace_packages.add((str(order.carrier_code),
+                                           str(order.forward_tracking_number), self.default_phone))
+                    if not dry_run:
+                        order.logistics_state = LogisticsState.UNKNOWN.value
+                        order.logistics_checked_at = now
+                        order.logistics_last_error = (
+                            "双接口明确暂无轨迹；按已授权风险规则放行（非确定未揽收）"
+                        )
+                        order.logistics_next_check_at = now + timedelta(seconds=1800)
+                        order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+                        order.exception_type = None
+                        self._enqueue(order.after_sales_sn, AutomationActionType.PDD_AGREE_REFUND, {
+                            "origin": "module1", "refund_gate": GATE,
+                            EVIDENCE_KEY: risk_evidence,
+                            "decision_reason": (
+                                "当天发货、拦截发送成功、双接口无轨迹、无历史物流；风险规则放行"
+                            ),
+                        })
+                        self.session.commit()
+                    continue
                 if not dry_run:
                     failures, _error_text = record_logistics_query_failure(
                         order,
@@ -534,6 +606,12 @@ class Module1LogisticsGateService:
                         checked_at=now,
                         policy=self.polling_policy,
                     )
+                    if risk_error:
+                        order.logistics_last_error = (
+                            f"{_error_text}；风险规则未放行：{risk_error}"
+                        )[:500]
+                    if getattr(exc, "history_observed", False):
+                        order.logistics_physical_seen_at = order.logistics_physical_seen_at or now
                     if allow_uncollected:
                         # 保留 UNKNOWN 和原始无轨迹错误，人工依据不冒充快递揽收记录。
                         confirmed_task.payload = {
@@ -548,6 +626,8 @@ class Module1LogisticsGateService:
                         and failures >= self.polling_policy.manual_after_failures
                     ):
                         route_logistics_no_trace_to_manual(order, failures=failures)
+                        if self.risk_verifier is not None:
+                            order.logistics_next_check_at = now + timedelta(seconds=1800)
                     self.session.commit()
                 if allow_uncollected:
                     result.allowed_refunds += 1
@@ -657,6 +737,7 @@ class Module1LogisticsGateService:
         checked_at: datetime,
         business_open: bool,
         auto_evidence: dict | None = None,
+        events: list[LogisticsEvent] | None = None,
     ) -> None:
         record_logistics_query_success(
             order,
@@ -664,6 +745,7 @@ class Module1LogisticsGateService:
             latest_context=latest_context,
             checked_at=checked_at,
             policy=self.polling_policy,
+            events=events,
         )
         platform_refunded = self._platform_refund_completed(order) or (
             WorkflowStatus(order.workflow_status)
@@ -796,7 +878,7 @@ class Module1LogisticsGateService:
                 return False  # 已开始资金请求，只读回查，不重建或重开任务。
             if (
                 existing.action_status == AutomationTaskStatus.PENDING
-                and payload.get("refund_gate") == "UNCOLLECTED"
+                and payload.get("refund_gate") in {"UNCOLLECTED", "DUAL_NO_TRACE_RISK"}
                 and not (existing.payload or {}).get("uncollected_request_started_at")
             ):
                 existing.payload = {**(existing.payload or {}), **payload}
@@ -806,6 +888,7 @@ class Module1LogisticsGateService:
                 and (
                     (existing.payload or {}).get("uncollected_confirmation")
                     or (existing.payload or {}).get("auto_uncollected_evidence")
+                    or (existing.payload or {}).get("no_trace_risk_evidence")
                 )
                 and payload.get("refund_gate") in {"IN_TRANSIT", "RETURNING", "RETURNED"}
             ):
