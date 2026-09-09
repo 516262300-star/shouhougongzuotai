@@ -69,6 +69,7 @@ def resolve_logistics_carrier(
 
 class LogisticsState(StrEnum):
     UNKNOWN = "UNKNOWN"
+    UNCOLLECTED = "UNCOLLECTED"
     IN_TRANSIT = "IN_TRANSIT"
     OUT_FOR_DELIVERY = "OUT_FOR_DELIVERY"
     DELIVERED = "DELIVERED"
@@ -176,6 +177,28 @@ def classify_logistics_trace(events: list[LogisticsEvent]) -> LogisticsState:
     if not events:
         return LogisticsState.UNKNOWN
     contexts = [event.context.replace(" ", "") for event in events]
+    code = events[0].status_code
+    if code == "102":
+        # 必须是明确待揽收，且整票没有已揽收、在途、派件等冲突证据。
+        if (
+            not events[0].identity_verified
+            or events[0].status_name not in {None, "待揽收"}
+        ) or any(
+            event.status_code not in {"101", "102"}
+            or any(word in event.context for word in (
+                "已揽收", "已揽件", "运输", "派件", "派送", "签收", "退回", "取件成功",
+            ))
+            for event in events
+        ):
+            return LogisticsState.UNKNOWN
+        return LogisticsState.UNCOLLECTED
+    if code == "101":
+        return LogisticsState.UNKNOWN  # 仅已下单不是当前未揽收证明。
+    if code and code not in {
+        "0", "1", "103", "1001", "1002", "1003", "5", "501",
+        "3", "301", "302", "303", "304", "6", "4",
+    }:
+        return LogisticsState.UNKNOWN
     has_return = any(keyword in context for context in contexts for keyword in _RETURN_KEYWORDS)
     if has_return:
         if any(
@@ -187,10 +210,24 @@ def classify_logistics_trace(events: list[LogisticsEvent]) -> LogisticsState:
             return LogisticsState.RETURNED
         return LogisticsState.RETURNING
     latest = contexts[0]
-    if any(keyword in latest for keyword in _DELIVERY_KEYWORDS):
+    if code in {"5", "501"} or any(keyword in latest for keyword in _DELIVERY_KEYWORDS):
         return LogisticsState.OUT_FOR_DELIVERY
-    if any(keyword in latest for keyword in _DELIVERED_KEYWORDS):
+    if code in {"3", "301", "302", "303", "304"} or any(
+        keyword in latest for keyword in _DELIVERED_KEYWORDS
+    ):
         return LogisticsState.DELIVERED
+    if code == "6":
+        return LogisticsState.RETURNING
+    if code == "4":
+        return LogisticsState.RETURNED
+    if code and code not in {"0", "1", "103", "1001", "1002", "1003"}:
+        return LogisticsState.UNKNOWN
+    if (
+        any(word in latest for word in ("待揽收", "等待揽收", "尚未揽收", "暂无物流"))
+        or "等待" in latest and "揽收" in latest
+        or events[0].status_name == "待揽收"
+    ):
+        return LogisticsState.UNKNOWN  # 无结构化状态不可退回到“任何文本都算在途”。
     return LogisticsState.IN_TRANSIT
 
 
@@ -453,6 +490,14 @@ class Module1LogisticsGateService:
                     phone=self.default_phone,
                 )
                 state = classify_logistics_trace(events)
+                auto_evidence = None
+                if (
+                    state is LogisticsState.UNCOLLECTED
+                    and not self._platform_refund_completed(order)
+                ):
+                    from aftersales_workbench.workflows.auto_uncollected import build_auto_evidence
+
+                    auto_evidence = build_auto_evidence(self.session, order, events, now=now)
                 business_open = self.business_hours.is_open(now)
                 self._count_decision(
                     result,
@@ -469,6 +514,7 @@ class Module1LogisticsGateService:
                         platform=platform,
                         checked_at=now,
                         business_open=business_open,
+                        auto_evidence=auto_evidence,
                     )
                     self.session.commit()
             except Exception as exc:
@@ -583,7 +629,7 @@ class Module1LogisticsGateService:
             else:
                 result.blocked_delivery += 1
         elif (
-            state is LogisticsState.IN_TRANSIT
+            state in {LogisticsState.IN_TRANSIT, LogisticsState.UNCOLLECTED}
             and not platform_refunded
             and not waiting_return_latched
         ):
@@ -610,6 +656,7 @@ class Module1LogisticsGateService:
         platform: Platform,
         checked_at: datetime,
         business_open: bool,
+        auto_evidence: dict | None = None,
     ) -> None:
         record_logistics_query_success(
             order,
@@ -631,6 +678,7 @@ class Module1LogisticsGateService:
             and state
             in (
                 LogisticsState.IN_TRANSIT,
+                LogisticsState.UNCOLLECTED,
                 LogisticsState.RETURNING,
                 LogisticsState.RETURNED,
             )
@@ -680,8 +728,20 @@ class Module1LogisticsGateService:
             order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
             self._route_platform_refund(order, platform, state)
             return
-        # 派件、已签收但没有退回记录，以及未知状态，一律冻结自动退款。
-        order.workflow_status = WorkflowStatus.INTERCEPT_WAITING_RETURN
+        if state is LogisticsState.UNCOLLECTED:
+            if auto_evidence is None or platform is not Platform.PDD:
+                raise ValueError("未取得可自动退款的待揽收证据")
+            order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
+            self._enqueue(order.after_sales_sn, AutomationActionType.PDD_AGREE_REFUND, {
+                "origin": "module1", "refund_gate": state.value,
+                "auto_uncollected_evidence": auto_evidence,
+            })
+            return
+        # 未知只冻结当前退款，后续取得明确证据可继续；只有派件/签收才锁存等待退回。
+        order.workflow_status = (
+            WorkflowStatus.INTERCEPT_PUSHED if state is LogisticsState.UNKNOWN
+            else WorkflowStatus.INTERCEPT_WAITING_RETURN
+        )
         self._cancel_pending_refund(order.after_sales_sn)
 
     def _route_platform_refund(
@@ -723,7 +783,7 @@ class Module1LogisticsGateService:
         self,
         after_sales_sn: str,
         action_type: AutomationActionType,
-        payload: dict[str, str | None],
+        payload: dict,
     ) -> bool:
         existing = self.session.execute(
             select(AftersalesActionTask).where(
@@ -732,9 +792,21 @@ class Module1LogisticsGateService:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if (getattr(existing, "payload", None) or {}).get("uncollected_request_started_at"):
+                return False  # 已开始资金请求，只读回查，不重建或重开任务。
             if (
                 existing.action_status == AutomationTaskStatus.PENDING
-                and (existing.payload or {}).get("uncollected_confirmation")
+                and payload.get("refund_gate") == "UNCOLLECTED"
+                and not (existing.payload or {}).get("uncollected_request_started_at")
+            ):
+                existing.payload = {**(existing.payload or {}), **payload}
+                return False
+            if (
+                existing.action_status == AutomationTaskStatus.PENDING
+                and (
+                    (existing.payload or {}).get("uncollected_confirmation")
+                    or (existing.payload or {}).get("auto_uncollected_evidence")
+                )
                 and payload.get("refund_gate") in {"IN_TRANSIT", "RETURNING", "RETURNED"}
             ):
                 existing.payload = {

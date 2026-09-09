@@ -50,6 +50,9 @@ class Kuaidi100Credentials:
 class LogisticsEvent:
     context: str
     time: str | None = None
+    status_code: str | None = None
+    status_name: str | None = None
+    identity_verified: bool = False
 
 
 def _secret_value(value: SecretStr | None) -> str:
@@ -99,6 +102,8 @@ class Kuaidi100Client:
         parameter: dict[str, str] = {
             "com": carrier_code.strip(),
             "num": tracking_number.strip(),
+            "resultv2": "4",
+            "order": "desc",
         }
         if phone and phone.strip():
             parameter["phone"] = phone.strip()
@@ -146,6 +151,14 @@ class Kuaidi100Client:
         records = body.get("data")
         if not isinstance(records, list):
             raise Kuaidi100Error("快递 100 响应缺少物流轨迹")
+        response_carrier = str(body.get("com") or "").strip()
+        response_number = str(body.get("nu") or "").strip()
+        if (
+            response_carrier and response_carrier.lower() != carrier_code.strip().lower()
+            or response_number and response_number != tracking_number.strip()
+        ):
+            raise Kuaidi100Error("快递 100 响应运单或快递公司不匹配")
+        identity_verified = bool(response_carrier and response_number)
         events: list[LogisticsEvent] = []
         for record in records:
             if not isinstance(record, Mapping):
@@ -154,7 +167,22 @@ class Kuaidi100Client:
             if not context:
                 continue
             event_time = str(record.get("time") or "").strip() or None
-            events.append(LogisticsEvent(context=context, time=event_time))
+            raw_code = record.get("statusCode")
+            status_code = str(raw_code).strip() if raw_code is not None else None
+            if not events and status_code == "102" and body.get("state") is not None and str(
+                body["state"]
+            ) not in {"1", "102"}:
+                raise Kuaidi100Error("快递 100 待揽收状态与运单总状态冲突")
+            events.append(LogisticsEvent(
+                context=context, time=event_time,
+                status_code=status_code or None,
+                status_name=str(record.get("status") or "").strip() or None,
+                identity_verified=identity_verified,
+            ))
         if not events:
             raise Kuaidi100NoTraceError("快递 100 未返回有效物流轨迹")
+        if events[0].status_code == "102" and (
+            len(events) != len(records) or str(body.get("ischeck") or "").lower() in {"1", "true"}
+        ):
+            raise Kuaidi100Error("待揽收轨迹不完整或与签收标志冲突")
         return events

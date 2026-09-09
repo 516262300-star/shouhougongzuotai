@@ -71,7 +71,7 @@ def notification_preflight_ready(payload: dict[str, object] | None) -> bool:
     checked_at = str(values.get("preflight_checked_at") or "")
     if not checked_at:
         return False
-    if state == LogisticsState.IN_TRANSIT.value:
+    if state in {LogisticsState.IN_TRANSIT.value, LogisticsState.UNCOLLECTED.value}:
         return gate == "ALLOW_AFTER_NOTICE"
     if state in {
         LogisticsState.OUT_FOR_DELIVERY.value,
@@ -237,7 +237,7 @@ class Module1NotificationPreflightService:
         state: LogisticsState,
         payload: dict[str, object] | None,
     ) -> None:
-        if state is LogisticsState.IN_TRANSIT:
+        if state in {LogisticsState.IN_TRANSIT, LogisticsState.UNCOLLECTED}:
             result.notices_ready += 1
             result.in_transit_ready += 1
         elif state is LogisticsState.OUT_FOR_DELIVERY:
@@ -290,7 +290,9 @@ class Module1NotificationPreflightService:
                 "preflight_state": state.value,
                 "preflight_checked_at": checked_at.isoformat(),
                 "refund_gate": (
-                    "ALLOW_AFTER_NOTICE" if state is LogisticsState.IN_TRANSIT else "HOLD"
+                    "ALLOW_AFTER_NOTICE"
+                    if state in {LogisticsState.IN_TRANSIT, LogisticsState.UNCOLLECTED}
+                    else "HOLD"
                 ),
                 "logistics_query_failures": 0,
                 "logistics_last_error": None,
@@ -301,6 +303,7 @@ class Module1NotificationPreflightService:
         task.payload = payload
         if state in {
             LogisticsState.IN_TRANSIT,
+            LogisticsState.UNCOLLECTED,
             LogisticsState.OUT_FOR_DELIVERY,
             LogisticsState.UNKNOWN,
         }:

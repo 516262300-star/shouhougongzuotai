@@ -64,6 +64,7 @@ WORKFLOW_LABELS = {
 LOGISTICS_LABELS = {
     "UNKNOWN": "待更新",
     "IN_TRANSIT": "运输中",
+    "UNCOLLECTED": "待揽收（自动识别）",
     "OUT_FOR_DELIVERY": "派件中",
     "DELIVERED": "已签收",
     "RETURNING": "退回中",
@@ -885,6 +886,7 @@ class AftersalesRecordService:
         preflight_state = str((task.payload or {}).get("preflight_state") or "")
         return {
             "IN_TRANSIT": ("待发送拦截", "warning"),
+            "UNCOLLECTED": ("待发送·待揽收", "warning"),
             "OUT_FOR_DELIVERY": ("待发送·派件中", "danger"),
             "UNKNOWN": ("待发送·物流待确认", "warning"),
         }.get(preflight_state, ("待物流预检", "info"))
@@ -919,12 +921,14 @@ class AftersalesRecordService:
             return "禁止自动退款", "danger"
         if logistics == "UNKNOWN":
             return "物流异常冻结", "warning"
-        if logistics in {"IN_TRANSIT", "RETURNING", "RETURNED"} and not (
+        if logistics in {"IN_TRANSIT", "UNCOLLECTED", "RETURNING", "RETURNED"} and not (
             self.refund_business_hours.is_open(datetime.now(UTC))
         ):
             return "夜间待 09:00 复查", "warning"
         if logistics in {"RETURNING", "RETURNED"}:
             return "退回轨迹已出现", "info"
+        if logistics == "UNCOLLECTED":
+            return "待自动复核未揽收", "info"
         if logistics == "IN_TRANSIT":
             notice_succeeded = notice_task is not None and (
                 _enum_value(notice_task.action_status) == "SUCCEEDED"
@@ -1719,6 +1723,8 @@ class AftersalesRecordService:
             return "快递已进入派件或签收节点，自动退款已冻结，检测到退回轨迹后再执行。"
         if workflow == "INTERCEPT_REFUNDED_WAITING_RETURN":
             return "平台已完成退款，继续跟踪拦截包裹退回仓库。"
+        if logistics == "UNCOLLECTED":
+            return "物流接口明确待揽收；发送拦截成功后自动复核退款条件，无需人工确认。"
         if logistics == "IN_TRANSIT":
             return "物流仍在运输中，符合极速拦截条件。"
         return "系统将根据售后状态和物流轨迹继续推进。"

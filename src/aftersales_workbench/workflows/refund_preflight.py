@@ -11,7 +11,9 @@ from aftersales_workbench.integrations.pdd.mapper import normalize_refund, unwra
 from aftersales_workbench.workflows.uncollected_refund import validate_shipping_snapshot
 
 
-def verify_pdd_refund(client, order, *, origin: str, uncollected_confirmation=None) -> bool:
+def verify_pdd_refund(
+    client, order, *, origin: str, uncollected_confirmation=None, auto_uncollected_evidence=None,
+) -> bool:
     """返回 True 表示平台明确已退款；此函数绝不调用写接口。"""
     if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
         raise ValueError("补寄/维修不属于退款业务，禁止执行退款任务")
@@ -53,6 +55,12 @@ def verify_pdd_refund(client, order, *, origin: str, uncollected_confirmation=No
     if expected != {(current.item.sku_code, current.item.applied_quantity)}:
         raise ValueError("平台退款型号或数量已变化，需重新验货或审核")
     if origin == "module1":
+        if auto_uncollected_evidence is not None:
+            from datetime import UTC, datetime
+
+            from aftersales_workbench.workflows.auto_uncollected import validate_auto_shipping
+
+            validate_auto_shipping(info, auto_uncollected_evidence, now=datetime.now(UTC))
         if uncollected_confirmation is not None:
             from datetime import UTC, datetime
 

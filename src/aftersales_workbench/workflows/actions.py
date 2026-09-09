@@ -948,6 +948,11 @@ class ExternalActionExecutor:
             raise WorkflowTransitionError("退款任务关联订单已变化，禁止执行")
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         confirmation = None
+        auto_evidence = None
+        if task.payload.get("refund_gate") == "UNCOLLECTED":
+            from aftersales_workbench.workflows.auto_uncollected import require_auto_execution
+
+            auto_evidence = require_auto_execution(self.session, order, task.id, self.settings)
         if task.payload.get("refund_gate") == CONFIRMED_UNCOLLECTED:
             confirmation = require_execution_confirmation(
                 self.session, order, task.id, self.settings,
@@ -957,6 +962,7 @@ class ExternalActionExecutor:
             order,
             origin=str(task.payload.get("origin") or ""),
             **({"uncollected_confirmation": confirmation} if confirmation is not None else {}),
+            **({"auto_uncollected_evidence": auto_evidence} if auto_evidence is not None else {}),
         )
         if already_refunded:
             order.platform_after_sales_status = 10
@@ -964,6 +970,9 @@ class ExternalActionExecutor:
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         if confirmation is not None:
             require_execution_confirmation(self.session, order, task.id, self.settings)
+        if auto_evidence is not None:
+            require_auto_execution(self.session, order, task.id, self.settings)
+        if confirmation is not None or auto_evidence is not None:
             mark_request_started(self.session, task.id)
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),
