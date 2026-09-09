@@ -46,7 +46,7 @@ alembic downgrade -1
 
 自动迁移的输入是 `migrations/versions/` 中的版本脚本，输出是 `DATABASE_URL` 指向的 MySQL schema。迁移失败时 API 容器不会启动；修复配置或数据库后重新执行 `docker compose run --rm migrate`。
 
-本机没有 Docker 或已注册 MySQL 服务时，可使用本机 MySQL 8.4 的项目专用实例。当前联调实例只监听 `127.0.0.1:3306`，数据保存在被 Git 忽略的 `.mysql-data/`；因中文工作区路径兼容性，MySQL 配置与数据目录联接保存在用户 AppData 的 `lds-aftersales-mysql.ini` / `lds-aftersales-mysql-data`。不得对非空 `.mysql-data/` 再执行初始化；该实例不是 Windows 服务，电脑重启后需要重新启动进程，再执行 `alembic current` 确认迁移版本。
+本机没有 Docker 或已注册 MySQL 服务时，可使用本机 MySQL 8.4 的项目专用实例。当前联调实例只监听 `127.0.0.1:3306`，数据保存在被 Git 忽略的 `.mysql-data/`。2026-09-09 已将启动配置与数据目录联接改到工作区外固定英文目录 `../lds-aftersales-runtime/`（`my.ini` 与 `data` 联接）；旧 AppData 联接在交互环境可见但开机 MySQL 进程报目录不存在，不能再依赖它。原数据库文件不搬迁，启动配置地址以 `.runtime/module1-autostart.json` 为准，配置恢复副本也须同步更新。不得对非空 `.mysql-data/` 再执行初始化；该实例不是 Windows 服务，电脑重启后由登录启动项守护拉起，再确认健康检查和迁移版本。详见 [MySQL 目录定位故障恢复](docs/mysql-startup-path-recovery.md)。
 
 ## 环境变量
 
