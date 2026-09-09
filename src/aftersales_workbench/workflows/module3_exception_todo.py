@@ -219,6 +219,7 @@ class SqlAlchemyModule3ExceptionTodoRepository:
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == candidate.after_sales_sn,
                 AftersalesActionTask.action_type == action_type,
+                AftersalesActionTask.idempotency_key.not_like("module1:shared-package:%"),
             )
         ).scalar_one_or_none()
         payload = candidate.task_payload(started_at=started_at)

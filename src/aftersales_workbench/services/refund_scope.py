@@ -91,6 +91,8 @@ def _cancel_pending_module1_tasks(
         )
     ).all()
     for task in tasks:
+        if (task.payload or {}).get("task_scope") == "shared_package":
+            continue  # 单笔金额/闭环变化不代表其他同包裹订单已处理。
         action_type = AutomationActionType(task.action_type)
         is_module1_refund = (
             action_type

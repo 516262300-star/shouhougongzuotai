@@ -894,6 +894,7 @@ class ErpReturnMatchSyncService:
             update(AftersalesActionTask)
             .where(
                 AftersalesActionTask.after_sales_sn == after_sales_sn,
+                AftersalesActionTask.idempotency_key.not_like("module1:shared-package:%"),
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AftersalesActionTask.action_type.in_(
                     (

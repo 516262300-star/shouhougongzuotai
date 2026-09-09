@@ -906,7 +906,12 @@ class Module1LogisticsGateService:
                 and AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.CANCELLED
             ):
                 existing.action_status = AutomationTaskStatus.PENDING
-                existing.payload = payload
+                existing.payload = {
+                    **({"shared_package_check": existing.payload["shared_package_check"]}
+                       if (getattr(existing, "payload", None) or {}).get("shared_package_check")
+                       else {}),
+                    **payload,
+                }
                 existing.last_error = None
                 return True
             return False

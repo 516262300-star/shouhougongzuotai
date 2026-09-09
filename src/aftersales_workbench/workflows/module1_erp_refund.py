@@ -278,6 +278,7 @@ class Module1ErpRefundService:
                 AftersalesActionTask.action_type
                 == AutomationActionType.ERP_CREATE_MANUAL_TODO,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                AftersalesActionTask.idempotency_key.not_like("module1:shared-package:%"),
             )
             .values(
                 action_status=AutomationTaskStatus.CANCELLED,

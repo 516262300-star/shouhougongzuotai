@@ -67,7 +67,11 @@ def execute(db, client, task):
         id=task.id, after_sales_sn=task.after_sales_sn, action_type=task.action_type,
         payload=task.payload, platform_order_sn="example-order", shop_code="pdd-shop-01",
     )
-    return ExternalActionExecutor(db, settings())._agree_pdd(client, snapshot)
+    from tests.test_shared_package import SinglePackageStub
+
+    return ExternalActionExecutor(
+        db, settings(), package_verifier=SinglePackageStub()
+    )._agree_pdd(client, snapshot)
 
 
 def test_explicit_status_automatically_creates_and_executes_without_confirmation(db, sample):

@@ -215,6 +215,8 @@ def test_existing_failed_task_never_retried_or_reauthorized(db, sample):
 
 
 def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample):
+    from tests.test_shared_package import SinglePackageStub
+
     prepare(db, sample, apply=True)
     gate(db)
     t = task(db)
@@ -236,7 +238,9 @@ def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample):
         ExternalActionExecutor(db, settings)._agree_pdd(sample[1], snapshot)
     assert sample[1].writes == 0
     sample[1].detail["refund_amount"] = 1847
-    assert ExternalActionExecutor(db, settings)._agree_pdd(sample[1], snapshot) is False
+    assert ExternalActionExecutor(
+        db, settings, package_verifier=SinglePackageStub()
+    )._agree_pdd(sample[1], snapshot) is False
     assert sample[1].writes == 1
     changed = dict(sample[1].info, shipping_time=(NOW - timedelta(days=2)).isoformat())
     with pytest.raises(ValueError):

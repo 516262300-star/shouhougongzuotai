@@ -121,7 +121,11 @@ def gate(db, sample, *, error=None, cfg=None, now=NOW, dry_run=False, events=Non
 
 
 def execute(db, sample, task, cfg=None):
-    return ExternalActionExecutor(db, cfg or settings())._agree_pdd(
+    from tests.test_shared_package import SinglePackageStub
+
+    return ExternalActionExecutor(
+        db, cfg or settings(), package_verifier=SinglePackageStub()
+    )._agree_pdd(
         sample[1],
         ExternalTaskSnapshot(
             id=task.id,

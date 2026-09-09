@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -528,10 +528,12 @@ class ExternalActionExecutor:
     def __init__(
         self, session: Session, settings: Settings, *,
         pdd_shop_codes: tuple[str, ...] | None = None,
+        package_verifier=None,
     ) -> None:
         self.session = session
         self.settings = settings
         self.pdd_shop_codes = pdd_shop_codes
+        self.package_verifier = package_verifier
 
     def run(
         self,
@@ -655,6 +657,23 @@ class ExternalActionExecutor:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    if (task.payload.get("task_scope") == "shared_package"
+                            and not str(task.payload.get("assignee") or "").strip()):
+                        current = self.session.scalar(select(AfterSalesOrder).where(
+                            AfterSalesOrder.after_sales_sn == task.after_sales_sn,
+                        ))
+                        if (current is None or current.erp_sales_owner_status != "matched"
+                                or not str(current.erp_sales_owner or "").strip()):
+                            result.skipped += 1  # 不猜业务员，不消耗发布次数。
+                            continue
+                        payload = {**task.payload, "assignee": current.erp_sales_owner,
+                                   "assignee_status": "matched"}
+                        self.session.execute(update(AftersalesActionTask).where(
+                            AftersalesActionTask.id == task.id,
+                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                        ).values(payload=payload))
+                        self.session.commit()
+                        task = replace(task, payload=payload)
                     if suppress_manual_todo(task.payload):
                         self.session.execute(update(AftersalesActionTask).where(
                             AftersalesActionTask.id == task.id,
@@ -772,6 +791,27 @@ class ExternalActionExecutor:
                     self.session.commit()
                     result.skipped += 1
                 except Exception as exc:
+                    from aftersales_workbench.workflows.shared_package import (
+                        PackageCheckUnavailable,
+                    )
+
+                    if isinstance(exc, PackageCheckUnavailable):
+                        # 本次仅前置只读失败，未发资金请求；交回物流队列五分钟后重查。
+                        row = self.session.get(AftersalesActionTask, task.id)
+                        if not (row.payload or {}).get("uncollected_request_started_at"):
+                            row.action_status = AutomationTaskStatus.CANCELLED
+                            row.last_error = str(exc)
+                            order = self.session.scalar(select(AfterSalesOrder).where(
+                                AfterSalesOrder.after_sales_sn == task.after_sales_sn,
+                            ))
+                            from datetime import timedelta
+
+                            order.logistics_next_check_at = (
+                                datetime.now(UTC) + timedelta(minutes=5)
+                            ).replace(tzinfo=None)
+                            self.session.commit()
+                            result.skipped += 1
+                            continue
                     ActionCoordinator(self.session).record_external_failure(task.id, str(exc))
                     result.failed += 1
             return result
@@ -977,6 +1017,21 @@ class ExternalActionExecutor:
         if already_refunded:
             order.platform_after_sales_status = 10
             return True
+        if task.payload.get("origin") == "module1":
+            from aftersales_workbench.workflows.shared_package import SharedPackageVerifier
+
+            verifier = self.package_verifier or SharedPackageVerifier(self.session, self.settings)
+            package_evidence = verifier.require_before_refund(order, client, task.id)
+            if package_evidence is not None:
+                # ERP/其他订单核查之后再读目标，避免使用开始扫描时的旧申请。
+                if verify_pdd_refund(
+                    client, order, origin="module1",
+                    uncollected_confirmation=confirmation,
+                    auto_uncollected_evidence=auto_evidence,
+                    no_trace_risk_evidence=risk_evidence,
+                ):
+                    order.platform_after_sales_status = 10
+                    return True
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         if confirmation is not None:
             require_execution_confirmation(self.session, order, task.id, self.settings)
@@ -1077,7 +1132,7 @@ class ExternalActionExecutor:
         marker = str(payload["marker"])
         legacy_markers: tuple[str, ...] = ()
         origin = str(payload.get("origin") or "").strip()
-        if origin in {"module1", "module3"}:
+        if origin in {"module1", "module3"} and payload.get("task_scope") != "shared_package":
             module_label = "M1" if origin == "module1" else "M3"
             public_marker = f"【售后工作台 {module_label}订单:{task.platform_order_sn}】"
             if marker != public_marker:

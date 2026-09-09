@@ -12,6 +12,10 @@
 
 ## 接口判据
 
+### 额外前置保护：同包裹其他订单
+
+五条风险条件不再是充分条件。资金请求前还须通过[同包裹订单保护](module1-shared-package-refund-guard.md)：读取 ERP 客户全部原销售分页并逐笔核对平台包裹与售后；同包裹有未申请有效全额仅退款的订单，冻结当前单自动退款并生成业务员待办。读取不全或接口失败不能放行。该规则不把“暂无轨迹”变成未揽收事实，且不替代原资金检查。
+
 - [快递100官方实时查询文档](https://api.kuaidi100.com/document/5f0ffb5ebc8da837cbd8aefc) 1.9：HTTP成功、`returnCode=500`、`result=false`、`message=查询无结果，请隔段时间再查`，无冲突的轨迹/身份/签收字段。这里的500是JSON业务码，不是HTTP 500；501/502/503/504/601等不放行。旧代码用于无轨迹分流的宽泛文本匹配、`status=201`、`data=[]`不作为本规则放款凭据。
 - [拼多多官方物流API](https://open.pinduoduo.com/application/document/api?id=pdd.logistics.ordertrace.get)：通过`pdd.logistics.companies.get`把订单`logistics_id`唯一映射到官方公司`code`，再用`company_code`、`mail_no`、`cache=false`查询`pdd.logistics.ordertrace.get`。只接受`50001 + ISV_TRACK_ERROR`组合。已通过官方`https://open-api.pinduoduo.com/pop/error/solution`只读核对，该子码解释为轨迹不存在。其他50001子码不等同暂无轨迹。只读调用使用本店凭据，禁止跨店猜测。
 - 不解析尚未验证的拼多多轨迹成功格式来直接退款；返回非明确无轨迹响应会保守锁存历史保护，交回常规物流核查。

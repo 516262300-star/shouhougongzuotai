@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -256,6 +256,12 @@ class SqlAlchemyModule1ManualTodoRepository:
                     AfterSalesOrder.exception_type.is_(None),
                     AfterSalesOrder.exception_type.not_like(NO_TRACE_REASON_LIKE),
                 ),
+                or_(
+                    AfterSalesOrder.exception_type.is_(None),
+                    AfterSalesOrder.exception_type != (
+                        "同包裹仍有订单未申请全额仅退款，已暂停自动退款，请业务员联系客户"
+                    ),
+                ),
             )
             .order_by(AfterSalesOrder.id)
             .limit(limit)
@@ -305,6 +311,8 @@ class SqlAlchemyModule1ManualTodoRepository:
             select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == candidate.after_sales_sn,
                 AftersalesActionTask.action_type == action_type,
+                func.coalesce(AftersalesActionTask.payload["task_scope"].as_string(), "")
+                != "shared_package",
             )
         ).scalar_one_or_none()
         payload = candidate.task_payload(started_at=started_at)
