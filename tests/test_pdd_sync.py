@@ -44,6 +44,9 @@ class FakeRepository:
     def resolve_issue(self, _shop_id, refund_id):
         return self.issues.pop(refund_id, None) is not None
 
+    def is_issue_dismissed(self, _shop_id, _refund_id):
+        return False
+
     def due_issues(self, _shop_id, limit=20):
         return [(key, self.issues[key][0]) for key in self.retry_ids if key in self.issues][:limit]
 

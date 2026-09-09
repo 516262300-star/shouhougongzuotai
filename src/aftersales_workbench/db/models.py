@@ -73,6 +73,8 @@ class MarketplaceSyncIssue(Base):
     checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     next_retry_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    dismissed_reason: Mapped[str | None] = mapped_column(String(500))
 
 
 class Platform(StrEnum):

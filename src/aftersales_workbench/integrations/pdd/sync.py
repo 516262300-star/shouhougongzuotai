@@ -55,6 +55,8 @@ class PddSyncRepository(Protocol):
 
     def resolve_issue(self, shop_id: int, refund_id: str) -> bool: ...
 
+    def is_issue_dismissed(self, shop_id: int, refund_id: str) -> bool: ...
+
     def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]: ...
 
     def outstanding_issues(self, shop_id: int) -> int: ...
@@ -223,6 +225,9 @@ class PddRefundSyncService:
         if not order_sn or not refund_id.isdigit() or int(refund_id) < 1:
             raise ValueError("售后列表记录缺少有效 order_sn 或 id")
         result.records_seen += 1
+        if self.repository.is_issue_dismissed(shop_id, refund_id):
+            result.records_skipped += 1
+            return  # 仅跳过用户明确移除的同店同售后号，不按月份批量忽略。
         try:
             detail = client.get_refund_information(
                 order_sn=order_sn, after_sales_id=int(refund_id),

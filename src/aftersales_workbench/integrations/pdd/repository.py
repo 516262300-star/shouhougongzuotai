@@ -180,6 +180,9 @@ class SqlAlchemyPddSyncRepository:
     def resolve_issue(self, shop_id: int, refund_id: str) -> bool:
         return SyncIssueRepository(self.session).resolve(shop_id, refund_id)
 
+    def is_issue_dismissed(self, shop_id: int, refund_id: str) -> bool:
+        return SyncIssueRepository(self.session).is_dismissed(shop_id, refund_id)
+
     def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]:
         ids = SyncIssueRepository(self.session).due(shop_id, limit)
         return [
