@@ -64,6 +64,11 @@ from aftersales_workbench.workflows.sync_safety import (
     sync_safe_order_filter,
     sync_safe_task_filter,
 )
+from aftersales_workbench.workflows.uncollected_refund import (
+    CONFIRMED_UNCOLLECTED,
+    mark_request_started,
+    require_execution_confirmation,
+)
 
 
 class WorkflowTransitionError(ValueError):
@@ -942,15 +947,24 @@ class ExternalActionExecutor:
         if order is None or order.platform_order_sn != task.platform_order_sn:
             raise WorkflowTransitionError("退款任务关联订单已变化，禁止执行")
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
+        confirmation = None
+        if task.payload.get("refund_gate") == CONFIRMED_UNCOLLECTED:
+            confirmation = require_execution_confirmation(
+                self.session, order, task.id, self.settings,
+            )
         already_refunded = verify_pdd_refund(
             client,
             order,
             origin=str(task.payload.get("origin") or ""),
+            **({"uncollected_confirmation": confirmation} if confirmation is not None else {}),
         )
         if already_refunded:
             order.platform_after_sales_status = 10
             return True
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
+        if confirmation is not None:
+            require_execution_confirmation(self.session, order, task.id, self.settings)
+            mark_request_started(self.session, task.id)
         client.agree_refund(
             after_sales_id=int(task.after_sales_sn),
             order_sn=task.platform_order_sn,

@@ -25,11 +25,13 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100Client,
     Kuaidi100ConfigurationError,
     Kuaidi100Credentials,
+    Kuaidi100NoTraceError,
     LogisticsEvent,
     is_kuaidi100_no_trace_error,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
+from aftersales_workbench.workflows.uncollected_refund import pending_confirmation, utc
 
 _CARRIER_ALIASES = {
     "极兔速递": "jtexpress",
@@ -419,7 +421,10 @@ class Module1LogisticsGateService:
         query_cache: LogisticsQueryCache = {}
         no_trace_packages: set[tuple[str, str, str | None]] = set()
         for order in orders:
-            if logistics_no_trace_manual_required(order, policy=self.polling_policy):
+            if (
+                logistics_no_trace_manual_required(order, policy=self.polling_policy)
+                and pending_confirmation(self.session, order, now=now) is None
+            ):
                 result.no_trace += 1
                 no_trace_packages.add(
                     (
@@ -469,6 +474,13 @@ class Module1LogisticsGateService:
             except Exception as exc:
                 self.session.rollback()
                 no_trace = is_kuaidi100_no_trace_error(exc)
+                confirmed_task = (
+                    pending_confirmation(self.session, order, now=now)
+                    if isinstance(exc, Kuaidi100NoTraceError) else None
+                )
+                allow_uncollected = (
+                    confirmed_task is not None and self.business_hours.is_open(now)
+                )
                 if not dry_run:
                     failures, _error_text = record_logistics_query_failure(
                         order,
@@ -476,10 +488,23 @@ class Module1LogisticsGateService:
                         checked_at=now,
                         policy=self.polling_policy,
                     )
-                    self._cancel_pending_refund(order.after_sales_sn)
-                    if no_trace and failures >= self.polling_policy.manual_after_failures:
+                    if allow_uncollected:
+                        # 保留 UNKNOWN 和原始无轨迹错误，人工依据不冒充快递揽收记录。
+                        confirmed_task.payload = {
+                            **confirmed_task.payload,
+                            "uncollected_gate_checked_at": utc(now).isoformat(),
+                            "uncollected_gate_result": "NO_TRACE_USER_CONFIRMED",
+                        }
+                    else:
+                        self._cancel_pending_refund(order.after_sales_sn)
+                    if (
+                        no_trace and not allow_uncollected
+                        and failures >= self.polling_policy.manual_after_failures
+                    ):
                         route_logistics_no_trace_to_manual(order, failures=failures)
                     self.session.commit()
+                if allow_uncollected:
+                    result.allowed_refunds += 1
                 if no_trace:
                     result.no_trace += 1
                     no_trace_packages.add(
@@ -492,7 +517,10 @@ class Module1LogisticsGateService:
                     failures = int(getattr(order, "logistics_query_failures", 0) or 0)
                     if dry_run:
                         failures += 1
-                    if failures >= self.polling_policy.manual_after_failures:
+                    if (
+                        failures >= self.polling_policy.manual_after_failures
+                        and not allow_uncollected
+                    ):
                         result.manual_review_required += 1
                 else:
                     result.failed += 1
@@ -704,6 +732,16 @@ class Module1LogisticsGateService:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if (
+                existing.action_status == AutomationTaskStatus.PENDING
+                and (existing.payload or {}).get("uncollected_confirmation")
+                and payload.get("refund_gate") in {"IN_TRANSIT", "RETURNING", "RETURNED"}
+            ):
+                existing.payload = {
+                    **existing.payload, **payload,
+                    "uncollected_confirmation_closed_reason": "已取得有效物流，改按常规闸门",
+                }
+                return False
             if (
                 action_type
                 in {
