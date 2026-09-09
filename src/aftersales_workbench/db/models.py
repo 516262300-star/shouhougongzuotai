@@ -67,6 +67,7 @@ class MarketplaceSyncIssue(Base):
 
     shop_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     after_sales_sn: Mapped[str] = mapped_column(String(100), primary_key=True)
+    platform_order_sn: Mapped[str | None] = mapped_column(String(100))
     last_error: Mapped[str] = mapped_column(String(500), nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     checked_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
@@ -87,6 +88,11 @@ class AfterSalesType(StrEnum):
     ONLY_REFUND = "ONLY_REFUND"
     RETURN_AND_REFUND = "RETURN_AND_REFUND"
     EXCHANGE = "EXCHANGE"
+    RESEND = "RESEND"
+    REPAIR = "REPAIR"
+
+
+RECORD_ONLY_AFTERSALES_TYPES = (AfterSalesType.RESEND, AfterSalesType.REPAIR)
 
 
 class ShippingStatus(StrEnum):

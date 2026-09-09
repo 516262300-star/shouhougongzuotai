@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.integrations.pdd.client import PddApiError, PddClient
 from aftersales_workbench.integrations.pdd.mapper import (
+    PddDataMappingError,
     normalize_refund,
     unwrap_order_information,
 )
@@ -50,6 +51,14 @@ class PddSyncRepository(Protocol):
 
     def rollback(self) -> None: ...
 
+    def record_issue(self, shop_id: int, refund_id: str, order_sn: str, error: str) -> None: ...
+
+    def resolve_issue(self, shop_id: int, refund_id: str) -> bool: ...
+
+    def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]: ...
+
+    def outstanding_issues(self, shop_id: int) -> int: ...
+
 
 @dataclass(slots=True)
 class ShopSyncResult:
@@ -63,6 +72,9 @@ class ShopSyncResult:
     records_created: int = 0
     records_updated: int = 0
     records_skipped: int = 0
+    records_quarantined: int = 0
+    records_recovered: int = 0
+    outstanding_issues: int = 0
     error: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -189,7 +201,90 @@ class PddRefundSyncService:
                 self.repository.advance_cursor(shop_id, scope, end_updated_at)
                 self.repository.commit()
                 result.windows += 1
+            self._retry_issues(client, shop_id=shop_id, result=result)
+            result.outstanding_issues = self.repository.outstanding_issues(shop_id)
+            if result.outstanding_issues:
+                # 数据窗口可以推进，但现有资金自动化仍按同步未完全成功保护。
+                result.ok = False
+                result.error = (
+                    f"正常售后同步已推进；另有 {result.outstanding_issues} 笔异常单已隔离，等待重查"
+                )
         return result
+
+    def _save_record(
+        self, client: PddReadClient, *, shop_id: int,
+        list_record: dict[str, Any], result: ShopSyncResult,
+    ) -> None:
+        order_sn = str(list_record.get("order_sn") or "").strip()
+        refund_id = str(list_record.get("id") or "").strip()
+        # 没有稳定身份无法持久化重查，不可跳过或推进窗口。
+        if not order_sn or not refund_id.isdigit() or int(refund_id) < 1:
+            raise ValueError("售后列表记录缺少有效 order_sn 或 id")
+        result.records_seen += 1
+        try:
+            detail = client.get_refund_information(
+                order_sn=order_sn, after_sales_id=int(refund_id),
+            )
+            if (
+                str(detail.get("id") or "") != refund_id
+                or str(detail.get("order_sn") or "") != order_sn
+            ):
+                raise PddDataMappingError("售后详情身份与列表不一致")
+            order = unwrap_order_information(client.get_order_information(order_sn=order_sn))
+            if order.get("order_sn") and str(order["order_sn"]) != order_sn:
+                raise PddDataMappingError("订单详情身份与售后列表不一致")
+            refund = normalize_refund(list_record, detail, order)
+        except PddApiError as exc:
+            if exc.sub_code != "45001":
+                raise  # 鉴权、限流等系统故障不逐单吞掉。
+            self.repository.record_issue(
+                shop_id, refund_id, order_sn, "PDD 45001：订单不存在或不属于当前店铺，待重查",
+            )
+            result.records_quarantined += 1
+            return
+        except PddDataMappingError as exc:
+            self.repository.record_issue(shop_id, refund_id, order_sn, str(exc))
+            result.records_quarantined += 1
+            return
+        # 数据库异常绝不隔离跳过，必须回滚窗口；台账与游标在同一事务内提交。
+        created = self.repository.upsert_refund(shop_id, refund)
+        if self.repository.resolve_issue(shop_id, refund_id):
+            result.records_recovered += 1
+        if created:
+            result.records_created += 1
+        else:
+            result.records_updated += 1
+
+    def _retry_issues(
+        self, client: PddReadClient, *, shop_id: int, result: ShopSyncResult,
+    ) -> None:
+        for refund_id, order_sn in self.repository.due_issues(shop_id, limit=20):
+            if not order_sn:
+                self.repository.record_issue(
+                    shop_id, refund_id, "", "缺少平台订单号，需人工补充重查依据",
+                )
+                self.repository.commit()
+                continue
+            found = False
+            # 按平台订单号读取最新列表，再精确匹配售后号；不能用另一笔售后解除隔离。
+            # 即使平台未返回历史单，台账也会保留并退避，绝不改用不明类型退款。
+            now_at = int(self._now())
+            for record in self._list_records(
+                client, status=1, start_updated_at=now_at - 1800,
+                end_updated_at=now_at, order_sn=order_sn,
+            ):
+                if str(record.get("id") or "") != refund_id:
+                    continue
+                if str(record.get("order_sn") or "") != order_sn:
+                    continue
+                self._save_record(client, shop_id=shop_id, list_record=record, result=result)
+                found = True
+                break
+            if not found:
+                self.repository.record_issue(
+                    shop_id, refund_id, order_sn, "平台最新列表未返回指定售后，保留隔离等待重查",
+                )
+            self.repository.commit()
 
     def _sync_status_window(
         self,
@@ -201,6 +296,16 @@ class PddRefundSyncService:
         end_updated_at: int,
         result: ShopSyncResult,
     ) -> None:
+        for record in self._list_records(
+            client, status=status, start_updated_at=start_updated_at,
+            end_updated_at=end_updated_at,
+        ):
+            self._save_record(client, shop_id=shop_id, list_record=record, result=result)
+
+    def _list_records(
+        self, client: PddReadClient, *, status: int,
+        start_updated_at: int, end_updated_at: int, order_sn: str | None = None,
+    ) -> Iterable[dict[str, Any]]:
         page = 1
         page_size = self.settings.pdd_sync_page_size
         while True:
@@ -211,41 +316,21 @@ class PddRefundSyncService:
                 after_sales_type=1,
                 page=page,
                 page_size=page_size,
+                **({"order_sn": order_sn} if order_sn is not None else {}),
             )
             payload = body.get("refund_increment_get_response")
             if not isinstance(payload, dict):
                 raise ValueError("缺少 refund_increment_get_response")
-            records = payload.get("refund_list") or []
+            records = payload.get("refund_list", [])
+            if records is None:
+                records = []
             if not isinstance(records, list):
                 raise ValueError("refund_list 不是列表")
 
             for list_record in records:
                 if not isinstance(list_record, dict):
                     raise ValueError("refund_list 包含非对象记录")
-                order_sn = str(list_record.get("order_sn") or "").strip()
-                after_sales_id = list_record.get("id")
-                if not order_sn or after_sales_id is None:
-                    raise ValueError("售后列表记录缺少 order_sn 或 id")
-                result.records_seen += 1
-                try:
-                    detail = client.get_refund_information(
-                        order_sn=order_sn,
-                        after_sales_id=int(after_sales_id),
-                    )
-                    order = unwrap_order_information(
-                        client.get_order_information(order_sn=order_sn)
-                    )
-                except PddApiError as exc:
-                    if exc.sub_code == "45001":
-                        result.records_skipped += 1
-                        continue
-                    raise
-                refund = normalize_refund(list_record, detail, order)
-                created = self.repository.upsert_refund(shop_id, refund)
-                if created:
-                    result.records_created += 1
-                else:
-                    result.records_updated += 1
+                yield list_record
 
             total_count = payload.get("total_count")
             if not records or len(records) < page_size:

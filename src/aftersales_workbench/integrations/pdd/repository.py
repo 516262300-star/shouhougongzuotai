@@ -9,11 +9,13 @@ from aftersales_workbench.db.models import (
     AfterSalesItem,
     AfterSalesOrder,
     ItemStatus,
+    MarketplaceSyncIssue,
     PddSyncCursor,
     Platform,
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.marketplace.issues import SyncIssueRepository
 from aftersales_workbench.integrations.pdd.mapper import NormalizedRefund
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
 from aftersales_workbench.integrations.refund_financial import (
@@ -169,3 +171,26 @@ class SqlAlchemyPddSyncRepository:
 
     def rollback(self) -> None:
         self.session.rollback()
+
+    def record_issue(self, shop_id: int, refund_id: str, order_sn: str, error: str) -> None:
+        SyncIssueRepository(self.session).record(
+            shop_id, refund_id, error, platform_order_sn=order_sn,
+        )
+
+    def resolve_issue(self, shop_id: int, refund_id: str) -> bool:
+        return SyncIssueRepository(self.session).resolve(shop_id, refund_id)
+
+    def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]:
+        ids = SyncIssueRepository(self.session).due(shop_id, limit)
+        return [
+            (row.after_sales_sn, row.platform_order_sn or "")
+            for row in self.session.scalars(
+                select(MarketplaceSyncIssue).where(
+                    MarketplaceSyncIssue.shop_id == shop_id,
+                    MarketplaceSyncIssue.after_sales_sn.in_(ids),
+                )
+            )
+        ]
+
+    def outstanding_issues(self, shop_id: int) -> int:
+        return SyncIssueRepository(self.session).outstanding(shop_id)

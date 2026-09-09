@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings, get_settings
 from aftersales_workbench.db.models import (
+    RECORD_ONLY_AFTERSALES_TYPES,
     AftersalesActionTask,
     AfterSalesItem,
     AfterSalesOrder,
@@ -530,7 +531,10 @@ class AftersalesRecordService:
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
         )
-        if after_sales_type == "RETURN_AND_REFUND":
+        if (
+            after_sales_type == "RETURN_AND_REFUND"
+            or after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
+        ):
             decision_note = self._decision_note(
                 workflow,
                 logistics,
@@ -613,7 +617,9 @@ class AftersalesRecordService:
             "erp_customer": serialized_owner,
             "decision": {
                 "strategy": (
-                    "仓库退货验收"
+                    "仅记录（不自动处理）"
+                    if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
+                    else "仓库退货验收"
                     if after_sales_type == "RETURN_AND_REFUND"
                     else (
                         "极速拦截（智能）"
@@ -621,10 +627,16 @@ class AftersalesRecordService:
                         else "人工规则判定"
                     )
                 ),
-                "status": WORKFLOW_LABELS.get(workflow, workflow),
+                "status": (
+                    "仅记录"
+                    if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
+                    else WORKFLOW_LABELS.get(workflow, workflow)
+                ),
                 "status_tone": _tone_for_workflow(workflow),
                 "handler": (
-                    "系统自动"
+                    "平台处理"
+                    if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
+                    else "系统自动"
                     if workflow not in MANUAL_WORKFLOWS
                     else serialized_owner["sales_owner"]
                 ),
@@ -1673,6 +1685,8 @@ class AftersalesRecordService:
             "ONLY_REFUND": "仅退款",
             "RETURN_AND_REFUND": "退货退款",
             "EXCHANGE": "换货",
+            "RESEND": "补寄",
+            "REPAIR": "维修",
         }.get(code, code)
 
     @staticmethod
@@ -1691,6 +1705,8 @@ class AftersalesRecordService:
         *,
         after_sales_type: str = "ONLY_REFUND",
     ) -> str:
+        if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
+            return "补寄/维修仅同步记录，不自动拦截、退款或开具 ERP 退款单。"
         if after_sales_type == "RETURN_AND_REFUND":
             if workflow == "RETURN_INSPECTED_PASS":
                 return "仓库验货已通过，模块 2 将自动提交平台退款。"
@@ -1709,6 +1725,8 @@ class AftersalesRecordService:
 
     @staticmethod
     def _refund_scope(order: AfterSalesOrder) -> str:
+        if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
+            return "不适用（补寄/维修）"
         return {
             RefundScope.UNKNOWN: "缺买家实付",
             RefundScope.FULL: "全额退款",
@@ -1718,6 +1736,8 @@ class AftersalesRecordService:
 
     @staticmethod
     def _refund_scope_reason(order: AfterSalesOrder) -> str:
+        if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
+            return "金额为平台接口原始字段，不是退款申请或实际退款金额。"
         return {
             RefundScope.UNKNOWN: (
                 "缺少买家优惠后实付金额，无法判断全额或部分退款；不代表平台尚未退款。"

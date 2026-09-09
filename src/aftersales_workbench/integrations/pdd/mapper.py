@@ -186,11 +186,15 @@ def _after_sales_type(list_value: Any, detail_value: Any) -> AfterSalesType:
         2: AfterSalesType.ONLY_REFUND,
         3: AfterSalesType.RETURN_AND_REFUND,
         4: AfterSalesType.EXCHANGE,
+        5: AfterSalesType.RESEND,
+        6: AfterSalesType.REPAIR,
     }
     detail_mapping = {
         1: AfterSalesType.ONLY_REFUND,
         2: AfterSalesType.RETURN_AND_REFUND,
         3: AfterSalesType.EXCHANGE,
+        4: AfterSalesType.RESEND,
+        5: AfterSalesType.REPAIR,
     }
     value = list_value if list_value is not None else detail_value
     mapping = list_mapping if list_value is not None else detail_mapping

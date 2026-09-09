@@ -11,12 +11,17 @@ class SyncIssueRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    def record(self, shop_id: int, refund_id: str, error: str) -> None:
+    def record(
+        self, shop_id: int, refund_id: str, error: str,
+        *, platform_order_sn: str | None = None,
+    ) -> None:
         row = self.session.get(MarketplaceSyncIssue, (shop_id, refund_id))
         now = utcnow()
         if row is None:
             row = MarketplaceSyncIssue(shop_id=shop_id, after_sales_sn=refund_id, attempts=0)
             self.session.add(row)
+        if platform_order_sn is not None:
+            row.platform_order_sn = platform_order_sn
         row.attempts += 1
         row.last_error = error[:500]
         row.checked_at = now

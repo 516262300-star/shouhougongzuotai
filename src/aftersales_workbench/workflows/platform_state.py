@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from aftersales_workbench.db.models import AfterSalesOrder
+from aftersales_workbench.db.models import RECORD_ONLY_AFTERSALES_TYPES, AfterSalesOrder
 
 
 def platform_refund_completed(order: AfterSalesOrder) -> bool:
     """跨平台判断退款是否已经明确成功，未知状态一律不猜测。"""
+    if getattr(order, "after_sales_type", None) in RECORD_ONLY_AFTERSALES_TYPES:
+        return False
     return (
         str(getattr(order, "refund_financial_status", "") or "").upper()
         == "SUCCESS"

@@ -4,10 +4,17 @@ from typing import Any
 
 from sqlalchemy import and_, exists, func, or_
 
-from aftersales_workbench.db.models import AfterSalesOrder, Platform, Shop
+from aftersales_workbench.db.models import (
+    RECORD_ONLY_AFTERSALES_TYPES,
+    AfterSalesOrder,
+    Platform,
+    Shop,
+)
 
 
 def confirmed_refund(order: AfterSalesOrder, platform: Platform | str) -> bool:
+    if getattr(order, "after_sales_type", None) in RECORD_ONLY_AFTERSALES_TYPES:
+        return False
     # 10/4 仅为拼多多代码，不套用到其他平台。
     return str(order.refund_financial_status or "").upper() == "SUCCESS" or (
         platform == Platform.PDD
@@ -20,13 +27,16 @@ def confirmed_refund_filter() -> Any:
         Shop.shop_id == AfterSalesOrder.shop_id,
         Shop.platform == Platform.PDD,
     ).correlate(AfterSalesOrder)
-    return or_(
-        func.upper(func.coalesce(AfterSalesOrder.refund_financial_status, "")) == "SUCCESS",
-        and_(
-            pdd_shop,
-            or_(
-                func.coalesce(AfterSalesOrder.platform_after_sales_status, 0) == 10,
-                func.coalesce(AfterSalesOrder.platform_order_refund_status, 0) == 4,
+    return and_(
+        AfterSalesOrder.after_sales_type.notin_(RECORD_ONLY_AFTERSALES_TYPES),
+        or_(
+            func.upper(func.coalesce(AfterSalesOrder.refund_financial_status, "")) == "SUCCESS",
+            and_(
+                pdd_shop,
+                or_(
+                    func.coalesce(AfterSalesOrder.platform_after_sales_status, 0) == 10,
+                    func.coalesce(AfterSalesOrder.platform_order_refund_status, 0) == 4,
+                ),
             ),
         ),
     )
@@ -36,7 +46,12 @@ def refund_display(
     order: AfterSalesOrder, platform: Platform | str, *, submitted: bool = False
 ) -> dict[str, str]:
     status = str(order.refund_financial_status or "UNKNOWN").upper()
-    if confirmed_refund(order, platform):
+    if getattr(order, "after_sales_type", None) in RECORD_ONLY_AFTERSALES_TYPES:
+        status, label, tone, reason = (
+            "NOT_APPLICABLE", "不涉及退款", "neutral",
+            "补寄/维修仅记录；平台售后完成和接口金额不代表实际退款。",
+        )
+    elif confirmed_refund(order, platform):
         status, label, tone, reason = (
             "SUCCESS", "平台已退款", "success",
             "平台已明确返回退款成功；不代表退货已到仓或 ERP 已平账。",

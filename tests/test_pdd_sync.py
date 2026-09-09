@@ -16,6 +16,8 @@ class FakeRepository:
         self.cursor_end: int | None = None
         self.commits = 0
         self.rollbacks = 0
+        self.issues: dict[str, tuple[str, str]] = {}
+        self.retry_ids: list[str] = []
 
     def upsert_shop(self, _config: ConfiguredPddShop, **_values: str) -> int:
         return 1
@@ -35,6 +37,18 @@ class FakeRepository:
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+    def record_issue(self, _shop_id, refund_id, order_sn, error):
+        self.issues[refund_id] = (order_sn, error)
+
+    def resolve_issue(self, _shop_id, refund_id):
+        return self.issues.pop(refund_id, None) is not None
+
+    def due_issues(self, _shop_id, limit=20):
+        return [(key, self.issues[key][0]) for key in self.retry_ids if key in self.issues][:limit]
+
+    def outstanding_issues(self, _shop_id):
+        return len(self.issues)
 
 
 class FakeClient:
@@ -168,7 +182,7 @@ def test_default_sync_includes_refund_success_status() -> None:
     assert client.statuses == [2, 3, 10]
 
 
-def test_sync_skips_single_foreign_order_and_advances_window() -> None:
+def test_sync_quarantines_foreign_order_without_silently_skipping() -> None:
     repository = FakeRepository()
     service = PddRefundSyncService(
         repository,
@@ -179,8 +193,11 @@ def test_sync_skips_single_foreign_order_and_advances_window() -> None:
 
     result = service.sync_all([_shop()], statuses=(3,), max_windows=1)[0]
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.records_seen == 1
-    assert result.records_skipped == 1
+    assert result.records_skipped == 0
+    assert result.records_quarantined == 1
+    assert result.outstanding_issues == 1
+    assert repository.issues["123"][0] == "order-1"
     assert result.records_created == 0
     assert repository.cursor_end == 1800

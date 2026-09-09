@@ -2,12 +2,18 @@
 
 from decimal import Decimal, InvalidOperation
 
-from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
+from aftersales_workbench.db.models import (
+    RECORD_ONLY_AFTERSALES_TYPES,
+    AfterSalesType,
+    ShippingStatus,
+)
 from aftersales_workbench.integrations.pdd.mapper import normalize_refund, unwrap_order_information
 
 
 def verify_pdd_refund(client, order, *, origin: str) -> bool:
     """返回 True 表示平台明确已退款；此函数绝不调用写接口。"""
+    if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
+        raise ValueError("补寄/维修不属于退款业务，禁止执行退款任务")
     detail = client.get_refund_information(
         order_sn=order.platform_order_sn,
         after_sales_id=int(order.after_sales_sn),
@@ -21,6 +27,8 @@ def verify_pdd_refund(client, order, *, origin: str) -> bool:
         status = int(detail["after_sales_status"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("拼多多退款详情缺少有效状态，禁止自动退款") from exc
+    if str(detail.get("after_sales_type") or "") in {"4", "5"}:
+        raise ValueError("平台最新售后为补寄/维修，不能认作退款成功或执行退款")
     if status == 10:
         return True
     allowed = {2} if origin == "module1" else {2, 3}
