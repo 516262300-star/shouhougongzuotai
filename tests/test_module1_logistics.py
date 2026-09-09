@@ -4,7 +4,10 @@ from datetime import datetime
 from types import SimpleNamespace
 
 from aftersales_workbench.db.models import AutomationActionType, Platform, WorkflowStatus
-from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
+from aftersales_workbench.integrations.logistics.kuaidi100 import (
+    Kuaidi100NoTraceError,
+    LogisticsEvent,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     LogisticsState,
     Module1LogisticsGateService,
@@ -292,7 +295,7 @@ def test_returning_refunded_order_does_not_start_erp_match_early() -> None:
     assert session.added == []
 
 
-def test_query_failure_preserves_last_known_state_and_schedules_retry() -> None:
+def test_known_no_trace_text_preserves_last_known_state_and_schedules_retry() -> None:
     order = _order()
     order.logistics_state = "OUT_FOR_DELIVERY"
     order.logistics_latest_context = "正在派件"
@@ -306,12 +309,96 @@ def test_query_failure_preserves_last_known_state_and_schedules_retry() -> None:
 
     result = service.run(dry_run=False)
 
-    assert result.failed == 1
+    assert result.failed == 0
+    assert result.no_trace == 1
+    assert result.no_trace_packages == 1
     assert order.logistics_state == "OUT_FOR_DELIVERY"
     assert order.logistics_latest_context == "正在派件"
     assert order.logistics_query_failures == 1
     assert "查询无结果" in order.logistics_last_error
     assert order.logistics_next_check_at > order.logistics_checked_at
+
+
+def test_technical_query_failure_remains_a_system_failure() -> None:
+    order = _order()
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(error=RuntimeError("HTTP 503")),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.failed == 1
+    assert result.no_trace == 0
+    assert order.logistics_query_failures == 1
+
+
+def test_no_trace_is_not_a_system_failure_and_schedules_retry() -> None:
+    order = _order()
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(error=Kuaidi100NoTraceError("查询无结果，请隔段时间再查")),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.failed == 0
+    assert result.no_trace == 1
+    assert result.no_trace_packages == 1
+    assert result.manual_review_required == 0
+    assert order.workflow_status is WorkflowStatus.INTERCEPT_CONFIRMED
+    assert order.logistics_query_failures == 1
+    assert order.logistics_next_check_at > order.logistics_checked_at
+
+
+def test_sixth_no_trace_stops_polling_and_routes_manual() -> None:
+    order = _order()
+    order.logistics_query_failures = 5
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        FakeQuery(error=Kuaidi100NoTraceError("查询无结果，请隔段时间再查")),
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert result.failed == 0
+    assert result.no_trace == 1
+    assert result.manual_review_required == 1
+    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
+    assert order.logistics_next_check_at is None
+    assert "连续6次查询无轨迹" in order.exception_type
+
+
+def test_existing_no_trace_at_threshold_routes_manual_without_query() -> None:
+    order = _order()
+    order.logistics_query_failures = 6
+    order.logistics_last_error = "快递 100 查询失败: 查询无结果，请隔段时间再查"
+    query = FakeQuery(["快件运输中"])
+    session = FakeSession(order)
+    service = Module1LogisticsGateService(
+        session,  # type: ignore[arg-type]
+        query,
+        carrier_map={"1": "yuantong"},
+        now_provider=lambda: BUSINESS_OPEN_UTC,
+    )
+
+    result = service.run(dry_run=False)
+
+    assert query.calls == 0
+    assert result.no_trace == 1
+    assert result.no_trace_packages == 1
+    assert result.manual_review_required == 1
+    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
+    assert order.logistics_next_check_at is None
 
 
 def test_refund_business_hours_use_beijing_time_boundaries() -> None:

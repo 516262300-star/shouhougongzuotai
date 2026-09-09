@@ -15,16 +15,21 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.logistics.kuaidi100 import (
+    is_kuaidi100_no_trace_error,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     LogisticsPollingPolicy,
     LogisticsQuery,
     LogisticsQueryCache,
     LogisticsState,
     classify_logistics_trace,
+    logistics_no_trace_manual_required,
     query_logistics_cached,
     record_logistics_query_failure,
     record_logistics_query_success,
     resolve_logistics_carrier,
+    route_logistics_no_trace_to_manual,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
@@ -44,6 +49,8 @@ class NotificationPreflightResult:
     refund_ready: int = 0
     erp_match_ready: int = 0
     logistics_query_failed: int = 0
+    logistics_no_trace: int = 0
+    logistics_no_trace_packages: int = 0
     manual_review_required: int = 0
     tmall_refunds_held: int = 0
     tmall_refunds_ready: int = 0
@@ -130,15 +137,54 @@ class Module1NotificationPreflightService:
         rows = self.session.execute(statement).all()
         result = NotificationPreflightResult(dry_run=dry_run, scanned=len(rows))
         query_cache: LogisticsQueryCache = {}
+        no_trace_packages: set[tuple[str, str, str | None]] = set()
         try:
             for task, order in rows:
+                if logistics_no_trace_manual_required(
+                    order,
+                    policy=self.polling_policy,
+                ):
+                    result.logistics_no_trace += 1
+                    no_trace_packages.add(
+                        (
+                            str(order.carrier_code or "").strip(),
+                            str(order.forward_tracking_number or "").strip(),
+                            self.default_phone,
+                        )
+                    )
+                    result.manual_review_required += 1
+                    if not dry_run:
+                        self._route_no_trace_manual(
+                            task,
+                            order,
+                            failures=int(order.logistics_query_failures or 0),
+                            error_text=str(order.logistics_last_error or ""),
+                            checked_at=now,
+                        )
+                    continue
                 try:
                     state, latest_context = self._inspect(order, query_cache)
                 except Exception as exc:
-                    result.logistics_query_failed += 1
+                    no_trace = is_kuaidi100_no_trace_error(exc)
+                    if no_trace:
+                        result.logistics_no_trace += 1
+                        no_trace_packages.add(
+                            (
+                                str(order.carrier_code or "").strip(),
+                                str(order.forward_tracking_number or "").strip(),
+                                self.default_phone,
+                            )
+                        )
+                    else:
+                        result.logistics_query_failed += 1
                     self._count(result, order, LogisticsState.UNKNOWN, task.payload)
                     if not dry_run:
-                        failures = self._apply_query_failure(task, order, exc)
+                        failures = self._apply_query_failure(
+                            task,
+                            order,
+                            exc,
+                            no_trace=no_trace,
+                        )
                         if failures >= self.polling_policy.manual_after_failures:
                             result.manual_review_required += 1
                     continue
@@ -156,6 +202,7 @@ class Module1NotificationPreflightService:
                     self._apply(task, order, state, checked_at=checked_at)
             if not dry_run:
                 self.session.commit()
+            result.logistics_no_trace_packages = len(no_trace_packages)
             return result
         except Exception:
             self.session.rollback()
@@ -332,6 +379,8 @@ class Module1NotificationPreflightService:
         task: AftersalesActionTask,
         order: AfterSalesOrder,
         error: Exception,
+        *,
+        no_trace: bool,
     ) -> int:
         checked_at = _utcnow_naive()
         failures, error_text = record_logistics_query_failure(
@@ -341,6 +390,15 @@ class Module1NotificationPreflightService:
             policy=self.polling_policy,
         )
         manual_required = failures >= self.polling_policy.manual_after_failures
+        if no_trace and manual_required:
+            self._route_no_trace_manual(
+                task,
+                order,
+                failures=failures,
+                error_text=error_text,
+                checked_at=checked_at,
+            )
+            return failures
         retry_at = order.logistics_next_check_at
         payload = dict(task.payload or {})
         payload.update(
@@ -358,6 +416,34 @@ class Module1NotificationPreflightService:
         prefix = "需人工核对" if manual_required else "等待自动重试"
         task.last_error = (f"快递100连续{failures}次查询失败（{prefix}）：{error_text}")[:1000]
         return failures
+
+    @staticmethod
+    def _route_no_trace_manual(
+        task: AftersalesActionTask,
+        order: AfterSalesOrder,
+        *,
+        failures: int,
+        error_text: str,
+        checked_at: datetime,
+    ) -> None:
+        route_logistics_no_trace_to_manual(order, failures=failures)
+        task.action_status = AutomationTaskStatus.CANCELLED
+        payload = dict(task.payload or {})
+        payload.update(
+            {
+                "preflight_state": LogisticsState.UNKNOWN.value,
+                "preflight_checked_at": checked_at.isoformat(),
+                "refund_gate": "HOLD",
+                "logistics_query_failures": failures,
+                "logistics_last_error": error_text[:500],
+                "logistics_next_check_at": None,
+                "manual_check_required": True,
+            }
+        )
+        task.payload = payload
+        task.last_error = (
+            f"快递100连续{failures}次查询无轨迹，已停止自动查询，需人工核对"
+        )[:1000]
 
     @staticmethod
     def _cancellation_reason(state: LogisticsState) -> str:

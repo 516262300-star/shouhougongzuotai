@@ -17,6 +17,29 @@ class Kuaidi100ConfigurationError(Kuaidi100Error):
     """快递 100 配置缺失或不合法。"""
 
 
+class Kuaidi100NoTraceError(Kuaidi100Error):
+    """快递 100 正常响应，但当前运单没有可用轨迹。"""
+
+
+_NO_TRACE_MESSAGE_MARKERS = (
+    "查询无结果",
+    "暂无轨迹",
+    "暂无物流",
+    "没有物流",
+    "未返回有效物流轨迹",
+)
+
+
+def is_kuaidi100_no_trace_error(error: Exception | str) -> bool:
+    """识别可重试但不应计为系统故障的“无轨迹”结果。"""
+    if isinstance(error, Kuaidi100NoTraceError):
+        return True
+    message = str(error).strip().lower()
+    return "no trace" in message or any(
+        marker in message for marker in _NO_TRACE_MESSAGE_MARKERS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Kuaidi100Credentials:
     customer: SecretStr
@@ -117,6 +140,8 @@ class Kuaidi100Client:
             raise Kuaidi100Error("快递 100 返回了非 JSON 对象")
         if str(body.get("status")) != "200":
             message = str(body.get("message") or body.get("result") or "查询失败")
+            if is_kuaidi100_no_trace_error(message):
+                raise Kuaidi100NoTraceError(f"快递 100 暂无物流轨迹: {message}")
             raise Kuaidi100Error(f"快递 100 查询失败: {message}")
         records = body.get("data")
         if not isinstance(records, list):
@@ -131,5 +156,5 @@ class Kuaidi100Client:
             event_time = str(record.get("time") or "").strip() or None
             events.append(LogisticsEvent(context=context, time=event_time))
         if not events:
-            raise Kuaidi100Error("快递 100 未返回有效物流轨迹")
+            raise Kuaidi100NoTraceError("快递 100 未返回有效物流轨迹")
         return events

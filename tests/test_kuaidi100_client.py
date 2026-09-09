@@ -4,11 +4,13 @@ import hashlib
 import json
 
 import httpx
+import pytest
 from pydantic import SecretStr
 
 from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100Client,
     Kuaidi100Credentials,
+    Kuaidi100NoTraceError,
 )
 
 
@@ -63,3 +65,24 @@ def test_query_normalizes_trace_events() -> None:
 
     assert events[0].context == "快件正在派送"
     assert events[0].time == "2026-08-31 10:00:00"
+
+
+def test_query_classifies_no_result_as_no_trace() -> None:
+    client = _client(
+        lambda _request: httpx.Response(
+            200,
+            json={"status": "201", "message": "查询无结果，请隔段时间再查"},
+        )
+    )
+
+    with pytest.raises(Kuaidi100NoTraceError):
+        client.query(carrier_code="jtexpress", tracking_number="JT123")
+
+
+def test_query_classifies_empty_trace_as_no_trace() -> None:
+    client = _client(
+        lambda _request: httpx.Response(200, json={"status": "200", "data": []})
+    )
+
+    with pytest.raises(Kuaidi100NoTraceError):
+        client.query(carrier_code="yuantong", tracking_number="YT123")

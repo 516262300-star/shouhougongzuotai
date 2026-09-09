@@ -26,6 +26,7 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100ConfigurationError,
     Kuaidi100Credentials,
     LogisticsEvent,
+    is_kuaidi100_no_trace_error,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
@@ -210,6 +211,9 @@ class LogisticsGateRunResult:
     waiting_erp_match: int = 0
     tmall_refunds_ready: int = 0
     tmall_refunds_held: int = 0
+    no_trace: int = 0
+    no_trace_packages: int = 0
+    manual_review_required: int = 0
     failed: int = 0
 
     def safe_dict(self) -> dict[str, int | bool]:
@@ -318,6 +322,33 @@ def record_logistics_query_failure(
     return failures, error_text
 
 
+def logistics_no_trace_manual_required(
+    order: AfterSalesOrder,
+    *,
+    policy: LogisticsPollingPolicy,
+) -> bool:
+    return (
+        int(getattr(order, "logistics_query_failures", 0) or 0)
+        >= policy.manual_after_failures
+        and is_kuaidi100_no_trace_error(
+            str(getattr(order, "logistics_last_error", None) or "")
+        )
+    )
+
+
+def route_logistics_no_trace_to_manual(
+    order: AfterSalesOrder,
+    *,
+    failures: int,
+) -> None:
+    """冻结退款并退出物流轮询；人工待办阶段会按该状态幂等建单。"""
+    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+    order.exception_type = (
+        f"快递100连续{failures}次查询无轨迹，请人工核对运单号和快递公司"
+    )
+    order.logistics_next_check_at = None
+
+
 class Module1LogisticsGateService:
     _CANDIDATE_STATUSES = (
         WorkflowStatus.INTERCEPT_PUSHED,
@@ -384,7 +415,26 @@ class Module1LogisticsGateService:
         orders = list(self.session.scalars(statement).all())
         result = LogisticsGateRunResult(dry_run=dry_run, scanned=len(orders))
         query_cache: LogisticsQueryCache = {}
+        no_trace_packages: set[tuple[str, str, str | None]] = set()
         for order in orders:
+            if logistics_no_trace_manual_required(order, policy=self.polling_policy):
+                result.no_trace += 1
+                no_trace_packages.add(
+                    (
+                        str(order.carrier_code or "").strip(),
+                        str(order.forward_tracking_number or "").strip(),
+                        self.default_phone,
+                    )
+                )
+                result.manual_review_required += 1
+                if not dry_run:
+                    route_logistics_no_trace_to_manual(
+                        order,
+                        failures=int(order.logistics_query_failures or 0),
+                    )
+                    self._cancel_pending_refund(order.after_sales_sn)
+                    self.session.commit()
+                continue
             try:
                 platform = self._get_order_platform(order)
                 carrier_code = self._resolve_carrier(str(order.carrier_code))
@@ -416,16 +466,35 @@ class Module1LogisticsGateService:
                     self.session.commit()
             except Exception as exc:
                 self.session.rollback()
+                no_trace = is_kuaidi100_no_trace_error(exc)
                 if not dry_run:
-                    record_logistics_query_failure(
+                    failures, _error_text = record_logistics_query_failure(
                         order,
                         error=exc,
                         checked_at=now,
                         policy=self.polling_policy,
                     )
                     self._cancel_pending_refund(order.after_sales_sn)
+                    if no_trace and failures >= self.polling_policy.manual_after_failures:
+                        route_logistics_no_trace_to_manual(order, failures=failures)
                     self.session.commit()
-                result.failed += 1
+                if no_trace:
+                    result.no_trace += 1
+                    no_trace_packages.add(
+                        (
+                            str(order.carrier_code or "").strip(),
+                            str(order.forward_tracking_number or "").strip(),
+                            self.default_phone,
+                        )
+                    )
+                    failures = int(getattr(order, "logistics_query_failures", 0) or 0)
+                    if dry_run:
+                        failures += 1
+                    if failures >= self.polling_policy.manual_after_failures:
+                        result.manual_review_required += 1
+                else:
+                    result.failed += 1
+        result.no_trace_packages = len(no_trace_packages)
         return result
 
     def _resolve_carrier(self, raw_code: str) -> str:

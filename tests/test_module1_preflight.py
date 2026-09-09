@@ -8,7 +8,10 @@ from aftersales_workbench.db.models import (
     Platform,
     WorkflowStatus,
 )
-from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
+from aftersales_workbench.integrations.logistics.kuaidi100 import (
+    Kuaidi100NoTraceError,
+    LogisticsEvent,
+)
 from aftersales_workbench.workflows.module1_preflight import (
     Module1NotificationPreflightService,
     notification_preflight_ready,
@@ -133,7 +136,7 @@ def test_out_for_delivery_notice_stays_pending_but_refund_is_held() -> None:
     assert task.payload["refund_gate"] == "HOLD"
 
 
-def test_query_failure_keeps_notice_and_freezes_refund() -> None:
+def test_no_trace_keeps_notice_and_freezes_refund_before_threshold() -> None:
     task = _task()
     order = _order()
 
@@ -143,7 +146,9 @@ def test_query_failure_keeps_notice_and_freezes_refund() -> None:
         FakeQuery(error=RuntimeError("no trace")),
     )
 
-    assert result.logistics_query_failed == 1
+    assert result.logistics_query_failed == 0
+    assert result.logistics_no_trace == 1
+    assert result.logistics_no_trace_packages == 1
     assert result.unknown_ready == 1
     assert task.action_status is AutomationTaskStatus.PENDING
     assert order.logistics_state == "UNKNOWN"
@@ -155,7 +160,7 @@ def test_query_failure_keeps_notice_and_freezes_refund() -> None:
     assert "等待自动重试" in task.last_error
 
 
-def test_sixth_query_failure_marks_task_for_manual_review() -> None:
+def test_sixth_no_trace_text_marks_task_for_manual_review() -> None:
     task = _task()
     order = _order()
     order.logistics_query_failures = 5
@@ -169,6 +174,32 @@ def test_sixth_query_failure_marks_task_for_manual_review() -> None:
     assert result.manual_review_required == 1
     assert order.logistics_query_failures == 6
     assert task.payload["manual_check_required"] is True
+    assert task.action_status is AutomationTaskStatus.CANCELLED
+    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
+    assert "需人工核对" in task.last_error
+
+
+def test_sixth_no_trace_cancels_notice_and_routes_manual() -> None:
+    task = _task()
+    order = _order()
+    order.logistics_query_failures = 5
+
+    _session, result = _run(
+        task,
+        order,
+        FakeQuery(error=Kuaidi100NoTraceError("查询无结果，请隔段时间再查")),
+    )
+
+    assert result.logistics_query_failed == 0
+    assert result.logistics_no_trace == 1
+    assert result.logistics_no_trace_packages == 1
+    assert result.manual_review_required == 1
+    assert task.action_status is AutomationTaskStatus.CANCELLED
+    assert task.payload["refund_gate"] == "HOLD"
+    assert task.payload["manual_check_required"] is True
+    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
+    assert order.logistics_next_check_at is None
+    assert "已停止自动查询" in task.last_error
     assert "需人工核对" in task.last_error
 
 
