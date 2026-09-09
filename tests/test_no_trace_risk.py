@@ -453,3 +453,14 @@ def test_evidence_binding_and_disabled_live_setting(db, sample):
     with pytest.raises(ValueError):
         require_execution(db, sample[0], task.id, settings(), now=NOW)
     assert db.scalar(select(AftersalesActionTask.id).where(AftersalesActionTask.id == task.id))
+
+
+def test_mysql_zero_fraction_precision_is_normalized_before_persisting(db, sample):
+    gate(db, sample, now=NOW.replace(microsecond=800000))
+    task = base.task(db)
+    assert task.payload[EVIDENCE_KEY]["checked_at"] == NOW.isoformat()
+    db.refresh(sample[0])
+    assert sample[0].logistics_checked_at == NOW.replace(tzinfo=None)
+    task.action_status = AutomationTaskStatus.RUNNING
+    db.commit()
+    require_execution(db, sample[0], task.id, settings(), now=NOW + timedelta(seconds=1))

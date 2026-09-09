@@ -583,7 +583,7 @@ class Module1LogisticsGateService:
                                            str(order.forward_tracking_number), self.default_phone))
                     if not dry_run:
                         order.logistics_state = LogisticsState.UNKNOWN.value
-                        order.logistics_checked_at = now
+                        order.logistics_checked_at = now.replace(microsecond=0)
                         order.logistics_last_error = (
                             "双接口明确暂无轨迹；按已授权风险规则放行（非确定未揽收）"
                         )

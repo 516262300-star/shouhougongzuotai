@@ -196,7 +196,8 @@ class NoTraceRiskVerifier:
                 "snapshot": order_snapshot(order),
                 "shipping_time": parse_shipping_time(info.get("shipping_time")).isoformat(),
                 "notice_task_id": notice.id,
-                "checked_at": utc(now).isoformat(),
+                # MySQL DATETIME(0)会四舍五入，先统一截断秒，确保JSON与数据库一致。
+                "checked_at": utc(now).replace(microsecond=0).isoformat(),
                 "kuaidi100": kd,
                 "risk_inference": True,
             }
