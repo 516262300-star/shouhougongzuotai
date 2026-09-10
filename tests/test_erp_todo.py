@@ -103,15 +103,18 @@ def test_erp_todo_client_remote_marker_prevents_duplicate_post() -> None:
     client.close()
 
 
-def test_erp_todo_client_legacy_marker_prevents_duplicate_post() -> None:
+@pytest.mark.parametrize("legacy_marker", [
+    "【售后工作台 M1:after-1】", "【售后工作台 M1订单:order-1】",
+    "【售后工作台 订单:order-1】",
+])
+def test_erp_todo_client_legacy_marker_prevents_duplicate_post(legacy_marker) -> None:
     posts = 0
-    legacy_marker = "【售后工作台 M1:after-1】"
     request = ErpTodoRequest(
         assignee="金博敏",
         started_at="2026-09-01 09:12:28",
-        marker="【售后工作台 M1订单:order-1】",
-        content="【售后工作台 M1订单:order-1】 模块1在途售后需人工处理。",
-        legacy_markers=(legacy_marker,),
+        marker="【售后工作台 订单:order-1】",
+        content="【售后工作台 订单:order-1】 原因：请核验退款状态。",
+        legacy_markers=("【售后工作台 M1订单:order-1】", "【售后工作台 M1:after-1】"),
     )
 
     def handler(http_request: httpx.Request) -> httpx.Response:

@@ -43,6 +43,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_CANCEL_REASON,
     suppress_manual_todo,
 )
+from aftersales_workbench.services.manual_todo_text import concise_module1_todo
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -775,11 +776,18 @@ class ExternalActionExecutor:
                     else:
                         if erp_todo_client is None:
                             raise WorkflowTransitionError("ERP 待办客户端未初始化")
-                        receipt = self._create_erp_todo(erp_todo_client, task)
+                        todo_request = self._build_erp_todo_request(task)
+                        receipt = erp_todo_client.create_todo(todo_request)
                         result_payload = {
                             "external_todo_id": receipt.todo_id,
                             "external_todo_created": receipt.created,
                         }
+                        if receipt.created:
+                            # 审计页展示本次实际发送文字；查重命中旧待办时不改写历史。
+                            result_payload.update({
+                                "content": todo_request.content,
+                                "marker": todo_request.marker,
+                            })
                     ActionCoordinator(self.session).record_external_success(
                         task.id,
                         result_payload=result_payload,
@@ -1270,6 +1278,10 @@ class ExternalActionExecutor:
 
     @staticmethod
     def _create_erp_todo(client: ErpTodoClient, task: ExternalTaskSnapshot):
+        return client.create_todo(ExternalActionExecutor._build_erp_todo_request(task))
+
+    @staticmethod
+    def _build_erp_todo_request(task: ExternalTaskSnapshot) -> ErpTodoRequest:
         payload = task.payload
         required = ("assignee", "started_at", "content", "marker")
         if any(not str(payload.get(key) or "").strip() for key in required):
@@ -1278,9 +1290,13 @@ class ExternalActionExecutor:
         marker = str(payload["marker"])
         legacy_markers: tuple[str, ...] = ()
         origin = str(payload.get("origin") or "").strip()
-        if origin in {"module1", "module3"} and payload.get("task_scope") != "shared_package":
-            module_label = "M1" if origin == "module1" else "M3"
-            public_marker = f"【售后工作台 {module_label}订单:{task.platform_order_sn}】"
+        if origin == "module1" and payload.get("task_scope") != "shared_package":
+            marker, content, legacy_markers = concise_module1_todo(
+                content=content, marker=marker,
+                platform_order_sn=task.platform_order_sn, after_sales_sn=task.after_sales_sn,
+            )
+        elif origin == "module3" and payload.get("task_scope") != "shared_package":
+            public_marker = f"【售后工作台 M3订单:{task.platform_order_sn}】"
             if marker != public_marker:
                 legacy_markers = (marker,)
                 content = content.replace(marker, public_marker)
@@ -1292,12 +1308,10 @@ class ExternalActionExecutor:
                 "",
             )
             marker = public_marker
-        return client.create_todo(
-            ErpTodoRequest(
-                assignee=str(payload["assignee"]),
-                started_at=str(payload["started_at"]),
-                content=content,
-                marker=marker,
-                legacy_markers=legacy_markers,
-            )
+        return ErpTodoRequest(
+            assignee=str(payload["assignee"]),
+            started_at=str(payload["started_at"]),
+            content=content,
+            marker=marker,
+            legacy_markers=legacy_markers,
         )

@@ -22,6 +22,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_REASON_LIKE,
     is_no_trace_reason,
 )
+from aftersales_workbench.services.manual_todo_text import module1_todo_marker
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -89,8 +90,7 @@ class Module1ManualTodoCandidate:
         return "物流正在派件，系统已冻结自动退款，请跟进拒收或明确退回记录"
 
     def task_payload(self, *, started_at: str) -> dict[str, Any]:
-        marker = f"【售后工作台 M1订单:{self.platform_order_sn}】"
-        carrier = self.carrier_code or "未知"
+        marker = module1_todo_marker(self.platform_order_sn)
         logistics_label = self._LOGISTICS_LABELS.get(
             str(self.logistics_state or "UNKNOWN"),
             "待核实",
@@ -98,10 +98,9 @@ class Module1ManualTodoCandidate:
         erp_payload = self.erp_match_payload or {}
         if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
             details = [
-                f"{marker} 模块1退货闭环需人工处理",
+                f"{marker} 退货需核对",
                 f"原因：{self.reason_text}",
                 f"店铺：{self.shop_name}",
-                f"平台订单号：{self.platform_order_sn}",
                 f"发货运单：{self.tracking_number}",
             ]
             return_order_sn = str(erp_payload.get("erp_return_order_sn") or "").strip()
@@ -129,10 +128,9 @@ class Module1ManualTodoCandidate:
             content = "；".join(details) + "。"
         else:
             content = (
-                f"{marker} 模块1在途售后需人工处理；原因：{self.reason_text}；"
-                f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
-                f"发货运单：{self.tracking_number}"
-                f"（物流代码 {carrier}）；物流状态：{logistics_label}。"
+                f"{marker} 原因：{self.reason_text}；"
+                f"店铺：{self.shop_name}；"
+                f"发货运单：{self.tracking_number}（{logistics_label}）。"
             )
         assignee = (
             str(self.sales_owner or "").strip() if self.sales_owner_status == "matched" else ""

@@ -84,12 +84,16 @@ def test_manual_todo_payload_contains_remote_idempotency_marker_and_order() -> N
 
     payload = candidate.task_payload(started_at="2026-09-01 09:12:28")
 
-    assert payload["marker"] == "【售后工作台 M1订单:order-1】"
+    assert payload["marker"] == "【售后工作台 订单:order-1】"
     assert payload["marker"] in payload["content"]
-    assert "平台订单号：order-1" in payload["content"]
+    assert payload["content"].count("order-1") == 1
+    assert "M1" not in payload["content"]
+    assert "模块1" not in payload["content"]
+    assert "物流代码" not in payload["content"]
     assert "售后单号" not in payload["content"]
     assert "after-1" not in payload["content"]
-    assert "物流状态：派件中" in payload["content"]
+    assert "发货运单：tracking-1（派件中）" in payload["content"]
+    assert payload["carrier_code"] == candidate.carrier_code
     assert "正在派件，请保持电话畅通" not in payload["content"]
     assert payload["assignee"] == "金博敏"
     assert payload["reason_text"] == candidate.reason_text
@@ -146,7 +150,10 @@ def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
     payload = candidate.task_payload(started_at="2026-09-01 12:00:00")
 
     assert candidate.reason_code == "ERP_RETURN_ITEM_MISMATCH"
-    assert "模块1退货闭环需人工处理" in payload["content"]
+    assert "退货需核对" in payload["content"]
+    assert "模块1" not in payload["content"]
+    assert "M1" not in payload["content"]
+    assert payload["content"].count("order-1") == 1
     assert "售后单号" not in payload["content"]
     assert "after-1" not in payload["content"]
     assert "ERP退货单：TH-1" in payload["content"]
