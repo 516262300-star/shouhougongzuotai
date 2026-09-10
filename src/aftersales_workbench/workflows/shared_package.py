@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.erp.package_orders import build_package_source
 from aftersales_workbench.integrations.pdd.mapper import normalize_refund, unwrap_order_information
+from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.uncollected_refund import order_snapshot, utc
 
 SCOPE = "shared_package"
@@ -208,22 +209,6 @@ class SharedPackageVerifier:
             return
         shop = self.session.get(Shop, order.shop_id)
         marker = f"【同包裹跟进：{order.platform_order_sn}】"
-        missing = []
-        for blocker in evidence["blockers"]:
-            sn = blocker["order_sn"]
-            items = [
-                f"{r['product']}，{r['color']}，{r['quantity']}只"
-                for r in evidence["sales_rows"]
-                if r["order_sn"] == sn
-            ]
-            missing.append(f"{sn}：{'；'.join(items)}（{blocker['reason']}）。")
-        content = (
-            f"{marker}\n{shop.shop_name}：订单{order.platform_order_sn}申请仅退款，"
-            "同包裹已发出拦截指令，核验时以下订单未满足整包裹退款条件，系统已暂停自动退款：\n"
-            + "\n".join(missing)
-            + "\n请联系客户确认是否还需要这些商品：不需要则协助申请退款；"
-            "仍需要则确认后续发货安排，核实后人工处理本笔退款。"
-        )
         self.session.add(
             AftersalesActionTask(
                 after_sales_sn=order.after_sales_sn,
@@ -231,7 +216,7 @@ class SharedPackageVerifier:
                 action_status=AutomationTaskStatus.PENDING,
                 idempotency_key=key,
                 attempts=0,
-                payload={
+                payload=prepare_manual_todo({
                     "origin": "module1",
                     "task_scope": SCOPE,
                     "reason_code": REASON,
@@ -244,9 +229,9 @@ class SharedPackageVerifier:
                     "tracking_number": order.forward_tracking_number,
                     "carrier_code": str(order.carrier_code),
                     "marker": marker,
-                    "content": content,
+                    "content": marker,
                     "related_order_sns": [b["order_sn"] for b in evidence["blockers"]],
                     "package_evidence": evidence,
-                },
+                }, platform_order_sn=order.platform_order_sn, after_sales_sn=order.after_sales_sn),
             )
         )

@@ -22,7 +22,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_REASON_LIKE,
     is_no_trace_reason,
 )
-from aftersales_workbench.services.manual_todo_text import module1_todo_marker
+from aftersales_workbench.services.manual_todo_text import module1_todo_marker, prepare_manual_todo
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -97,35 +97,8 @@ class Module1ManualTodoCandidate:
         )
         erp_payload = self.erp_match_payload or {}
         if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
-            details = [
-                f"{marker} 退货需核对",
-                f"原因：{self.reason_text}",
-                f"店铺：{self.shop_name}",
-                f"发货运单：{self.tracking_number}",
-            ]
-            return_order_sn = str(erp_payload.get("erp_return_order_sn") or "").strip()
-            receivable_amount = str(erp_payload.get("erp_receivable_amount") or "").strip()
-            if return_order_sn:
-                details.append(f"ERP退货单：{return_order_sn}")
-            if receivable_amount:
-                details.append(f"客户累计应收：{receivable_amount}元")
-            row_summaries = []
-            for row in erp_payload.get("erp_return_rows") or []:
-                if not isinstance(row, dict):
-                    continue
-                product = str(row.get("product") or "").strip()
-                color = str(row.get("color") or "").strip()
-                quantity = str(row.get("quantity") or "").strip()
-                if product and quantity:
-                    row_summaries.append(f"{product}/{color or '颜色待核'}×{quantity}")
-                if len(row_summaries) >= 5:
-                    break
-            if row_summaries:
-                details.append(f"ERP退货明细：{'、'.join(row_summaries)}")
-            manual_context = str(erp_payload.get("manual_context") or "").strip()
-            if manual_context:
-                details.append(f"处理提示：{manual_context.rstrip('。；; ')}")
-            content = "；".join(details) + "。"
+            # 长明细只保存在下面的结构化载荷，统一文案层生成简短处理要求。
+            content = f"{marker} 退货需核对"
         else:
             content = (
                 f"{marker} 原因：{self.reason_text}；"
@@ -155,9 +128,13 @@ class Module1ManualTodoCandidate:
                     "erp_match_status": erp_payload.get("erp_match_status"),
                     "erp_return_order_sn": erp_payload.get("erp_return_order_sn"),
                     "erp_receivable_amount": erp_payload.get("erp_receivable_amount"),
+                    "erp_return_rows": erp_payload.get("erp_return_rows"),
+                    "manual_context": erp_payload.get("manual_context"),
                 }
             )
-        return payload
+        return prepare_manual_todo(
+            payload, platform_order_sn=self.platform_order_sn, after_sales_sn=self.after_sales_sn,
+        )
 
 
 @dataclass(slots=True)

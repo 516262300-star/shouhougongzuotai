@@ -43,7 +43,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_CANCEL_REASON,
     suppress_manual_todo,
 )
-from aftersales_workbench.services.manual_todo_text import concise_module1_todo
+from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -787,6 +787,11 @@ class ExternalActionExecutor:
                             result_payload.update({
                                 "content": todo_request.content,
                                 "marker": todo_request.marker,
+                                "original_content": (
+                                    task.payload.get("original_content")
+                                    or task.payload.get("content")
+                                ),
+                                "legacy_markers": todo_request.legacy_markers,
                             })
                     ActionCoordinator(self.session).record_external_success(
                         task.id,
@@ -1286,32 +1291,13 @@ class ExternalActionExecutor:
         required = ("assignee", "started_at", "content", "marker")
         if any(not str(payload.get(key) or "").strip() for key in required):
             raise WorkflowTransitionError("ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识")
-        content = str(payload["content"])
-        marker = str(payload["marker"])
-        legacy_markers: tuple[str, ...] = ()
-        origin = str(payload.get("origin") or "").strip()
-        if origin == "module1" and payload.get("task_scope") != "shared_package":
-            marker, content, legacy_markers = concise_module1_todo(
-                content=content, marker=marker,
-                platform_order_sn=task.platform_order_sn, after_sales_sn=task.after_sales_sn,
-            )
-        elif origin == "module3" and payload.get("task_scope") != "shared_package":
-            public_marker = f"【售后工作台 M3订单:{task.platform_order_sn}】"
-            if marker != public_marker:
-                legacy_markers = (marker,)
-                content = content.replace(marker, public_marker)
-            content = content.replace(
-                f"售后单号：{task.after_sales_sn}；",
-                "",
-            ).replace(
-                f"售后单号：{task.after_sales_sn}",
-                "",
-            )
-            marker = public_marker
+        prepared = prepare_manual_todo(
+            payload, platform_order_sn=task.platform_order_sn, after_sales_sn=task.after_sales_sn,
+        )
         return ErpTodoRequest(
             assignee=str(payload["assignee"]),
             started_at=str(payload["started_at"]),
-            content=content,
-            marker=marker,
-            legacy_markers=legacy_markers,
+            content=str(prepared["content"]),
+            marker=str(prepared["marker"]),
+            legacy_markers=tuple(prepared.get("legacy_markers", ())),
         )

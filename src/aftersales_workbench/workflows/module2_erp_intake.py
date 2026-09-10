@@ -27,6 +27,7 @@ from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchStatus,
     ExpectedReturnItem,
 )
+from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module2 import (
     ActualReturnItem,
     CreateWarehouseReturnCommand,
@@ -516,13 +517,7 @@ class Module2ExceptionTodoService:
             f"{item.product_code}/{item.color or '颜色待核'}×{item.quantity}"
             for item in warehouse_return.items
         )
-        handling = (
-            "平台款项已经退回，请立即向平台发起申诉，并跟进少退、错退或未收到商品的申诉结果。"
-            if platform_refunded
-            else "请核对仓库实物和退货明细，确认后人工决定是否退款。"
-        )
-        content = f"店铺：{shop_name}；{marker}；退货验收异常。原因：{reason}；{handling}"
-        return {
+        payload = {
             "origin": "module2",
             "reason_code": (
                 "POST_REFUND_RETURN_MISMATCH_APPEAL"
@@ -538,7 +533,7 @@ class Module2ExceptionTodoService:
             "assignee_status": order.erp_sales_owner_status,
             "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "marker": marker,
-            "content": content,
+            "content": marker,
             "platform_order_sn": order.platform_order_sn,
             "shop_name": shop_name,
             "tracking_number": order.return_tracking_number,
@@ -546,6 +541,9 @@ class Module2ExceptionTodoService:
             "expected_items_summary": expected,
             "received_items_summary": received,
         }
+        return prepare_manual_todo(
+            payload, platform_order_sn=order.platform_order_sn, after_sales_sn=order.after_sales_sn,
+        )
 
     def run(
         self,

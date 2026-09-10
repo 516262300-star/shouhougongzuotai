@@ -150,16 +150,19 @@ def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
     payload = candidate.task_payload(started_at="2026-09-01 12:00:00")
 
     assert candidate.reason_code == "ERP_RETURN_ITEM_MISMATCH"
-    assert "退货需核对" in payload["content"]
+    assert "请核对退货型号、颜色和数量差异" in payload["content"]
     assert "模块1" not in payload["content"]
     assert "M1" not in payload["content"]
     assert payload["content"].count("order-1") == 1
     assert "售后单号" not in payload["content"]
     assert "after-1" not in payload["content"]
-    assert "ERP退货单：TH-1" in payload["content"]
+    assert "TH-1" not in payload["content"]
     assert "客户累计应收：-333.16元" in payload["content"]
-    assert "8066-30直径/铜本色×24" in payload["content"]
-    assert manual_context.rstrip("。") in payload["content"]
+    assert "8066-30直径/铜本色×24" not in payload["content"]
+    assert manual_context.rstrip("。") not in payload["content"]
+    assert payload["manual_context"] == manual_context
+    assert payload["erp_return_order_sn"] == "TH-1"
+    assert len(payload["erp_return_rows"]) == 2
     assert payload["erp_match_status"] == "item_mismatch"
 
 

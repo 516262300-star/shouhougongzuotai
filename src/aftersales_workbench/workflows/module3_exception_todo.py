@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
 from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
 )
+from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module1_manual_todo import (
     ManualTodoEnqueueResult,
 )
@@ -43,21 +44,13 @@ class Module3ExceptionTodoCandidate:
 
     def task_payload(self, *, started_at: str) -> dict[str, Any]:
         marker = f"【售后工作台 M3订单:{self.platform_order_sn}】"
-        erp_order = str(self.erp_order_sn or "未匹配").strip()
-        message = self.exception_message[:1200] or "ERP 未返回明确原因"
-        content = (
-            f"{marker} 模块3未发货退款需人工核对；"
-            f"异常类型：{self.exception_status}；原因：{message}；"
-            f"店铺：{self.shop_name}；平台订单号：{self.platform_order_sn}；"
-            f"ERP订单号：{erp_order}。"
-            "请核对商家应收、订单欠货和退款单状态，处理后回到售后工作台复查。"
-        )
+        message = self.exception_message or "ERP 未返回明确原因"
         assignee = (
             str(self.sales_owner or "").strip()
             if self.sales_owner_status == "matched"
             else ""
         )
-        return {
+        payload = {
             "origin": "module3",
             "reason_code": f"ERP_REFUND_{self.exception_status.upper()}",
             "reason_text": message,
@@ -65,7 +58,7 @@ class Module3ExceptionTodoCandidate:
             "assignee_status": self.sales_owner_status,
             "started_at": started_at,
             "marker": marker,
-            "content": content,
+            "content": marker,
             "platform_order_sn": self.platform_order_sn,
             "shop_name": self.shop_name,
             "source_task_id": self.source_task_id,
@@ -73,6 +66,9 @@ class Module3ExceptionTodoCandidate:
             "exception_message": self.exception_message,
             "erp_order_sn": self.erp_order_sn,
         }
+        return prepare_manual_todo(
+            payload, platform_order_sn=self.platform_order_sn, after_sales_sn=self.after_sales_sn,
+        )
 
 
 @dataclass(slots=True)
