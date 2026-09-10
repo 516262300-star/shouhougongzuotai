@@ -52,6 +52,8 @@ def sample(db, monkeypatch):
             return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
 
     monkeypatch.setattr(risk, "datetime", Clock)
+    import aftersales_workbench.workflows.actions as actions
+    monkeypatch.setattr(actions, "datetime", Clock)
     # 不替换标准库 datetime 类：SQLite 的类型判断会把普通 datetime 当成 date 截断时间。
     monkeypatch.setattr(
         risk,
@@ -89,6 +91,7 @@ def settings():
     return Settings(
         _env_file=None,
         module1_no_trace_risk_refund_enabled=True,
+        pdd_write_enabled=True, module1_pdd_refund_execution_enabled=True,
         kuaidi100_carrier_map={"384": "jtexpress"},
     )
 

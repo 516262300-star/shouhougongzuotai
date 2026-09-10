@@ -19,6 +19,7 @@ from aftersales_workbench.db.models import (
     WarehouseReturnRecord,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
 from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 
 
@@ -162,6 +163,11 @@ class SqlAlchemyModule2RefundRepository:
         )
         if existing is not None:
             return False
+        order = self.session.scalar(select(AfterSalesOrder).where(
+            AfterSalesOrder.after_sales_sn == candidate.after_sales_sn,
+        ))
+        if order is None:
+            raise ValueError("退款候选关联售后不存在")
         self.session.add(
             AftersalesActionTask(
                 after_sales_sn=candidate.after_sales_sn,
@@ -170,6 +176,7 @@ class SqlAlchemyModule2RefundRepository:
                 idempotency_key=idempotency_key,
                 payload={
                     "origin": "module2",
+                    "approval_snapshot": refund_snapshot(order),
                     "warehouse_return_id": candidate.warehouse_return_id,
                     "receipt_sn": candidate.receipt_sn,
                     "inspected_at": (

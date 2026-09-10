@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from sqlalchemy import or_, select, update
@@ -30,6 +31,7 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
 )
+from aftersales_workbench.workflows.money_operations import MoneyOperationBlocked, run_money_write
 from aftersales_workbench.workflows.sync_safety import (
     require_sync_safe_order,
     sync_safe_order_filter,
@@ -173,11 +175,24 @@ class Module1ErpRefundService:
             self._save_preflight(task, refund_lookup)
             if refund_lookup.status is ErpUnshippedRefundStatus.READY:
                 require_sync_safe_order(self.session, order.after_sales_sn)
-                completed = self.refund_client.execute_shipped_return(
-                    refund_lookup,
-                    after_sales_sn=order.after_sales_sn,
-                    expected_amount=expected_amount,
-                )
+                try:
+                    completed = run_money_write(
+                        self.session,
+                        order,
+                        operation_type="ERP_REFUND",
+                        task_id=task.id,
+                        write=partial(
+                            self.refund_client.execute_shipped_return,
+                            refund_lookup,
+                            after_sales_sn=order.after_sales_sn,
+                            expected_amount=expected_amount,
+                        ),
+                    )
+                except MoneyOperationBlocked as exc:
+                    task.last_error = str(exc)
+                    result.blocked += 1
+                    self.session.commit()
+                    continue
                 post_lookup = self.return_matcher.lookup(
                     platform_order_sn=order.platform_order_sn,
                     tracking_number=order.forward_tracking_number or "",
@@ -239,7 +254,6 @@ class Module1ErpRefundService:
                 or_(
                     AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
             )
             .order_by(AftersalesActionTask.id)

@@ -224,8 +224,9 @@ class TmallRefundSyncService:
             if not isinstance(payload, dict):
                 raise ValueError("缺少 refunds_receive_get_response")
             refunds_node = payload.get("refunds")
-            records = refunds_node.get("refund") if isinstance(refunds_node, dict) else []
-            records = records or []
+            records = refunds_node.get("refund") if isinstance(refunds_node, dict) else None
+            if records is None and payload.get("total_results") == 0:
+                records = []
             if not isinstance(records, list):
                 raise ValueError("refunds.refund 不是列表")
             for list_record in records:
@@ -273,6 +274,10 @@ class TmallRefundSyncService:
                     result.records_updated += 1
             has_next = payload.get("has_next")
             total_results = payload.get("total_results")
+            if isinstance(total_results, int) and (
+                has_next is False or len(records) < page_size
+            ) and (page - 1) * page_size + len(records) < total_results:
+                raise ValueError("退款列表数量与total_results矛盾，禁止推进同步水位")
             if has_next is False or not records or len(records) < page_size:
                 break
             if isinstance(total_results, int) and page * page_size >= total_results:

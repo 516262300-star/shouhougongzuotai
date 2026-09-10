@@ -140,7 +140,10 @@ def test_receivable_or_return_mismatch_never_reaches_refund_client() -> None:
     assert result.ready == 0
 
 
-def test_apply_rechecks_return_closed_loop_before_local_completion() -> None:
+def test_apply_rechecks_return_closed_loop_before_local_completion(monkeypatch) -> None:
+    # 本用例测试闭环复查编排；持久化与竞争由test_money_operations用真实SQLite验证。
+    monkeypatch.setattr("aftersales_workbench.workflows.module1_erp_refund.run_money_write",
+                        lambda *a, write, **kw: write())
     task, order = _task_order()
 
     class Matcher:

@@ -20,6 +20,7 @@ from aftersales_workbench.integrations.marketplace.models import (
 from aftersales_workbench.integrations.refund_financial import (
     apply_refund_financial_state,
 )
+from aftersales_workbench.integrations.tmall.shipping import preserve_shipping
 from aftersales_workbench.services.refund_attribution import classify_refund_reason
 
 
@@ -93,15 +94,17 @@ class SqlAlchemyMarketplaceSyncRepository:
             existing_platform = self.session.execute(
                 select(Shop.platform).where(Shop.shop_id == order.shop_id)
             ).scalar_one_or_none()
-            if existing_platform != config.platform:
+            if existing_platform != config.platform or order.shop_id != shop_id:
                 raise ValueError(
-                    f"售后单号 {refund.after_sales_sn} 已属于其他平台，拒绝覆盖"
+                    f"售后单号 {refund.after_sales_sn} 已属于其他平台或店铺，拒绝覆盖"
                 )
             order.shop_id = shop_id
             order.platform_order_sn = refund.platform_order_sn
             order.after_sales_type = refund.after_sales_type
             order.refund_amount = refund.refund_amount
-            order.order_shipping_status = refund.order_shipping_status
+            order.order_shipping_status = preserve_shipping(
+                order.order_shipping_status, refund.order_shipping_status
+            )
 
         order.platform_order_amount = refund.platform_order_amount
         order.platform_goods_amount = refund.platform_goods_amount
@@ -114,9 +117,11 @@ class SqlAlchemyMarketplaceSyncRepository:
         order.product_name = refund.product_name
         order.platform_created_at = refund.platform_created_at
         order.platform_updated_at = refund.platform_updated_at
-        order.forward_tracking_number = refund.forward_tracking_number
+        if refund.forward_tracking_number:
+            order.forward_tracking_number = refund.forward_tracking_number
         order.return_tracking_number = refund.return_tracking_number
-        order.carrier_code = refund.carrier_code
+        if refund.carrier_code:
+            order.carrier_code = refund.carrier_code
         order.platform_after_sales_status = None
         order.platform_order_refund_status = None
         order.platform_after_sales_status_text = (

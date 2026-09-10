@@ -57,7 +57,10 @@ def db():
 def client_for(**changes):
     state = {
         "pending": _table(PENDING_HEADERS, []),
-        "admin": _admin_page().replace(ERP_ORDER_SN, "").replace("补开退款单成功", "移除"),
+        "admin": _admin_page()
+        .replace(ERP_ORDER_SN, "")
+        .replace(ERP_CUSTOMER, "")
+        .replace("补开退款单成功", "移除"),
         "customers": [],
         **changes,
     }

@@ -103,11 +103,11 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
         "configured_shop_count": 5,
         "sync_enabled_shop_count": 4,
         "refund_enabled_shop_count": 2,
-        "full_module_shop_count": 2,
+        "full_module_shop_count": 1,
     }
-    assert tmall_shops["tmall-shop-01"]["capabilities"]["module1"]["state"] == "enabled"
+    assert tmall_shops["tmall-shop-01"]["capabilities"]["module1"]["state"] == "unsupported"
     assert tmall_shops["tmall-shop-02"]["capabilities"]["refund_permission"]["state"] == "disabled"
-    assert tmall_shops["tmall-shop-02"]["capabilities"]["module3"]["state"] == "enabled"
+    assert tmall_shops["tmall-shop-02"]["capabilities"]["module3"]["state"] == "unsupported"
     assert platforms["TAOBAO"]["shops"][0]["capabilities"]["module1"]["state"] == "unsupported"
     assert platforms["DOUYIN"]["shops"][0]["capabilities"]["sync"]["state"] == "disabled"
 

@@ -157,8 +157,7 @@ class SharedPackageVerifier:
             order.exception_type = HOLD_REASON
             self.session.commit()
             raise PackageRefundHeld(HOLD_REASON)
-        if (task.payload or {}).get("refund_gate") not in GATES:
-            return None
+        # 每一种模块1退款都需要完整包裹关系，普通在途不得绕过。
         try:
             evidence = self.inspect(order, client)
             self.session.refresh(order, with_for_update=True)

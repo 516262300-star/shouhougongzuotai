@@ -656,6 +656,12 @@ class ErpWebUnshippedRefundClient:
         remote_amount: Decimal,
     ) -> ErpUnshippedRefundLookup:
         """只用于模块3：无 ERP 原订单是无需补单，不是已开退款单/平账。"""
+        if str(record.get("系统客户名称") or "").strip():
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "ERP退款记录已有客户关联，不能确认无需补单",
+                platform_order_sn,
+            )
         rows = _table_rows(pending_page)
         headers = {"平台单号", "平台状态", "操作记录", "订单编号", "退款单号"}
         if not any(headers.issubset(set(row)) for row in rows):
@@ -802,6 +808,9 @@ class ErpWebUnshippedRefundClient:
         document: str,
         erp_order_sn: str,
     ) -> tuple[ErpUnshippedItem, ...]:
+        headers = {"订单编号", "型号", "完整颜色", "欠货量"}
+        if not any(headers.issubset(set(row)) for row in _table_rows(document)):
+            raise ValueError("ERP欠货表结构不完整，不能视为无欠货")
         records = _find_table_records(
             document,
             required_headers={"订单编号", "型号", "完整颜色", "欠货量"},
@@ -814,7 +823,9 @@ class ErpWebUnshippedRefundClient:
             if product in {"税点", "运费"}:
                 continue
             quantity = _decimal(record.get("欠货量", ""))
-            if quantity is None or quantity <= 0:
+            if quantity is None or not quantity.is_finite() or quantity < 0:
+                raise ValueError("ERP欠货数量未知，禁止判定闭环")
+            if quantity == 0:
                 continue
             result.append(
                 _normalize_item(
@@ -892,14 +903,17 @@ class ErpWebUnshippedRefundClient:
         *,
         params: dict[str, str] | None = None,
     ) -> httpx.Response:
-        for attempt in range(2):
+        is_write = "/deleteprodlist/" in path
+        for attempt in range(1 if is_write else 2):
             self._ensure_logged_in(force=attempt > 0)
             response = self._client.get(path, params=params)
             response.raise_for_status()
             if "welcome/loginpage" not in str(response.url):
                 return response
             self._logged_in = False
-        raise ValueError("ERP 管理系统登录状态失效")
+        raise ValueError(
+            "ERP 管理系统登录状态失效" + ("；写请求结果未知，禁止重试" if is_write else "")
+        )
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
         if self._logged_in and not force:

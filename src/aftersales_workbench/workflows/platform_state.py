@@ -11,5 +11,4 @@ def platform_refund_completed(order: AfterSalesOrder) -> bool:
         str(getattr(order, "refund_financial_status", "") or "").upper()
         == "SUCCESS"
         or order.platform_after_sales_status == 10
-        or order.platform_order_refund_status == 4
     )

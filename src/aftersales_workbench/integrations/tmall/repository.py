@@ -94,9 +94,9 @@ class SqlAlchemyTmallSyncRepository:
             existing_platform = self.session.execute(
                 select(Shop.platform).where(Shop.shop_id == order.shop_id)
             ).scalar_one_or_none()
-            if existing_platform != Platform.TMALL:
+            if existing_platform != Platform.TMALL or order.shop_id != shop_id:
                 raise ValueError(
-                    f"售后单号 {refund.after_sales_sn} 已属于其他平台，拒绝覆盖"
+                    f"售后单号 {refund.after_sales_sn} 已属于其他平台或店铺，拒绝覆盖"
                 )
             order.shop_id = shop_id
             order.platform_order_sn = refund.platform_order_sn

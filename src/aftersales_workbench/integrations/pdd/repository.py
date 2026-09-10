@@ -21,6 +21,7 @@ from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
 from aftersales_workbench.integrations.refund_financial import (
     apply_refund_financial_state,
 )
+from aftersales_workbench.integrations.tmall.shipping import preserve_shipping
 from aftersales_workbench.services.refund_attribution import classify_refund_reason
 from aftersales_workbench.services.refund_scope import reconcile_refund_scope
 
@@ -107,7 +108,9 @@ class SqlAlchemyPddSyncRepository:
             order.platform_discount_amount = refund.platform_discount_amount
             order.seller_discount_amount = refund.seller_discount_amount
             order.merchant_receivable_amount = refund.merchant_receivable_amount
-            order.order_shipping_status = refund.order_shipping_status
+            order.order_shipping_status = preserve_shipping(
+                order.order_shipping_status, refund.order_shipping_status
+            )
 
         order.buyer_reason_raw = refund.buyer_reason_raw
         order.buyer_memo = refund.buyer_memo
@@ -118,8 +121,10 @@ class SqlAlchemyPddSyncRepository:
         order.product_name = refund.product_name
         order.platform_created_at = refund.platform_created_at
         order.platform_updated_at = refund.platform_updated_at
-        order.forward_tracking_number = refund.forward_tracking_number
-        order.carrier_code = refund.carrier_code
+        if refund.forward_tracking_number:
+            order.forward_tracking_number = refund.forward_tracking_number
+        if refund.carrier_code:
+            order.carrier_code = refund.carrier_code
         order.return_tracking_number = refund.return_tracking_number
         order.platform_after_sales_status = refund.platform_after_sales_status
         order.platform_order_refund_status = refund.platform_order_refund_status

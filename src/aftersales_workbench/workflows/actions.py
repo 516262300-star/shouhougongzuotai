@@ -56,9 +56,11 @@ from aftersales_workbench.workflows.module3_shipping_guard import (
     TMALL_BLOCK_REASON,
     tmall_unshipped_confirmed,
 )
+from aftersales_workbench.workflows.money_operations import record_money_reconciled, run_money_write
 from aftersales_workbench.workflows.pdd_reconciliation import PddFailedRefundReconciler
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
-from aftersales_workbench.workflows.refund_preflight import verify_pdd_refund
+from aftersales_workbench.workflows.refund_preflight import verify_pdd_refund, verify_tmall_refund
+from aftersales_workbench.workflows.refund_snapshot import require_refund_snapshot
 from aftersales_workbench.workflows.sync_safety import (
     require_sync_safe_order,
     sync_safe_order_filter,
@@ -174,6 +176,13 @@ class ActionCoordinator:
                 and not tmall_unshipped_confirmed(order)
             ):
                 raise WorkflowTransitionError(TMALL_BLOCK_REASON)
+            if action_type is AutomationActionType.ERP_CREATE_REFUND_RECORD or (
+                action_type is AutomationActionType.ERP_MATCH_RETURN_ORDER
+                and result_code is ErpResultCode.RETURN_ORDER_MATCHED
+            ):
+                raise WorkflowTransitionError(
+                    "人工回填不能证明财务闭环；请执行逐单ERP只读核验，确认唯一流水及平账事实"
+                )
             task.action_status = AutomationTaskStatus.SUCCEEDED
             task.last_error = None
             task.attempts = (task.attempts or 0) + 1
@@ -754,7 +763,7 @@ class ExternalActionExecutor:
                         response = (
                             {"already_refunded": True}
                             if already_refunded
-                            else self._agree_tmall(client, shop.refund_credentials(), task)
+                            else self._execute_tmall_refund(client, shop.refund_credentials(), task)
                         )
                         result_payload = {
                             "platform_already_refunded": bool(response.get("already_refunded")),
@@ -954,6 +963,24 @@ class ExternalActionExecutor:
             AutomationActionType.TMALL_AGREE_RETURN_REFUND,
         }.intersection(action_types) and not self.settings.tmall_write_enabled:
             raise WorkflowTransitionError("TMALL_WRITE_ENABLED=false，不能执行平台退款")
+        module_switches = {
+            AutomationActionType.PDD_AGREE_REFUND: (
+                self.settings.module1_pdd_refund_execution_enabled
+            ),
+            AutomationActionType.PDD_AGREE_RETURN_REFUND: (
+                self.settings.module2_pdd_refund_execution_enabled
+            ),
+            AutomationActionType.TMALL_AGREE_REFUND: (
+                self.settings.module1_tmall_refund_execution_enabled
+            ),
+            AutomationActionType.TMALL_AGREE_RETURN_REFUND: (
+                self.settings.module2_tmall_refund_execution_enabled
+            ),
+        }
+        if any(
+            action in module_switches and not module_switches[action] for action in action_types
+        ):
+            raise WorkflowTransitionError("对应模块退款执行开关关闭，禁止资金写入")
         if AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types:
             if not read_publish_enabled(self.session, self.settings):
                 raise WorkflowTransitionError(
@@ -990,6 +1017,7 @@ class ExternalActionExecutor:
         )
         if order is None or order.platform_order_sn != task.platform_order_sn:
             raise WorkflowTransitionError("退款任务关联订单已变化，禁止执行")
+        self._require_final_refund_gate(order, task, Platform.PDD)
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         confirmation = None
         auto_evidence = None
@@ -1001,21 +1029,24 @@ class ExternalActionExecutor:
         if task.payload.get("refund_gate") == "UNCOLLECTED":
             from aftersales_workbench.workflows.auto_uncollected import require_auto_execution
 
-            auto_evidence = require_auto_execution(self.session, order, task.id, self.settings)
+            auto_evidence = require_auto_execution(
+                self.session, order, task.id, self.settings, now=datetime.now(UTC)
+            )
         if task.payload.get("refund_gate") == CONFIRMED_UNCOLLECTED:
             confirmation = require_execution_confirmation(
-                self.session, order, task.id, self.settings,
+                self.session, order, task.id, self.settings, now=datetime.now(UTC),
             )
         already_refunded = verify_pdd_refund(
             client,
             order,
-            origin=str(task.payload.get("origin") or ""),
+            origin=str(task.payload.get("origin") or ""), now=datetime.now(UTC),
             **({"uncollected_confirmation": confirmation} if confirmation is not None else {}),
             **({"auto_uncollected_evidence": auto_evidence} if auto_evidence is not None else {}),
             **({"no_trace_risk_evidence": risk_evidence} if risk_evidence is not None else {}),
         )
         if already_refunded:
             order.platform_after_sales_status = 10
+            record_money_reconciled(self.session, order, "PLATFORM_REFUND")
             return True
         if task.payload.get("origin") == "module1":
             from aftersales_workbench.workflows.shared_package import SharedPackageVerifier
@@ -1025,27 +1056,115 @@ class ExternalActionExecutor:
             if package_evidence is not None:
                 # ERP/其他订单核查之后再读目标，避免使用开始扫描时的旧申请。
                 if verify_pdd_refund(
-                    client, order, origin="module1",
+                    client, order, origin="module1", now=datetime.now(UTC),
                     uncollected_confirmation=confirmation,
                     auto_uncollected_evidence=auto_evidence,
                     no_trace_risk_evidence=risk_evidence,
                 ):
                     order.platform_after_sales_status = 10
                     return True
+        elif task.payload.get("origin") == "module2":
+            from aftersales_workbench.workflows.module2_safety import require_erp_receipt
+            from aftersales_workbench.workflows.shared_package import SharedPackageVerifier
+            require_erp_receipt(self.session, self.settings, order, task)
+            verifier = self.package_verifier or SharedPackageVerifier(self.session, self.settings)
+            package = verifier.inspect(order, client)
+            if len(package["package_orders"]) != 1:
+                raise WorkflowTransitionError("模块2同包裹多订单必须人工分配实收")
+            if verify_pdd_refund(client, order, origin="module2"):
+                return True
         require_sync_safe_order(self.session, task.after_sales_sn, self.pdd_shop_codes)
         if confirmation is not None:
-            require_execution_confirmation(self.session, order, task.id, self.settings)
+            require_execution_confirmation(
+                self.session, order, task.id, self.settings, now=datetime.now(UTC)
+            )
         if auto_evidence is not None:
-            require_auto_execution(self.session, order, task.id, self.settings)
+            require_auto_execution(
+                self.session, order, task.id, self.settings, now=datetime.now(UTC)
+            )
         if risk_evidence is not None:
             require_execution(self.session, order, task.id, self.settings)
         if confirmation is not None or auto_evidence is not None or risk_evidence is not None:
             mark_request_started(self.session, task.id)
-        client.agree_refund(
-            after_sales_id=int(task.after_sales_sn),
-            order_sn=task.platform_order_sn,
+        self._require_final_refund_gate(order, task, Platform.PDD)
+        run_money_write(
+            self.session, order, operation_type="PLATFORM_REFUND", task_id=task.id,
+            write=lambda: client.agree_refund(
+                after_sales_id=int(task.after_sales_sn), order_sn=task.platform_order_sn,
+            ),
         )
         return False
+
+    def _require_final_refund_gate(self, order, task, platform):
+        self.session.refresh(order, with_for_update=True)
+        current_task = self.session.get(
+            AftersalesActionTask, task.id, populate_existing=True, with_for_update=True
+        )
+        if (
+            current_task is None
+            or current_task.action_status != AutomationTaskStatus.RUNNING
+            or (
+                current_task.after_sales_sn != order.after_sales_sn
+                or current_task.action_type != task.action_type
+            )
+        ):
+            raise WorkflowTransitionError("退款任务执行权已变化，禁止执行")
+        shop = self.session.get(Shop, order.shop_id)
+        if (
+            shop is None
+            or shop.platform != platform
+            or shop.shop_code != task.shop_code
+            or not shop.is_active
+        ):
+            raise WorkflowTransitionError("退款平台/店铺身份不一致或店铺已停用")
+        self._validate_write_gates((task.action_type,))
+        require_refund_snapshot(order, task.payload)
+        if task.payload.get("origin") == "module1":
+            if order.workflow_status != WorkflowStatus.INTERCEPT_CONFIRMED and not (
+                task.payload.get("refund_gate") == CONFIRMED_UNCOLLECTED
+                and order.workflow_status == WorkflowStatus.INTERCEPT_PUSHED
+            ):
+                raise WorkflowTransitionError("当前已人工接管或退款闸门未通过，禁止退款")
+            now = datetime.now(UTC)
+            from datetime import timedelta
+
+            from aftersales_workbench.workflows.uncollected_refund import utc
+            if not build_refund_business_hours(self.settings).is_open(now):
+                raise WorkflowTransitionError("当前不在北京时间退款工作时间，禁止退款")
+            if order.logistics_checked_at is None or not timedelta(0) <= (
+                now - utc(order.logistics_checked_at)
+            ) <= timedelta(seconds=90):
+                raise WorkflowTransitionError("当前物流证据已过期，须重新核验")
+            if task.payload.get("refund_gate") in {
+                "IN_TRANSIT", "RETURNING", "RETURNED", "UNCOLLECTED",
+            } and (order.logistics_last_error or (order.logistics_query_failures or 0) > 0):
+                raise WorkflowTransitionError("最近物流查询失败，旧轨迹不得作为退款证据")
+            expected_state = {
+                "CONFIRMED_UNCOLLECTED": "UNKNOWN", "DUAL_NO_TRACE_RISK": "UNKNOWN",
+                "UNCOLLECTED": "UNCOLLECTED", "IN_TRANSIT": "IN_TRANSIT",
+                "RETURNING": "RETURNING", "RETURNED": "RETURNED",
+            }.get(task.payload.get("refund_gate"))
+            if not expected_state or order.logistics_state != expected_state:
+                raise WorkflowTransitionError("当前物流状态与退款资格不一致，禁止执行")
+            notice = self.session.scalar(
+                select(AftersalesActionTask.id)
+                .where(
+                    AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+                    AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                    AftersalesActionTask.action_status == AutomationTaskStatus.SUCCEEDED,
+                    AftersalesActionTask.payload["tracking_number"].as_string()
+                    == order.forward_tracking_number,
+                    AftersalesActionTask.payload["carrier_code"].as_string()
+                    == str(order.carrier_code),
+                )
+                .limit(1)
+            )
+            if notice is None:
+                raise WorkflowTransitionError("缺少当前运单的成功通知证据")
+        elif task.payload.get("origin") == "module2":
+            self._validate_module2_refund_task(task)
+        else:
+            raise WorkflowTransitionError("不支持该模块执行平台退款")
 
     @staticmethod
     def _agree_tmall(
@@ -1055,9 +1174,36 @@ class ExternalActionExecutor:
     ) -> dict[str, Any]:
         if not task.after_sales_sn.isdigit():
             raise WorkflowTransitionError("天猫退款单号不是数字，已阻止退款")
+        verified = task.payload.get("platform_verified_refund")
+        if not isinstance(verified, dict):
+            raise WorkflowTransitionError("天猫资金请求缺少逐单平台核验快照")
         return client.agree_refund(
             refund_id=int(task.after_sales_sn),
             refund_credentials=refund_credentials,
+            expected_refund=verified,
+        )
+
+    def _execute_tmall_refund(self, client, credentials, task):
+        order = self.session.scalar(select(AfterSalesOrder).where(
+            AfterSalesOrder.after_sales_sn == task.after_sales_sn,
+        ))
+        if order is None:
+            raise WorkflowTransitionError("天猫关联售后不存在")
+        self._require_final_refund_gate(order, task, Platform.TMALL)
+        # 当前ERP关联适配器只支持PDD；未完成跨店整包裹适配前不能猜测天猫无冲突。
+        if task.payload.get("origin") in {"module1", "module2"}:
+            raise WorkflowTransitionError("天猫整包裹核验尚未适配，自动退款保持关闭，须人工核验")
+        verified = verify_tmall_refund(client, order, origin=task.payload.get("origin"))
+        if verified.get("status") == "SUCCESS":
+            record_money_reconciled(self.session, order, "PLATFORM_REFUND")
+            return {"already_refunded": True}
+        self._require_final_refund_gate(order, task, Platform.TMALL)
+        verified_task = replace(
+            task, payload={**task.payload, "platform_verified_refund": verified}
+        )
+        return run_money_write(
+            self.session, order, operation_type="PLATFORM_REFUND", task_id=task.id,
+            write=lambda: self._agree_tmall(client, credentials, verified_task),
         )
 
     def _validate_module2_refund_task(self, task: ExternalTaskSnapshot) -> bool:
@@ -1092,7 +1238,7 @@ class ExternalActionExecutor:
             raise WorkflowTransitionError("收货记录未验货通过，已阻止模块 2 自动退款")
         if platform_refund_completed(order):
             return True
-        platform = self._get_order_platform(order)
+        platform = self.session.scalar(select(Shop.platform).where(Shop.shop_id == order.shop_id))
         if platform is Platform.TMALL:
             if order.platform_after_sales_status_text not in {
                 "WAIT_SELLER_AGREE",

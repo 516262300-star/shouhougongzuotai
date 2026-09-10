@@ -298,6 +298,11 @@ def _shop_capabilities(
         ),
         "平台已退款后自动核对未发货订单并完成 ERP 平账",
     )
+    if platform is Platform.TMALL:
+        module1 = _unsupported("整包裹关联尚未适配，自动退款已失败关闭，须人工核验")
+        module2 = _unsupported("整包裹实收分配尚未适配，自动退款已失败关闭，须人工核验")
+        module1_erp = _unsupported("逐单ERP资金闭环目前仅适配拼多多")
+        module3 = _unsupported("ERP自动补单目前仅适配拼多多")
     return {
         "sync": sync,
         "attribution": attribution,

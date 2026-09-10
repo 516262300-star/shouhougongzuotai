@@ -81,8 +81,9 @@ class TaobaoReadClient:
             if not isinstance(payload, dict):
                 raise ValueError("淘宝退款列表缺少 refunds_receive_get_response")
             refunds_node = payload.get("refunds")
-            records = refunds_node.get("refund") if isinstance(refunds_node, dict) else []
-            records = records or []
+            records = refunds_node.get("refund") if isinstance(refunds_node, dict) else None
+            if records is None and payload.get("total_results") == 0:
+                records = []
             if not isinstance(records, list):
                 raise ValueError("淘宝退款列表不是数组")
             for record in records:

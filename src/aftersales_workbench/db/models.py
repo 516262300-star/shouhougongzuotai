@@ -561,6 +561,36 @@ class AftersalesActionTask(Base):
     )
 
 
+class MoneyOperation(Base):
+    """独立于可取消/删除任务的永久资金操作账本。"""
+
+    __tablename__ = "money_operations"
+    operation_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    platform: Mapped[str] = mapped_column(String(20), nullable=False)
+    shop_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    after_sales_sn: Mapped[str] = mapped_column(String(100), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    task_id: Mapped[int | None] = mapped_column(BigInteger)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    snapshot: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    last_error: Mapped[str | None] = mapped_column(Text)
+
+
+class ParcelNoticeRecord(Base):
+    """包裹级永久发送凭证，不随任务或JSONL账本删除。"""
+    __tablename__ = "parcel_notice_records"
+    parcel_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    carrier_code: Mapped[str] = mapped_column(String(50), nullable=False)
+    tracking_number: Mapped[str] = mapped_column(String(100), nullable=False)
+    task_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    target_group: Mapped[str] = mapped_column(String(255), nullable=False)
+    plan_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class WarehouseReturnRecord(Base):
     __tablename__ = "warehouse_return_records"
     __table_args__ = (

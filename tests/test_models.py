@@ -24,6 +24,8 @@ from aftersales_workbench.db.models import (
 def test_global_schema_contains_all_master_tables() -> None:
     expected = {
         Shop.__tablename__,
+        "money_operations",
+        "parcel_notice_records",
         AutomationPollState.__tablename__,
         AutomationSwitch.__tablename__,
         AutomationSwitchEvent.__tablename__,

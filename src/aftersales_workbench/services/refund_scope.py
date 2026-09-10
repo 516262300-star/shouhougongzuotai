@@ -48,8 +48,10 @@ def reconcile_refund_scope(session: Session, order: AfterSalesOrder) -> RefundSc
     current = WorkflowStatus(order.workflow_status)
 
     if scope is RefundScope.PARTIAL:
-        order.workflow_status = WorkflowStatus.PARTIAL_REFUND_EXCLUDED
-        order.exception_type = PARTIAL_REFUND_NOTE
+        # 金额分类不能覆盖人工接管、等待退回或资金执行后的状态。
+        if current in {WorkflowStatus.PENDING_CHECK, WorkflowStatus.PARTIAL_REFUND_EXCLUDED}:
+            order.workflow_status = WorkflowStatus.PARTIAL_REFUND_EXCLUDED
+            order.exception_type = PARTIAL_REFUND_NOTE
         _cancel_pending_module1_tasks(
             session,
             order.after_sales_sn,

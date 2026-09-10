@@ -273,11 +273,9 @@ class WindowsWeComGateway:
                 error="按过发送键但未能确认聊天区域变化",
                 ambiguous=True,
             )
-            # 发送后的聊天区变化已经是本次动作的确认点。此后即使微信、通知
-            # 弹窗等程序抢走前台，也不能把已确认发送误判成结果不明，否则
-            # 会冻结后续队列并诱发人工重复发送。
-            hooks.sent()
-            completed = True
+            # 像素变化可能来自其他消息或发送失败提示，不构成消息级回执。
+            # 保留SendPressed账本；人工核验群内消息后再确认，不自动重发。
+            raise DesktopAmbiguousSendError("已按发送键但缺少消息级成功回执，须人工核验目标群消息")
         finally:
             self._target_hwnd = None
             # 只有确认发送成功或尚未开始输入时才恢复原窗口。结果不明时保留

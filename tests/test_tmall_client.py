@@ -245,6 +245,7 @@ def test_agree_refund_uses_main_review_then_child_agree(
     result = client.agree_refund(
         refund_id=9001,
         refund_credentials=child_credentials,
+        expected_refund={"refund_id": "9001", "refund_fee": "26.42"},
     )
 
     assert [request["method"] for request in requests] == [
@@ -304,6 +305,7 @@ def test_agree_refund_does_not_apply_tmall_only_amount_limit(
     client.agree_refund(
         refund_id=9002,
         refund_credentials=child_credentials,
+        expected_refund={"refund_id": "9002", "refund_fee": "300.01"},
     )
 
     assert [request["method"] for request in requests] == [

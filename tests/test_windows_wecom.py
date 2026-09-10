@@ -96,8 +96,8 @@ def test_escape_state_ignores_stale_pressed_since_last_query_bit() -> None:
     assert _is_key_currently_down(-0x8000) is True
 
 
-def test_send_is_confirmed_immediately_after_post_send_visual_change(monkeypatch) -> None:
-    """发送画面已变化后，其他应用抢焦点不应再造成结果不明。"""
+def test_visual_change_without_message_receipt_remains_unknown(monkeypatch) -> None:
+    """屏幕变化不能代替消息成功回执。"""
 
     gateway = object.__new__(WindowsWeComGateway)
     gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
@@ -127,9 +127,10 @@ def test_send_is_confirmed_immediately_after_post_send_visual_change(monkeypatch
     monkeypatch.setattr(gateway, "_restore_previous_window", lambda *args: None)
 
     hooks = _HookRecorder()
-    gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
+    with pytest.raises(DesktopAmbiguousSendError, match="消息级成功回执"):
+        gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
 
-    assert hooks.events == ["paste_started", "send_pressed", "sent"]
+    assert hooks.events == ["paste_started", "send_pressed"]
     assert visual_checks == 3
     assert foreground_checks == 2
 

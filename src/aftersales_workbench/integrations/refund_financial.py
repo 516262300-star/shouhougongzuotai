@@ -63,28 +63,24 @@ def infer_refund_financial_state(
     """只把平台明确的完成状态认作实际退款，未知数字状态不作成功推断。"""
     platform_value = platform.value if isinstance(platform, Platform) else str(platform)
     status_text = _normalized_status(after_sales_status_text)
-    order_text = _normalized_status(order_status_text)
 
     succeeded = False
     closed = False
     known = False
     if platform_value == Platform.PDD.value:
-        succeeded = after_sales_status == 10 or order_refund_status == 4
+        succeeded = after_sales_status == 10
         known = after_sales_status is not None or order_refund_status is not None
     else:
         succeeded = status_text in _SUCCESS_TEXT
         closed = status_text in _CLOSED_TEXT
         known = bool(status_text)
-        # 订单状态只能辅助判断“已退款”，不能把普通交易完成误认成退款成功。
-        if order_text in {"REFUND_SUCCESS", "REFUNDSUCCESS", "已退款"}:
-            succeeded = True
-            known = True
+        # 父订单退款状态不证明当前售后/子单已退款。
 
     if succeeded:
         return RefundFinancialState(
             status=SUCCESS,
             actual_amount=refund_amount,
-            completed_at=platform_updated_at or platform_created_at,
+            completed_at=platform_updated_at,
         )
     if closed:
         return RefundFinancialState(status=CLOSED, actual_amount=None, completed_at=None)

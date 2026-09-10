@@ -20,6 +20,7 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlan
+from aftersales_workbench.workflows.parcel_notice_store import ParcelNoticeStore
 from aftersales_workbench.workflows.sync_safety import require_sync_safe_order
 
 
@@ -351,6 +352,7 @@ class _LedgerHooks:
 
     def paste_started(self) -> None:
         self.service._claim(self.plan.task_id)
+        self.service.parcel_store.claim(self.plan, self.plan_hash)
         self.service.ledger.append(
             task_id=self.plan.task_id,
             state=DesktopLedgerState.PASTE_STARTED,
@@ -358,6 +360,7 @@ class _LedgerHooks:
         )
 
     def send_pressed(self) -> None:
+        self.service.parcel_store.update(self.plan, DesktopLedgerState.SEND_PRESSED)
         self.service.ledger.append(
             task_id=self.plan.task_id,
             state=DesktopLedgerState.SEND_PRESSED,
@@ -365,6 +368,7 @@ class _LedgerHooks:
         )
 
     def sent(self) -> None:
+        self.service.parcel_store.update(self.plan, DesktopLedgerState.SENT)
         self.service.ledger.append(
             task_id=self.plan.task_id,
             state=DesktopLedgerState.SENT,
@@ -381,11 +385,13 @@ class DesktopNoticeSendService:
         ledger: DesktopNoticeLedger,
         *,
         pdd_shop_codes: tuple[str, ...] | None = None,
+        parcel_store=None,
     ) -> None:
         self.session = session
         self.gateway = gateway
         self.ledger = ledger
         self.pdd_shop_codes = pdd_shop_codes
+        self.parcel_store = parcel_store or ParcelNoticeStore(session)
 
     def run(self, plans: list[DesktopNoticePlan]) -> DesktopNoticeSendResult:
         result = DesktopNoticeSendResult(scanned=len(plans))
@@ -418,7 +424,20 @@ class DesktopNoticeSendService:
                     f"任务 {plan.task_id} 已暂停；确认尚未输入消息后使用人工恢复参数"
                 )
                 break
-            if self._tracking_group_already_notified(plan.task_id):
+            blocking = self.parcel_store.blocking()
+            if blocking is not None:
+                result.paused += 1
+                result.error = "数据库保留未核验发送记录；清空本地账本不能解除，须人工核验"
+                break
+            parcel = self.parcel_store.get(plan)
+            if parcel is not None and (
+                parcel.state not in {"Sent", "ManualHandled"}
+                or parcel.target_group != plan.target_group
+            ):
+                result.paused += 1
+                result.error = "该包裹已有历史发送记录或目标群变化，禁止重发，须人工核验"
+                break
+            if parcel is not None or self._tracking_group_already_notified(plan.task_id):
                 self._complete_tracking_group(plan.task_id, require_running=False)
                 result.reconciled += 1
                 continue
@@ -591,6 +610,13 @@ class DesktopNoticeSendService:
         task = self.session.get(AftersalesActionTask, task_id)
         if task is None:
             raise DesktopNoticeSendError(f"账本已发送但动作任务不存在：{task_id}")
+        latest = self.ledger.latest(task_id)
+        if latest is None or latest.state not in {
+            DesktopLedgerState.SENT,
+            DesktopLedgerState.MANUAL_HANDLED,
+        }:
+            raise DesktopNoticeSendError("缺少明确人工确认或发送回执，不能解除数据库发送保护")
+        self.parcel_store.confirm_task(task_id, latest.state)
         status = AutomationTaskStatus(task.action_status)
         if status is AutomationTaskStatus.SUCCEEDED:
             return False

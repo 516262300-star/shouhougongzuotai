@@ -3,6 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
@@ -14,6 +16,7 @@ from aftersales_workbench.workflows.actions import (
     ActionCoordinator,
     ErpResultCode,
     InterceptResult,
+    WorkflowTransitionError,
 )
 
 
@@ -140,19 +143,14 @@ def test_pdd_success_queues_erp_refund_record() -> None:
     ]
 
 
-def test_erp_refund_record_completion_finishes_module3() -> None:
+def test_manual_erp_refund_confirmation_cannot_finish_without_verified_facts() -> None:
     coordinator = TestCoordinator(
         _task(AutomationActionType.ERP_CREATE_REFUND_RECORD), _order()
     )
-
-    coordinator.confirm_erp_action(
-        task_id=1,
-        success=True,
-        result_code=ErpResultCode.COMPLETED,
-        reference_sn="refund-record-1",
-    )
-
-    assert coordinator.order.workflow_status is WorkflowStatus.UNSHIPPED_AUTO_REFUNDED
+    with pytest.raises(WorkflowTransitionError, match="人工回填不能证明财务闭环"):
+        coordinator.confirm_erp_action(task_id=1, success=True,
+            result_code=ErpResultCode.COMPLETED, reference_sn="refund-record-1")
+    assert coordinator.order.workflow_status is not WorkflowStatus.UNSHIPPED_AUTO_REFUNDED
 
 
 def test_qywx_success_marks_intercept_pushed() -> None:

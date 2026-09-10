@@ -422,8 +422,8 @@ class PddRefundSyncService:
             payload = body.get("refund_increment_get_response")
             if not isinstance(payload, dict):
                 raise ValueError("缺少 refund_increment_get_response")
-            records = payload.get("refund_list", [])
-            if records is None:
+            records = payload.get("refund_list")
+            if records is None and payload.get("total_count") == 0:
                 records = []
             if not isinstance(records, list):
                 raise ValueError("refund_list 不是列表")
@@ -434,6 +434,10 @@ class PddRefundSyncService:
                 yield list_record
 
             total_count = payload.get("total_count")
+            if isinstance(total_count, int) and len(records) < page_size and (
+                (page - 1) * page_size + len(records) < total_count
+            ):
+                raise ValueError("退款列表数量与total_count矛盾，禁止推进同步水位")
             if not records or len(records) < page_size:
                 break
             if isinstance(total_count, int) and page * page_size >= total_count:

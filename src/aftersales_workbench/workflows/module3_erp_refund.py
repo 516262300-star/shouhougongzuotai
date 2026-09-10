@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from functools import partial
 from typing import Any
 
 from sqlalchemy import or_, select
@@ -26,6 +27,11 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundLookup,
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
+)
+from aftersales_workbench.workflows.money_operations import (
+    MoneyOperationBlocked,
+    record_money_reconciled,
+    run_money_write,
 )
 from aftersales_workbench.workflows.polling import due_first, record_poll
 from aftersales_workbench.workflows.sync_safety import (
@@ -174,15 +180,29 @@ class Module3ErpRefundService:
             )
             if lookup.status is ErpUnshippedRefundStatus.READY:
                 require_sync_safe_order(self.session, order.after_sales_sn)
-                lookup = self.client.execute(
-                    lookup,
-                    after_sales_sn=order.after_sales_sn,
-                    expected_amount=order.merchant_receivable_amount,
-                    expected_items=expected_items,
-                )
+                try:
+                    lookup = run_money_write(
+                        self.session,
+                        order,
+                        operation_type="ERP_REFUND",
+                        task_id=task.id,
+                        write=partial(
+                            self.client.execute,
+                            lookup,
+                            after_sales_sn=order.after_sales_sn,
+                            expected_amount=order.merchant_receivable_amount,
+                            expected_items=expected_items,
+                        ),
+                    )
+                except MoneyOperationBlocked as exc:
+                    task.last_error = str(exc)
+                    result.blocked += 1
+                    self.session.commit()
+                    continue
                 self._complete(task, order, lookup)
                 result.applied += 1
             elif lookup.status is ErpUnshippedRefundStatus.COMPLETED:
+                record_money_reconciled(self.session, order, "ERP_REFUND")
                 self._complete(task, order, lookup)
             if include_details and result.details is not None:
                 result.details.append(self._safe_detail(task, order, lookup))
@@ -278,7 +298,6 @@ class Module3ErpRefundService:
                 or_(
                     AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
             )
             .order_by(AftersalesActionTask.id)

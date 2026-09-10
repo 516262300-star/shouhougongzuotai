@@ -58,8 +58,13 @@ def claim(db):
 
 
 def settings():
-    return Settings(_env_file=None, module1_refund_business_start_hour=0,
-                    module1_refund_business_end_hour=24)
+    return Settings(
+        _env_file=None,
+        pdd_write_enabled=True,
+        module1_pdd_refund_execution_enabled=True,
+        module1_refund_business_start_hour=0,
+        module1_refund_business_end_hour=24,
+    )
 
 
 def execute(db, client, task):

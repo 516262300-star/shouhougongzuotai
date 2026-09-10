@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 from aftersales_workbench.db.models import AutomationActionType, Platform, WorkflowStatus
@@ -79,6 +80,12 @@ def _order(*, platform_refunded=False, platform=Platform.PDD):
         id=1,
         platform=platform,
         after_sales_sn="after-1",
+        platform_order_sn="order-1",
+        shop_id=1,
+        shop_code="tmall-shop-06" if platform is Platform.TMALL else "pdd-shop-01",
+        after_sales_type="ONLY_REFUND",
+        refund_amount=Decimal("10.00"),
+        items=[],
         workflow_status=WorkflowStatus.INTERCEPT_CONFIRMED,
         forward_tracking_number="YT123",
         carrier_code="1",

@@ -87,7 +87,9 @@ def test_external_executor_requires_tmall_write_gate() -> None:
 
     enabled = ExternalActionExecutor(  # type: ignore[arg-type]
         None,
-        Settings(_env_file=None, tmall_write_enabled=True),
+        Settings(
+            _env_file=None, tmall_write_enabled=True, module2_tmall_refund_execution_enabled=True
+        ),
     )
     enabled._validate_write_gates(
         (AutomationActionType.TMALL_AGREE_RETURN_REFUND,)

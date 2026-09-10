@@ -207,8 +207,12 @@ def _after_sales_type(list_value: Any, detail_value: Any) -> AfterSalesType:
 
 def _shipping_status(order: dict[str, Any]) -> ShippingStatus:
     order_status = order.get("order_status")
-    if order_status == 1:
+    if order_status == 1 and not any(_nonempty(order.get(key)) for key in (
+        "receive_time", "tracking_number", "shipping_time",
+    )):
         return ShippingStatus.UNSHIPPED
+    if order_status == 1:
+        return ShippingStatus.UNKNOWN
     if order_status == 2:
         return ShippingStatus.IN_TRANSIT
     if order_status == 3:
@@ -217,7 +221,7 @@ def _shipping_status(order: dict[str, Any]) -> ShippingStatus:
         return ShippingStatus.DELIVERED
     if _nonempty(order.get("tracking_number")) or _nonempty(order.get("shipping_time")):
         return ShippingStatus.IN_TRANSIT
-    return ShippingStatus.UNSHIPPED
+    return ShippingStatus.UNKNOWN
 
 
 def unwrap_order_information(body: dict[str, Any]) -> dict[str, Any]:

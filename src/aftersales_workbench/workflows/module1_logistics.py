@@ -30,6 +30,7 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     is_kuaidi100_no_trace_error,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
+from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
 from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 from aftersales_workbench.workflows.uncollected_refund import pending_confirmation, utc
 
@@ -228,7 +229,11 @@ def classify_logistics_trace(events: list[LogisticsEvent]) -> LogisticsState:
         or events[0].status_name == "待揽收"
     ):
         return LogisticsState.UNKNOWN  # 无结构化状态不可退回到“任何文本都算在途”。
-    return LogisticsState.IN_TRANSIT
+    if code in {"0", "1", "103", "1001", "1002", "1003"} or any(
+        word in latest for word in ("运输中", "在途中", "转运", "已揽收", "已揽件", "离开", "到达")
+    ):
+        return LogisticsState.IN_TRANSIT
+    return LogisticsState.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -592,6 +597,7 @@ class Module1LogisticsGateService:
                         order.exception_type = None
                         self._enqueue(order.after_sales_sn, AutomationActionType.PDD_AGREE_REFUND, {
                             "origin": "module1", "refund_gate": GATE,
+                            "approval_snapshot": refund_snapshot(order),
                             EVIDENCE_KEY: risk_evidence,
                             "decision_reason": (
                                 "当天发货、拦截发送成功、双接口无轨迹、无历史物流；风险规则放行"
@@ -816,6 +822,7 @@ class Module1LogisticsGateService:
             order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
             self._enqueue(order.after_sales_sn, AutomationActionType.PDD_AGREE_REFUND, {
                 "origin": "module1", "refund_gate": state.value,
+                "approval_snapshot": refund_snapshot(order),
                 "auto_uncollected_evidence": auto_evidence,
             })
             return
@@ -844,7 +851,8 @@ class Module1LogisticsGateService:
         self._enqueue(
             order.after_sales_sn,
             action_type,
-            {"origin": "module1", "refund_gate": state.value},
+            {"origin": "module1", "refund_gate": state.value,
+             "approval_snapshot": refund_snapshot(order)},
         )
 
     def _tmall_refund_enabled(self, order: AfterSalesOrder) -> bool:
@@ -874,6 +882,14 @@ class Module1LogisticsGateService:
             )
         ).scalar_one_or_none()
         if existing is not None:
+            if "approval_snapshot" in payload:
+                # 增量同步或物流复查不能扩大已批准任务的金额/商品范围。
+                payload = {
+                    **payload,
+                    "approval_snapshot": (getattr(existing, "payload", None) or {}).get(
+                        "approval_snapshot"
+                    ),
+                }
             if (getattr(existing, "payload", None) or {}).get("uncollected_request_started_at"):
                 return False  # 已开始资金请求，只读回查，不重建或重开任务。
             if (

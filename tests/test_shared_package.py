@@ -22,6 +22,7 @@ from aftersales_workbench.integrations.erp.package_orders import (
     ErpPackageOrderSource,
 )
 from aftersales_workbench.workflows.actions import ExternalActionExecutor, ExternalTaskSnapshot
+from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
 from aftersales_workbench.workflows.shared_package import (
     HOLD_REASON,
     KEY,
@@ -73,7 +74,15 @@ def setup(db):
     client.get_refund_information.side_effect = lambda *, order_sn, **kw: deepcopy(
         details[order_sn]
     )
-    cfg = Settings(_env_file=None)
+    cfg = Settings(
+        _env_file=None,
+        pdd_write_enabled=True,
+        module1_pdd_refund_execution_enabled=True,
+        module1_refund_business_start_hour=0,
+        module1_refund_business_end_hour=24,
+    )
+    order.workflow_status = "INTERCEPT_CONFIRMED"
+    order.logistics_checked_at = base.NOW.replace(tzinfo=None)
     verifier = SharedPackageVerifier(
         db, cfg, source_factory=lambda: source, now_provider=lambda: base.NOW
     )
@@ -84,7 +93,8 @@ def setup(db):
         action_status=AutomationTaskStatus.RUNNING,
         idempotency_key="test-funds",
         attempts=1,
-        payload={"origin": "module1", "refund_gate": "DUAL_NO_TRACE_RISK"},
+        payload={"origin": "module1", "refund_gate": "DUAL_NO_TRACE_RISK",
+                 "approval_snapshot": refund_snapshot(order)},
     )
     db.add(task)
     db.commit()

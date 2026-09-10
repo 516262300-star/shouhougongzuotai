@@ -18,7 +18,7 @@ def confirmed_refund(order: AfterSalesOrder, platform: Platform | str) -> bool:
     # 10/4 仅为拼多多代码，不套用到其他平台。
     return str(order.refund_financial_status or "").upper() == "SUCCESS" or (
         platform == Platform.PDD
-        and (order.platform_after_sales_status == 10 or order.platform_order_refund_status == 4)
+        and order.platform_after_sales_status == 10
     )
 
 
@@ -35,7 +35,6 @@ def confirmed_refund_filter() -> Any:
                 pdd_shop,
                 or_(
                     func.coalesce(AfterSalesOrder.platform_after_sales_status, 0) == 10,
-                    func.coalesce(AfterSalesOrder.platform_order_refund_status, 0) == 4,
                 ),
             ),
         ),

@@ -720,7 +720,6 @@ class ErpReturnMatchSyncService:
                 or_(
                     AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
@@ -790,7 +789,6 @@ class ErpReturnMatchSyncService:
                 or_(
                     AfterSalesOrder.refund_financial_status == "SUCCESS",
                     AfterSalesOrder.platform_after_sales_status == 10,
-                    AfterSalesOrder.platform_order_refund_status == 4,
                 ),
                 AfterSalesOrder.workflow_status.in_(
                     (

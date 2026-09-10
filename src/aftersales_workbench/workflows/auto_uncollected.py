@@ -27,7 +27,9 @@ EVIDENCE_KEY = "auto_uncollected_evidence"
 
 def _require_order_and_notice(session, order):
     if (
-        order.after_sales_type != AfterSalesType.ONLY_REFUND
+        getattr(order, "logistics_physical_seen_at", None) is not None
+        or getattr(order, "logistics_return_detected_at", None) is not None
+        or order.after_sales_type != AfterSalesType.ONLY_REFUND
         or order.order_shipping_status != ShippingStatus.IN_TRANSIT
         or order.platform_order_amount != order.refund_amount
         or order.refund_amount <= 0

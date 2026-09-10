@@ -128,7 +128,6 @@ class SqlAlchemyModule1Repository:
                 platform_refund_completed=(
                     row.refund_financial_status == "SUCCESS"
                     or row.platform_after_sales_status == 10
-                    or row.platform_order_refund_status == 4
                 ),
             )
             for row in rows

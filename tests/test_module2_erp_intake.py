@@ -129,7 +129,8 @@ def test_candidates_include_platform_refunded_orders_for_post_refund_audit() -> 
     )
     sql = str(compiled)
     assert "platform_after_sales_status IN (2, 3, 10)" in sql
-    assert "platform_order_refund_status = 4" in sql
+    assert "platform_order_refund_status = 4" not in sql
+    assert "platform_after_sales_status IN (2, 3, 10)" in sql
 
 
 def test_refunded_without_tracking_are_listed_for_follow_up() -> None:
@@ -152,7 +153,8 @@ def test_refunded_without_tracking_are_listed_for_follow_up() -> None:
         )
     )
     assert "platform_after_sales_status = 10" in sql
-    assert "platform_order_refund_status = 4" in sql
+    assert "platform_order_refund_status = 4" not in sql
+    assert "platform_after_sales_status = 10" in sql
 
 
 def test_candidates_can_include_tmall_above_trial_watermark() -> None:

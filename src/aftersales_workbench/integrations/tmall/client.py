@@ -200,6 +200,8 @@ class TmallClient:
 
     def execute_write(self, method: str, **parameters: Any) -> dict[str, Any]:
         """执行不可逆写请求；只发送一次，避免网关超时后重复退款。"""
+        if self.credentials.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 6)}:
+            raise TmallConfigurationError("该店铺未获退款写能力；天猫第6店及未知店铺禁止写入")
         if not self.write_enabled:
             raise TmallConfigurationError("天猫写操作未启用（TMALL_WRITE_ENABLED=false）")
         payload = self.build_signed_payload(method, parameters)
@@ -296,9 +298,26 @@ class TmallClient:
         *,
         refund_id: int,
         refund_credentials: TmallCredentials,
+        expected_refund: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """按旧系统已验证的两步流程审核并同意一笔天猫退款。"""
         refund = self._refund_from_response(self.get_refund(refund_id=refund_id))
+        fields = (
+            "refund_id",
+            "tid",
+            "oid",
+            "refund_fee",
+            "num",
+            "outer_id",
+            "outer_sku_id",
+            "sku",
+            "has_good_return",
+            "sid",
+        )
+        if expected_refund is None or str(refund.get("refund_id") or "") != str(refund_id) or any(
+            str(refund.get(key) or "") != str(expected_refund.get(key) or "") for key in fields
+        ):
+            raise ValueError("天猫最终退款详情与已核验快照不一致，禁止退款")
         status = str(refund.get("status") or "").strip().upper()
         if status == "SUCCESS":
             return {"already_refunded": True, "refund_id": str(refund_id)}
@@ -320,8 +339,8 @@ class TmallClient:
             )
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise TmallTransportError("退款详情中的 refund_fee 非法") from exc
-        if fee_cents < 0:
-            raise TmallTransportError("退款金额不能小于 0")
+        if fee_cents <= 0:
+            raise TmallTransportError("退款金额必须大于 0")
 
         review_body = self.execute_write(
             TAOBAO_RP_REFUND_REVIEW,

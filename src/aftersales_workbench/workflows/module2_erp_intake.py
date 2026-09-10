@@ -205,6 +205,13 @@ class Module2ErpIntakeService:
         if not lookup.return_order_sn or not lookup.rows:
             result.unavailable += 1
             return "ERP 退货单缺少单号或明细，禁止生成验货通过记录"
+        if lookup.status is not ErpReturnMatchStatus.ITEM_MISMATCH:
+            # ERP数量匹配只证明收货明细，当前适配器没有质量证据。
+            result.unavailable += 1
+            if not dry_run:
+                order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+                order.exception_type = "ERP明细已匹配，等待仓库独立质检"
+            return "ERP明细匹配不等于质检通过，须仓库确认质量后再退款"
         actual_items = self._actual_items(lookup)
         if actual_items is None:
             result.unavailable += 1
@@ -248,7 +255,6 @@ class Module2ErpIntakeService:
                         AfterSalesOrder.id >= min_order_id,
                         or_(
                             AfterSalesOrder.platform_after_sales_status.in_((2, 3, 10)),
-                            AfterSalesOrder.platform_order_refund_status == 4,
                         ),
                     ),
                     and_(
@@ -298,7 +304,6 @@ class Module2ErpIntakeService:
                         AfterSalesOrder.id >= min_order_id,
                         or_(
                             AfterSalesOrder.platform_after_sales_status == 10,
-                            AfterSalesOrder.platform_order_refund_status == 4,
                         ),
                     ),
                     and_(

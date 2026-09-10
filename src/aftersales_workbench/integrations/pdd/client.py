@@ -301,7 +301,7 @@ class PddClient:
             raise ValueError("after_sales_id 必须大于 0")
         if not order_sn.strip():
             raise ValueError("order_sn 不能为空")
-        return self.execute_write(
+        body = self.execute_write(
             PDD_REFUND_AGREE,
             request={
                 "after_sales_id": after_sales_id,
@@ -309,3 +309,7 @@ class PddClient:
                 "operate_desc": operate_desc,
             },
         )
+        result = body.get("refund_agree_response")
+        if not isinstance(result, dict) or result.get("success") is not True:
+            raise PddTransportError("退款响应未明确成功，结果未知；禁止重试，只能回查平台")
+        return body

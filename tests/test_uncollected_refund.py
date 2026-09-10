@@ -37,7 +37,7 @@ from aftersales_workbench.workflows.uncollected_refund import (
 from tests import test_pdd_non_refund_sync as baseline
 from tests.test_module1_logistics import FakeQuery
 
-NOW = datetime.now(UTC).replace(microsecond=0)
+NOW = datetime(2026, 9, 10, 4, tzinfo=UTC)
 
 
 class Client:
@@ -62,7 +62,14 @@ class Client:
 
 @pytest.fixture
 def db():
-    yield from baseline.db.__wrapped__()
+    import aftersales_workbench.workflows.actions as actions
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(actions, "datetime", Clock)
+        yield from baseline.db.__wrapped__()
 
 
 @pytest.fixture
@@ -222,8 +229,13 @@ def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample):
     t = task(db)
     t.action_status = AutomationTaskStatus.RUNNING
     db.commit()
-    settings = Settings(_env_file=None, module1_refund_business_start_hour=0,
-                        module1_refund_business_end_hour=24)
+    settings = Settings(
+        _env_file=None,
+        pdd_write_enabled=True,
+        module1_pdd_refund_execution_enabled=True,
+        module1_refund_business_start_hour=0,
+        module1_refund_business_end_hour=24,
+    )
     confirmation = require_execution_confirmation(db, sample[0], t.id, settings, now=NOW)
     with pytest.raises(ValueError, match="90秒"):
         require_execution_confirmation(db, sample[0], t.id, settings,
@@ -259,8 +271,13 @@ def test_mysql_seconds_precision_and_request_started_marker(db, sample):
     t.action_status = AutomationTaskStatus.RUNNING
     sample[0].logistics_checked_at = sample[0].logistics_checked_at.replace(microsecond=0)
     db.commit()
-    settings = Settings(_env_file=None, module1_refund_business_start_hour=0,
-                        module1_refund_business_end_hour=24)
+    settings = Settings(
+        _env_file=None,
+        pdd_write_enabled=True,
+        module1_pdd_refund_execution_enabled=True,
+        module1_refund_business_start_hour=0,
+        module1_refund_business_end_hour=24,
+    )
     require_execution_confirmation(db, sample[0], t.id, settings, now=NOW + timedelta(seconds=1))
     mark_request_started(db, t.id)
     assert t.payload["uncollected_request_started_at"]

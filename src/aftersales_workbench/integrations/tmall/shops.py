@@ -118,10 +118,10 @@ def load_refund_enabled_tmall_shops(settings: Settings) -> list[ConfiguredTmallS
     numbers = tuple(settings.tmall_refund_enabled_shop_numbers)
     if len(numbers) != len(set(numbers)):
         raise TmallConfigurationError("TMALL_REFUND_ENABLED_SHOP_NUMBERS 不能重复")
-    invalid = sorted(number for number in numbers if number < 1 or number > 6)
+    invalid = sorted(number for number in numbers if number < 1 or number > 5)
     if invalid:
         raise TmallConfigurationError(
-            "TMALL_REFUND_ENABLED_SHOP_NUMBERS 只能包含 1–6"
+            "TMALL_REFUND_ENABLED_SHOP_NUMBERS 只能包含 1–5；第6店禁止退款写入"
         )
     if not numbers:
         return []

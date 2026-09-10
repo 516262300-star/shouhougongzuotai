@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
 from aftersales_workbench.workflows.sync_safety import require_sync_safe_order
 
 CONFIRMATION_KEY = "uncollected_confirmation"
@@ -226,6 +227,7 @@ def prepare_confirmation(
             action_status=AutomationTaskStatus.PENDING,
             idempotency_key=f"workflow:{order.after_sales_sn}:PDD_AGREE_REFUND",
             payload={"origin": "module1", "refund_gate": CONFIRMED_UNCOLLECTED,
+                     "approval_snapshot": refund_snapshot(order),
                      CONFIRMATION_KEY: confirmation}, attempts=0,
         )
         session.add(task)

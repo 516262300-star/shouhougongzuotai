@@ -100,7 +100,6 @@ class SqlAlchemyModule3Repository:
                         Shop.platform == Platform.PDD,
                         or_(
                             AfterSalesOrder.platform_after_sales_status == 10,
-                            AfterSalesOrder.platform_order_refund_status == 4,
                         ),
                     ),
                     and_(

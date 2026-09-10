@@ -24,6 +24,46 @@ from aftersales_workbench.workflows.desktop_sender import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fake_parcel_store_for_gateway_unit_tests(monkeypatch):
+    """此文件隔离网关状态机；持久化竞争在test_parcel_notice_store使用SQLite验证。"""
+    class Store:
+        def __init__(self, session):
+            if not hasattr(session, "parcel_records"):
+                session.parcel_records = {}
+            self.records = session.parcel_records
+
+        def get(self, plan):
+            return self.records.get((plan.carrier_id, plan.tracking_number))
+
+        def blocking(self):
+            return next(
+                (
+                    r
+                    for r in self.records.values()
+                    if r.state in {"PasteStarted", "SendPressed", "UNKNOWN"}
+                ),
+                None,
+            )
+
+        def claim(self, plan, plan_hash):
+            if self.get(plan) is not None:
+                raise ValueError("包裹已占用")
+            self.records[(plan.carrier_id, plan.tracking_number)] = SimpleNamespace(
+                task_id=plan.task_id, state="PasteStarted", target_group=plan.target_group,
+            )
+
+        def update(self, plan, state):
+            self.get(plan).state = str(state)
+
+        def confirm_task(self, task_id, state):
+            for row in self.records.values():
+                if row.task_id == task_id:
+                    row.state = str(state)
+
+    monkeypatch.setattr("aftersales_workbench.workflows.desktop_sender.ParcelNoticeStore", Store)
+
+
 def _plan(
     *,
     task_id: int = 61,
