@@ -55,6 +55,8 @@
 
 ## 回归验证
 
+用户明确普通在途规则后，独立代码快照`770deca`全量回归993项全部通过；相关物流/审计测试82项通过。下述失败统计作为口径纠正前的历史记录保留，不代表当前测试状态。
+
 新增正式测试：`tests/test_audit_safety_regressions.py`、`tests/test_money_operations.py`、`tests/test_parcel_notice_store.py`、`tests/test_refund_timezones.py`、`tests/test_module2_safety.py`。原始审计失败证据保留在Git忽略的 `.runtime/audits/code-audit-20260910/`，不修改原始结果来掩盖失败。
 
 ```powershell
