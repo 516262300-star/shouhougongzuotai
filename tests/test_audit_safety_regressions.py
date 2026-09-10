@@ -196,10 +196,71 @@ def test_tmall_changed_identity_amount_and_items_must_block():
     ]
 
 
-def test_normal_in_transit_must_wait_for_intercept_and_receipt(db, sample):
-    result = base.gate(db, query=FakeQuery(["快件运输中"]))
+@pytest.mark.parametrize(
+    "context,refund_gate",
+    [
+        ("快件运输中", "IN_TRANSIT"),
+        ("包裹正在退回发件方", "RETURNING"),
+        ("收件人拒收，原路返回", "RETURNING"),
+        ("退回件已签收", "RETURNED"),
+    ],
+)
+def test_notified_shipped_refund_can_proceed_without_receipt(db, sample, context, refund_gate):
+    order, client = sample
+    result = base.gate(db, query=FakeQuery([context]))
     assert result.failed == 0
+    assert result.allowed_refunds == 1
+    queued = base.task(db)
+    assert queued is not None and queued.payload["refund_gate"] == refund_gate
+    assert order.workflow_status == W.INTERCEPT_CONFIRMED
+    assert order.refund_financial_status == "PENDING"
+    assert client.writes == 0  # 闸门通过只入队，不伪造资金或ERP闭环。
+
+
+@pytest.mark.parametrize("context", ["正在派件", "快件派送中", "已签收"])
+def test_delivery_or_signed_order_stays_blocked_after_notice(db, sample, context):
+    order, client = sample
+    base.gate(db, query=FakeQuery([context]))
     assert base.task(db) is None
+    assert order.workflow_status == W.INTERCEPT_WAITING_RETURN
+    base.gate(db, query=FakeQuery(["快件运输中"]))
+    assert base.task(db) is None  # 旧的派件/签收锁不能被后续普通运输覆盖。
+    assert order.workflow_status == W.INTERCEPT_WAITING_RETURN
+    assert client.writes == 0
+
+
+@pytest.mark.parametrize("notice_success", [True, False])
+def test_normal_in_transit_final_write_requires_successful_notice(db, sample, notice_success):
+    order, client = sample
+    base.gate(db, query=FakeQuery(["快件运输中"]))
+    queued = base.task(db)
+    queued.action_status = T.RUNNING
+    if not notice_success:
+        db.get(AftersalesActionTask, 1).action_status = T.FAILED
+    db.commit()
+    snapshot = ExternalTaskSnapshot(
+        queued.id,
+        order.after_sales_sn,
+        A.PDD_AGREE_REFUND,
+        queued.payload,
+        order.platform_order_sn,
+        "pdd-shop-01",
+    )
+    verifier = Mock()
+    verifier.require_before_refund.return_value = {"verified": True}
+    executor = ExternalActionExecutor(
+        db,
+        Settings(_env_file=None, pdd_write_enabled=True, module1_pdd_refund_execution_enabled=True),
+        package_verifier=verifier,
+    )
+    if notice_success:
+        assert executor._agree_pdd(client, snapshot) is False
+        assert client.writes == 1
+        assert order.refund_financial_status == "PENDING"
+    else:
+        with pytest.raises(ValueError, match="成功通知"):
+            executor._agree_pdd(client, snapshot)
+        assert client.writes == 0
 
 
 def test_regular_gate_must_not_skip_package_conflicts(db, package):

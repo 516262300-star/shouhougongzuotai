@@ -46,7 +46,7 @@ WORKFLOW_LABELS = {
     "UNSHIPPED_AUTO_REFUNDED": "未发货已平账",
     "PACKING_LOCKED": "已锁包待处理",
     "INTERCEPT_PUSHED": "拦截指令已发送",
-    "INTERCEPT_CONFIRMED": "已拦截待退款",
+    "INTERCEPT_CONFIRMED": "已通知待退款",
     "INTERCEPT_WAITING_RETURN": "已签收转人工",
     "INTERCEPT_REFUNDED_WAITING_RETURN": "已退款待退回",
     "INTERCEPT_SUCCESS": "售后已闭环",

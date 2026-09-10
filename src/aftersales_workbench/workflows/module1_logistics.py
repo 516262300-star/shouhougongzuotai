@@ -813,6 +813,8 @@ class Module1LogisticsGateService:
             self._cancel_pending_refund(order.after_sales_sn)
             return
         if state is LogisticsState.IN_TRANSIT:
+            # 用户确认：已发货全额仅退款通知成功后可先退款，不等待拦截/入库。
+            # 历史状态名仅表示物流退款闸门通过；不证明快递已拦截或ERP已闭环。
             order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
             self._route_platform_refund(order, platform, state)
             return
