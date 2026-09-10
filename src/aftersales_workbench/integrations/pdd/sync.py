@@ -79,6 +79,12 @@ class PddSyncRepository(Protocol):
 
     def outstanding_issues(self, shop_id: int) -> int: ...
 
+    def reopen_history_issue(self, shop_id: int, refund_id: str) -> bool: ...
+
+    def defer_history_issue(
+        self, shop_id: int, record: dict, detail: dict, *, now_at: int,
+    ) -> bool: ...
+
 
 @dataclass(slots=True)
 class ShopSyncResult:
@@ -294,6 +300,8 @@ class PddRefundSyncService:
         if self.repository.is_issue_dismissed(shop_id, refund_id):
             result.records_skipped += 1
             return  # 仅跳过用户明确移除的同店同售后号，不按月份批量忽略。
+        historical_recheck = self.repository.reopen_history_issue(shop_id, refund_id)
+        verified_detail = None
         try:
             detail = client.get_refund_information(
                 order_sn=order_sn, after_sales_id=int(refund_id),
@@ -303,8 +311,10 @@ class PddRefundSyncService:
                 or str(detail.get("order_sn") or "") != order_sn
             ):
                 raise PddDataMappingError("售后详情身份与列表不一致")
+            verified_detail = detail
             if (
                 not self.repository.has_refund(shop_id, refund_id)
+                and not historical_recheck
                 and _is_terminal_historical_only_refund(
                     list_record,
                     detail,
@@ -338,6 +348,12 @@ class PddRefundSyncService:
         except PddApiError as exc:
             if exc.sub_code != "45001":
                 raise  # 鉴权、限流等系统故障不逐单吞掉。
+            if verified_detail is not None and self.repository.defer_history_issue(
+                shop_id, list_record, verified_detail, now_at=int(self._now()),
+            ):
+                result.records_skipped += 1
+                result.records_terminal_history_skipped += 1
+                return
             self.repository.record_issue(
                 shop_id, refund_id, order_sn, "PDD 45001：订单不存在或不属于当前店铺，待重查",
             )

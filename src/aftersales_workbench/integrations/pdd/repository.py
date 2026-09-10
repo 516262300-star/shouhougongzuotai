@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.marketplace.issues import SyncIssueRepository
+from aftersales_workbench.integrations.pdd.history import PddHistoryRepository, is_history
 from aftersales_workbench.integrations.pdd.mapper import NormalizedRefund
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
 from aftersales_workbench.integrations.refund_financial import (
@@ -178,6 +179,8 @@ class SqlAlchemyPddSyncRepository:
         self.session.rollback()
 
     def record_issue(self, shop_id: int, refund_id: str, order_sn: str, error: str) -> None:
+        if PddHistoryRepository(self.session).postpone_if_history(shop_id, refund_id):
+            return
         SyncIssueRepository(self.session).record(
             shop_id, refund_id, error, platform_order_sn=order_sn,
         )
@@ -186,7 +189,15 @@ class SqlAlchemyPddSyncRepository:
         return SyncIssueRepository(self.session).resolve(shop_id, refund_id)
 
     def is_issue_dismissed(self, shop_id: int, refund_id: str) -> bool:
+        if is_history(self.session.get(MarketplaceSyncIssue, (shop_id, refund_id))):
+            return False  # 系统历史项遇到新增量仍核验，不等于用户永久移除。
         return SyncIssueRepository(self.session).is_dismissed(shop_id, refund_id)
+
+    def reopen_history_issue(self, shop_id: int, refund_id: str) -> bool:
+        return PddHistoryRepository(self.session).reopen(shop_id, refund_id)
+
+    def defer_history_issue(self, shop_id: int, record: dict, detail: dict, *, now_at: int) -> bool:
+        return PddHistoryRepository(self.session).defer(shop_id, record, detail, now_at=now_at)
 
     def dismiss_issue(
         self,
@@ -224,7 +235,7 @@ class SqlAlchemyPddSyncRepository:
                     MarketplaceSyncIssue.after_sales_sn.in_(ids),
                 )
             )
-        ]
+        ] + PddHistoryRepository(self.session).due(shop_id, limit=5)
 
     def outstanding_issues(self, shop_id: int) -> int:
         return SyncIssueRepository(self.session).outstanding(shop_id)

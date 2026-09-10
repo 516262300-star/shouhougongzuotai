@@ -72,6 +72,12 @@ class FakeRepository:
     def outstanding_issues(self, _shop_id):
         return sum(key not in self.dismissed_ids for key in self.issues)
 
+    def reopen_history_issue(self, _shop_id, _refund_id):
+        return False
+
+    def defer_history_issue(self, _shop_id, _record, _detail, *, now_at):
+        return False
+
 
 class FakeClient:
     def __enter__(self) -> FakeClient:

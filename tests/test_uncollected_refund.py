@@ -221,9 +221,17 @@ def test_existing_failed_task_never_retried_or_reauthorized(db, sample):
     assert task(db).attempts == 1
 
 
-def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample):
+def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample, monkeypatch):
+    from aftersales_workbench.workflows import uncollected_refund
     from tests.test_shared_package import SinglePackageStub
 
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW if tz is None else NOW.astimezone(tz)
+
+    # 全套测试可能超过90秒；冻结测试时钟，不放宽生产闸门或91秒过期断言。
+    monkeypatch.setattr(uncollected_refund, "datetime", FrozenDatetime)
     prepare(db, sample, apply=True)
     gate(db)
     t = task(db)
