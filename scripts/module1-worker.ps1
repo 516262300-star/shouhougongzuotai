@@ -12,6 +12,22 @@ $stopFile = Join-Path $runtimeDir 'module1-worker.stop'
 $stdoutLog = Join-Path $runtimeDir 'module1-worker.log'
 $stderrLog = Join-Path $runtimeDir 'module1-worker-error.log'
 $workerExe = Join-Path $projectRoot '.venv\Scripts\aftersales-run-module1.exe'
+$releaseFile = Join-Path $runtimeDir 'module1-worker-release.json'
+
+function Get-WorkerReleaseSource {
+    if (-not (Test-Path -LiteralPath $releaseFile)) { return $null }
+    $release = Get-Content -LiteralPath $releaseFile -Raw -Encoding utf8 | ConvertFrom-Json
+    if (-not $release.source_path) { throw '后台版本配置缺少 source_path，禁止回退到开发代码' }
+    $source = (Resolve-Path -LiteralPath (Join-Path $projectRoot $release.source_path)).Path
+    $allowed = [System.IO.Path]::GetFullPath((Join-Path $runtimeDir 'releases')) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $source.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '后台版本目录必须位于 .runtime/releases 内'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $source 'aftersales_workbench/workflows/module1_worker_cli.py'))) {
+        throw '后台版本缺少入口文件，禁止回退到开发代码'
+    }
+    return $source
+}
 
 function Get-Module1WorkerProcess {
     if (-not (Test-Path -LiteralPath $pidFile)) {
@@ -49,22 +65,35 @@ switch ($Action) {
         if (-not (Test-Path -LiteralPath $workerExe)) {
             throw "缺少运行入口，请先执行：.\.venv\Scripts\python.exe -m pip install -e `".[dev]`""
         }
+        $releaseSource = Get-WorkerReleaseSource
         Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
         $arguments = @('--forever', '--stop-file', '.runtime/module1-worker.stop')
-        $process = Start-Process `
-            -FilePath $workerExe `
-            -ArgumentList $arguments `
-            -WorkingDirectory $projectRoot `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $stdoutLog `
-            -RedirectStandardError $stderrLog `
-            -PassThru
+        $previousPythonPath = $env:PYTHONPATH
+        try {
+            if ($releaseSource) {
+                $env:PYTHONPATH = $releaseSource
+                $resolvedPackage = & (Join-Path $projectRoot '.venv/Scripts/python.exe') -c "import os, pathlib, aftersales_workbench; root=pathlib.Path(os.environ['PYTHONPATH']).resolve(); actual=pathlib.Path(aftersales_workbench.__file__).resolve(); assert actual.is_relative_to(root); print('release_import_ok')"
+                if ($LASTEXITCODE -ne 0 -or $resolvedPackage -ne 'release_import_ok') {
+                    throw '后台版本导入验证失败，未启动'
+                }
+            }
+            $process = Start-Process `
+                -FilePath $workerExe `
+                -ArgumentList $arguments `
+                -WorkingDirectory $projectRoot `
+                -WindowStyle Hidden `
+                -RedirectStandardOutput $stdoutLog `
+                -RedirectStandardError $stderrLog `
+                -PassThru
+        }
+        finally { $env:PYTHONPATH = $previousPythonPath }
         Set-Content -LiteralPath $pidFile -Value $process.Id -Encoding ascii
         Start-Sleep -Seconds 1
         if ($process.HasExited) {
             throw "售后后台运行器启动失败，请查看 $stderrLog"
         }
         Write-Output "售后后台运行器（模块1+模块2+模块3）已启动，PID=$($process.Id)"
+        if ($releaseSource) { Write-Output "后台代码目录：$releaseSource" }
         Write-Output "运行日志：$stdoutLog"
         Write-Output "错误日志：$stderrLog"
     }
