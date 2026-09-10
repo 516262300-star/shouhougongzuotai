@@ -49,3 +49,27 @@ def test_database_unique_key_blocks_competing_parcel_claim(db, monkeypatch):
     monkeypatch.setattr(store, "get", lambda plan: None)
     with pytest.raises(ValueError, match="另一执行器"):
         store.claim(replace(plan, task_id=999), "b" * 64)
+
+
+def test_manual_send_before_automatic_paste_leaves_durable_duplicate_guard(db):
+    base.sample.__wrapped__(db)
+    store = ParcelNoticeStore(db)
+    store.confirm_task(1, "Sent")
+    plan = replace(_plan(), task_id=999, tracking_number="JT-EXAMPLE", carrier_id="384")
+    assert store.get(plan).state == "LEGACY_SENT"
+    for task in db.scalars(select(AftersalesActionTask)).all():
+        db.delete(task)
+    db.commit()
+    with pytest.raises(ValueError):
+        ParcelNoticeStore(db).claim(plan, "b" * 64)
+
+
+def test_manual_recovery_does_not_overwrite_another_parcel_claim(db):
+    base.sample.__wrapped__(db)
+    store = ParcelNoticeStore(db)
+    plan = replace(_plan(), task_id=999, tracking_number="JT-EXAMPLE", carrier_id="384")
+    store.claim(plan, "b" * 64)
+    store.update(plan, "SendPressed")
+    with pytest.raises(ValueError, match="禁止覆盖"):
+        store.confirm_task(1, "Sent")
+    assert store.get(plan).state == "SendPressed"

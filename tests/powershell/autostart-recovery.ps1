@@ -167,7 +167,7 @@ switch ($Case) {
             New-Item -ItemType File -Path $watchdogStopFile | Out-Null
         }
         Start-WatchdogLoop
-        Assert-True (@($script:logMessages | Where-Object { $_ -match '30' }).Count -eq 1) 'Watch must catch startup errors and schedule retry'
+        Assert-True (@($script:logMessages | Where-Object { $_ -match '30' -and $_ -match 'simulated invalid config' }).Count -eq 1) 'Watch must catch startup errors and schedule retry'
         Assert-True (-not (Test-Path -LiteralPath $watchdogPidFile)) 'Watch PID cleanup failed'
     }
     'watch_singleton' {
