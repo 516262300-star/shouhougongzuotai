@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from aftersales_workbench.core.config import Settings
@@ -14,6 +15,10 @@ from aftersales_workbench.integrations.pdd.mapper import (
 )
 from aftersales_workbench.integrations.pdd.repository import SqlAlchemyPddSyncRepository
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
+
+_TERMINAL_HISTORY_DAYS = 365
+_TERMINAL_HISTORY_SECONDS = _TERMINAL_HISTORY_DAYS * 24 * 60 * 60
+_SHANGHAI_TIMEZONE = timezone(timedelta(hours=8), name="Asia/Shanghai")
 
 
 class PddReadClient(Protocol):
@@ -57,6 +62,19 @@ class PddSyncRepository(Protocol):
 
     def is_issue_dismissed(self, shop_id: int, refund_id: str) -> bool: ...
 
+    def dismiss_issue(
+        self,
+        shop_id: int,
+        refund_id: str,
+        order_sn: str,
+        *,
+        reason: str,
+    ) -> bool: ...
+
+    def has_refund(self, shop_id: int, refund_id: str) -> bool: ...
+
+    def has_issue(self, shop_id: int, refund_id: str) -> bool: ...
+
     def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]: ...
 
     def outstanding_issues(self, shop_id: int) -> int: ...
@@ -76,6 +94,7 @@ class ShopSyncResult:
     records_skipped: int = 0
     records_quarantined: int = 0
     records_recovered: int = 0
+    records_terminal_history_skipped: int = 0
     outstanding_issues: int = 0
     normal_sync_completed: bool = False
     error: str | None = None
@@ -98,6 +117,53 @@ def build_time_windows(
         windows.append((cursor, window_end))
         cursor = window_end
     return windows
+
+
+def _timestamp(value: Any) -> int | None:
+    if value is None or str(value).strip() == "":
+        return None
+    text = str(value).strip()
+    try:
+        parsed_timestamp = int(text)
+        return parsed_timestamp if parsed_timestamp > 0 else None
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=_SHANGHAI_TIMEZONE)
+    parsed_timestamp = int(parsed.timestamp())
+    return parsed_timestamp if parsed_timestamp > 0 else None
+
+
+def _is_terminal_historical_only_refund(
+    list_record: dict[str, Any],
+    detail: dict[str, Any],
+    *,
+    now_at: int,
+) -> bool:
+    """识别无需进入当前动作链的历史终态，仅用于严格自动归档。"""
+
+    try:
+        list_status = int(list_record.get("after_sales_status"))
+        detail_status = int(detail.get("after_sales_status"))
+        list_type = int(list_record.get("after_sales_type"))
+        detail_type = int(detail.get("after_sales_type"))
+    except (TypeError, ValueError):
+        return False
+    if (list_status, detail_status, list_type, detail_type) != (10, 10, 2, 1):
+        return False
+
+    created_times = (
+        _timestamp(list_record.get("created_time")),
+        _timestamp(detail.get("recreated_at")),
+    )
+    if any(value is None for value in created_times):
+        return False
+    newest_created_at = max(value for value in created_times if value is not None)
+    return newest_created_at <= now_at - _TERMINAL_HISTORY_SECONDS
 
 
 class PddRefundSyncService:
@@ -237,6 +303,34 @@ class PddRefundSyncService:
                 or str(detail.get("order_sn") or "") != order_sn
             ):
                 raise PddDataMappingError("售后详情身份与列表不一致")
+            if (
+                not self.repository.has_refund(shop_id, refund_id)
+                and _is_terminal_historical_only_refund(
+                    list_record,
+                    detail,
+                    now_at=int(self._now()),
+                )
+            ):
+                reason = (
+                    f"系统自动归档：平台仅退款已完成且售后创建超过"
+                    f"{_TERMINAL_HISTORY_DAYS}天，不进入当前自动化"
+                )
+                if not self.repository.has_issue(shop_id, refund_id):
+                    self.repository.record_issue(
+                        shop_id,
+                        refund_id,
+                        order_sn,
+                        "PDD历史终态记录：" + reason,
+                    )
+                self.repository.dismiss_issue(
+                    shop_id,
+                    refund_id,
+                    order_sn,
+                    reason=reason,
+                )
+                result.records_skipped += 1
+                result.records_terminal_history_skipped += 1
+                return
             order = unwrap_order_information(client.get_order_information(order_sn=order_sn))
             if order.get("order_sn") and str(order["order_sn"]) != order_sn:
                 raise PddDataMappingError("订单详情身份与售后列表不一致")

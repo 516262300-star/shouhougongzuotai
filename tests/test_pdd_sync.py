@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import SecretStr
@@ -18,6 +19,8 @@ class FakeRepository:
         self.rollbacks = 0
         self.issues: dict[str, tuple[str, str]] = {}
         self.retry_ids: list[str] = []
+        self.dismissed_ids: set[str] = set()
+        self.known_refund_ids: set[str] = set()
 
     def upsert_shop(self, _config: ConfiguredPddShop, **_values: str) -> int:
         return 1
@@ -45,13 +48,29 @@ class FakeRepository:
         return self.issues.pop(refund_id, None) is not None
 
     def is_issue_dismissed(self, _shop_id, _refund_id):
-        return False
+        return _refund_id in self.dismissed_ids
+
+    def dismiss_issue(self, _shop_id, refund_id, order_sn, *, reason):
+        assert self.issues[refund_id][0] == order_sn
+        assert reason
+        self.dismissed_ids.add(refund_id)
+        return True
+
+    def has_refund(self, _shop_id, refund_id):
+        return refund_id in self.known_refund_ids
+
+    def has_issue(self, _shop_id, refund_id):
+        return refund_id in self.issues
 
     def due_issues(self, _shop_id, limit=20):
-        return [(key, self.issues[key][0]) for key in self.retry_ids if key in self.issues][:limit]
+        return [
+            (key, self.issues[key][0])
+            for key in self.retry_ids
+            if key in self.issues and key not in self.dismissed_ids
+        ][:limit]
 
     def outstanding_issues(self, _shop_id):
-        return len(self.issues)
+        return sum(key not in self.dismissed_ids for key in self.issues)
 
 
 class FakeClient:
@@ -125,6 +144,47 @@ class ForeignOrderClient(FakeClient):
             message="订单不属于当前店铺或订单不存在",
             sub_code="45001",
         )
+
+
+class HistoricalTerminalClient(FakeClient):
+    def get_refund_list_increment(self, **parameters: Any) -> dict[str, Any]:
+        record = {
+            "id": 123,
+            "order_sn": "order-1",
+            "after_sales_type": 2,
+            "after_sales_status": 10,
+            "created_time": "2025-01-01 08:00:00",
+            "refund_amount": "1.00",
+            "goods_number": "1",
+            "outer_id": "sku-1",
+        }
+        return {
+            "refund_increment_get_response": {
+                "refund_list": [record],
+                "total_count": 1,
+            }
+        }
+
+    def get_refund_information(
+        self, *, order_sn: str, after_sales_id: int | None
+    ) -> dict[str, Any]:
+        assert order_sn == "order-1"
+        assert after_sales_id == 123
+        return {
+            "id": 123,
+            "order_sn": "order-1",
+            "after_sales_type": 1,
+            "after_sales_status": 10,
+            "recreated_at": int(
+                datetime(2025, 1, 1, tzinfo=UTC).timestamp()
+            ),
+            "refund_amount": 100,
+            "goods_number": 1,
+            "out_sku_sn": "sku-1",
+        }
+
+    def get_order_information(self, *, order_sn: str) -> dict[str, Any]:
+        raise AssertionError("历史终态不应再查询已过期的订单详情")
 
 
 def _shop() -> ConfiguredPddShop:
@@ -204,3 +264,68 @@ def test_sync_quarantines_foreign_order_without_silently_skipping() -> None:
     assert repository.issues["123"][0] == "order-1"
     assert result.records_created == 0
     assert repository.cursor_end == 1800
+
+
+def test_sync_auto_archives_unknown_historical_terminal_refund() -> None:
+    repository = FakeRepository()
+    now_at = int(datetime(2026, 9, 10, tzinfo=UTC).timestamp())
+    service = PddRefundSyncService(
+        repository,
+        Settings(_env_file=None, pdd_sync_initial_lookback_hours=1),
+        client_factory=lambda _shop_config: HistoricalTerminalClient(),
+        now=lambda: now_at,
+    )
+
+    result = service.sync_all([_shop()], statuses=(10,), max_windows=1)[0]
+
+    assert result.ok is True
+    assert result.records_terminal_history_skipped == 1
+    assert result.records_skipped == 1
+    assert result.records_quarantined == 0
+    assert result.outstanding_issues == 0
+    assert repository.dismissed_ids == {"123"}
+    assert repository.refunds == []
+
+
+def test_sync_auto_archive_preserves_existing_issue_evidence() -> None:
+    repository = FakeRepository()
+    repository.issues["123"] = ("order-1", "original 45001 evidence")
+    now_at = int(datetime(2026, 9, 10, tzinfo=UTC).timestamp())
+
+    result = PddRefundSyncService(
+        repository,
+        Settings(_env_file=None, pdd_sync_initial_lookback_hours=1),
+        client_factory=lambda _shop_config: HistoricalTerminalClient(),
+        now=lambda: now_at,
+    ).sync_all([_shop()], statuses=(10,), max_windows=1)[0]
+
+    assert result.ok is True
+    assert repository.issues["123"] == ("order-1", "original 45001 evidence")
+    assert repository.dismissed_ids == {"123"}
+
+
+def test_sync_keeps_known_historical_refund_in_guarded_path() -> None:
+    repository = FakeRepository()
+    repository.known_refund_ids.add("123")
+    now_at = int(datetime(2026, 9, 10, tzinfo=UTC).timestamp())
+
+    class KnownHistoricalClient(HistoricalTerminalClient):
+        def get_order_information(self, *, order_sn: str) -> dict[str, Any]:
+            raise PddApiError(
+                error_code=50001,
+                message="订单不属于当前店铺或订单不存在",
+                sub_code="45001",
+            )
+
+    result = PddRefundSyncService(
+        repository,
+        Settings(_env_file=None, pdd_sync_initial_lookback_hours=1),
+        client_factory=lambda _shop_config: KnownHistoricalClient(),
+        now=lambda: now_at,
+    ).sync_all([_shop()], statuses=(10,), max_windows=1)[0]
+
+    assert result.ok is False
+    assert result.records_terminal_history_skipped == 0
+    assert result.records_quarantined == 1
+    assert repository.dismissed_ids == set()
+    assert result.outstanding_issues == 1

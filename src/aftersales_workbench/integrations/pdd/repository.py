@@ -183,6 +183,32 @@ class SqlAlchemyPddSyncRepository:
     def is_issue_dismissed(self, shop_id: int, refund_id: str) -> bool:
         return SyncIssueRepository(self.session).is_dismissed(shop_id, refund_id)
 
+    def dismiss_issue(
+        self,
+        shop_id: int,
+        refund_id: str,
+        order_sn: str,
+        *,
+        reason: str,
+    ) -> bool:
+        return SyncIssueRepository(self.session).dismiss(
+            shop_id,
+            refund_id,
+            order_sn=order_sn,
+            reason=reason,
+        )
+
+    def has_refund(self, shop_id: int, refund_id: str) -> bool:
+        return self.session.scalar(
+            select(AfterSalesOrder.id).where(
+                AfterSalesOrder.shop_id == shop_id,
+                AfterSalesOrder.after_sales_sn == refund_id,
+            )
+        ) is not None
+
+    def has_issue(self, shop_id: int, refund_id: str) -> bool:
+        return self.session.get(MarketplaceSyncIssue, (shop_id, refund_id)) is not None
+
     def due_issues(self, shop_id: int, limit: int = 20) -> list[tuple[str, str]]:
         ids = SyncIssueRepository(self.session).due(shop_id, limit)
         return [
