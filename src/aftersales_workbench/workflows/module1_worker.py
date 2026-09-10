@@ -50,7 +50,9 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendService,
     DesktopSendProcessLock,
+    desktop_blocking_message,
     discard_inactive_before_paste_entries,
+    resume_due_before_paste_entries,
 )
 from aftersales_workbench.workflows.module1 import (
     Module1InterceptService,
@@ -984,6 +986,7 @@ class Module1WorkerRuntime:
                 stale_before_paste_discarded = (
                     discard_inactive_before_paste_entries(session, ledger)
                 )
+                resume_due_before_paste_entries(session, ledger)
                 blocking = ledger.blocking_entry()
                 if blocking is not None:
                     return WorkerStageResult(
@@ -996,7 +999,7 @@ class Module1WorkerRuntime:
                                 stale_before_paste_discarded
                             ),
                         },
-                        error="桌面发送账本存在未核验任务，禁止继续发送",
+                        error=desktop_blocking_message(blocking),
                     )
                 preview = DesktopNoticePreviewService(
                     session,

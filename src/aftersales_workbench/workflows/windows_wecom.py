@@ -14,6 +14,7 @@ from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlan
 from aftersales_workbench.workflows.desktop_sender import (
     DesktopAmbiguousSendError,
     DesktopBeforePasteError,
+    DesktopForegroundUnavailableError,
     DesktopSendHooks,
 )
 
@@ -307,7 +308,7 @@ class WindowsWeComGateway:
                 stable_since = time.monotonic()
             elif time.monotonic() - stable_since >= 0.3:
                 return hwnd, process_id
-        raise DesktopBeforePasteError("无法将企业微信切换到前台，未输入任何消息")
+        raise DesktopForegroundUnavailableError("无法将企业微信切换到前台，未输入任何消息")
 
     def _visible_wecom_windows(self) -> list[_WeComWindowCandidate]:
         candidates: list[_WeComWindowCandidate] = []

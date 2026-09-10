@@ -1,0 +1,105 @@
+--- a/src/aftersales_workbench/workflows/desktop_sender.py
++++ b/src/aftersales_workbench/workflows/desktop_sender.py
+@@ -7 +7 @@
+-from datetime import UTC, datetime
++from datetime import UTC, datetime, timedelta
+@@ -35,0 +36,4 @@
++
++
++class DesktopForegroundUnavailableError(DesktopBeforePasteError):
++    """主窗口激活超时，尚未操作搜索或消息输入，可延迟自动重试。"""
+@@ -72,0 +77 @@
++    retry_after: str | None = None
+@@ -81,0 +87 @@
++            retry_after=str(value["retry_after"]) if value.get("retry_after") else None,
+@@ -141,0 +148 @@
++        retry_after: str | None = None,
+@@ -152,0 +160 @@
++            retry_after=retry_after,
+@@ -260,0 +269,54 @@
++
++
++def resume_due_before_paste_entries(
++    session: Session,
++    ledger: DesktopNoticeLedger,
++    *,
++    now: datetime | None = None,
++) -> int:
++    """调用者持有发送锁；只恢复明确标记可重试且仍待发送的输入前失败。"""
++    current = now or datetime.now(UTC)
++    resumed = 0
++    while True:
++        entry = ledger.blocking_entry()
++        if (
++            entry is None
++            or entry.state is not DesktopLedgerState.PAUSED_BEFORE_PASTE
++            or entry.retry_after is None
++        ):
++            return resumed
++        try:
++            due = datetime.fromisoformat(entry.retry_after)
++            if due.tzinfo is None:
++                raise ValueError("重试时间缺少时区")
++        except ValueError as exc:
++            raise DesktopNoticeSendError("桌面发送重试时间无效，须人工检查账本") from exc
++        if current < due:
++            return resumed
++        task = session.get(AftersalesActionTask, entry.task_id)
++        if (
++            task is None
++            or task.action_type != AutomationActionType.QYWX_INTERCEPT_NOTIFY
++            or task.action_status != AutomationTaskStatus.PENDING
++        ):
++            return resumed
++        ledger.resume_before_paste(entry.task_id)
++        resumed += 1
++
++
++def desktop_blocking_message(entry: DesktopLedgerEntry) -> str:
++    if entry.state is DesktopLedgerState.PAUSED_BEFORE_PASTE:
++        if entry.retry_after:
++            return (
++                f"任务 {entry.task_id} 企业微信前台激活失败，尚未输入消息；"
++                "等待至少60秒后由后台自动重试，请保持企微登录且桌面未锁屏"
++            )
++        return (
++            f"任务 {entry.task_id} 发送前暂停：{entry.error or '需检查企业微信窗口'}；"
++            "确认原因已解除后可重新尝试发送"
++        )
++    return (
++        f"任务 {entry.task_id} 发送结果未确认（{entry.state.value}）："
++        f"{entry.error or '已开始输入或可能按过发送键'}；"
++        "请核对目标群消息，禁止直接重复发送"
++    )
+@@ -445,0 +508,5 @@
++                        retry_after=(
++                            (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
++                            if isinstance(exc, DesktopForegroundUnavailableError)
++                            else None
++                        ),
+@@ -448 +515,6 @@
+-                result.error = str(exc)
++                paused_entry = self.ledger.latest(plan.task_id)
++                result.error = (
++                    desktop_blocking_message(paused_entry)
++                    if paused_entry is not None and paused_entry.retry_after
++                    else str(exc)
++                )
+--- a/src/aftersales_workbench/workflows/windows_wecom.py
++++ b/src/aftersales_workbench/workflows/windows_wecom.py
+@@ -16,0 +17 @@
++    DesktopForegroundUnavailableError,
+@@ -312 +313 @@
+-        raise DesktopBeforePasteError("无法将企业微信切换到前台，未输入任何消息")
++        raise DesktopForegroundUnavailableError("无法将企业微信切换到前台，未输入任何消息")
+--- a/src/aftersales_workbench/workflows/module1_worker.py
++++ b/src/aftersales_workbench/workflows/module1_worker.py
+@@ -52,0 +53 @@
++    desktop_blocking_message,
+@@ -53,0 +55 @@
++    resume_due_before_paste_entries,
+@@ -986,0 +989 @@
++                resume_due_before_paste_entries(session, ledger)
+@@ -999 +1002 @@
+-                        error="桌面发送账本存在未核验任务，禁止继续发送",
++                        error=desktop_blocking_message(blocking),

@@ -4,7 +4,7 @@ import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
@@ -34,6 +34,10 @@ class DesktopSendLockError(DesktopNoticeSendError):
 
 class DesktopBeforePasteError(DesktopNoticeSendError):
     """尚未向聊天输入框写入消息，可以人工确认后重试。"""
+
+
+class DesktopForegroundUnavailableError(DesktopBeforePasteError):
+    """主窗口激活超时，尚未操作搜索或消息输入，可延迟自动重试。"""
 
 
 class DesktopAmbiguousSendError(DesktopNoticeSendError):
@@ -71,6 +75,7 @@ class DesktopLedgerEntry:
     plan_hash: str
     recorded_at: str
     error: str | None = None
+    retry_after: str | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, object]) -> DesktopLedgerEntry:
@@ -80,6 +85,7 @@ class DesktopLedgerEntry:
             plan_hash=str(value["plan_hash"]),
             recorded_at=str(value["recorded_at"]),
             error=str(value["error"]) if value.get("error") else None,
+            retry_after=str(value["retry_after"]) if value.get("retry_after") else None,
         )
 
 
@@ -140,6 +146,7 @@ class DesktopNoticeLedger:
         state: DesktopLedgerState,
         plan_hash: str,
         error: str | None = None,
+        retry_after: str | None = None,
     ) -> DesktopLedgerEntry:
         if task_id < 1:
             raise ValueError("task_id 必须大于 0")
@@ -151,6 +158,7 @@ class DesktopNoticeLedger:
             plan_hash=plan_hash,
             recorded_at=datetime.now(UTC).isoformat(),
             error=error[:500] if error else None,
+            retry_after=retry_after,
         )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8", newline="\n") as handle:
@@ -259,6 +267,60 @@ def discard_inactive_before_paste_entries(
             ),
         )
         discarded += 1
+
+
+def resume_due_before_paste_entries(
+    session: Session,
+    ledger: DesktopNoticeLedger,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """调用者持有发送锁；只恢复明确标记可重试且仍待发送的输入前失败。"""
+    current = now or datetime.now(UTC)
+    resumed = 0
+    while True:
+        entry = ledger.blocking_entry()
+        if (
+            entry is None
+            or entry.state is not DesktopLedgerState.PAUSED_BEFORE_PASTE
+            or entry.retry_after is None
+        ):
+            return resumed
+        try:
+            due = datetime.fromisoformat(entry.retry_after)
+            if due.tzinfo is None:
+                raise ValueError("重试时间缺少时区")
+        except ValueError as exc:
+            raise DesktopNoticeSendError("桌面发送重试时间无效，须人工检查账本") from exc
+        if current < due:
+            return resumed
+        task = session.get(AftersalesActionTask, entry.task_id)
+        if (
+            task is None
+            or task.action_type != AutomationActionType.QYWX_INTERCEPT_NOTIFY
+            or task.action_status != AutomationTaskStatus.PENDING
+        ):
+            return resumed
+        ledger.resume_before_paste(entry.task_id)
+        resumed += 1
+
+
+def desktop_blocking_message(entry: DesktopLedgerEntry) -> str:
+    if entry.state is DesktopLedgerState.PAUSED_BEFORE_PASTE:
+        if entry.retry_after:
+            return (
+                f"任务 {entry.task_id} 企业微信前台激活失败，尚未输入消息；"
+                "等待至少60秒后由后台自动重试，请保持企微登录且桌面未锁屏"
+            )
+        return (
+            f"任务 {entry.task_id} 发送前暂停：{entry.error or '需检查企业微信窗口'}；"
+            "确认原因已解除后可重新尝试发送"
+        )
+    return (
+        f"任务 {entry.task_id} 发送结果未确认（{entry.state.value}）："
+        f"{entry.error or '已开始输入或可能按过发送键'}；"
+        "请核对目标群消息，禁止直接重复发送"
+    )
 
 
 class DesktopSendProcessLock:
@@ -462,9 +524,19 @@ class DesktopNoticeSendService:
                         state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
                         plan_hash=plan_hash,
                         error=str(exc),
+                        retry_after=(
+                            (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
+                            if isinstance(exc, DesktopForegroundUnavailableError)
+                            else None
+                        ),
                     )
                 result.paused += 1
-                result.error = str(exc)
+                paused_entry = self.ledger.latest(plan.task_id)
+                result.error = (
+                    desktop_blocking_message(paused_entry)
+                    if paused_entry is not None and paused_entry.retry_after
+                    else str(exc)
+                )
                 break
             except Exception as exc:
                 latest = self.ledger.latest(plan.task_id)

@@ -495,7 +495,7 @@ ESC 中止只读取 Windows 返回的“当前按下”高位；“自上次查�
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --limit 1 --apply
 ```
 
-本机账本按 `PasteStarted`、`SendPressed`、`Sent` 逐步追加并同步落盘，不保存群名、平台订单号、售后单号、运单号或完整消息。`Sent` 可用于本地状态对账，避免已经发出但数据库回写失败时重复发送。后台运行器与人工命令还会共同竞争 `MODULE1_DESKTOP_LOCK_PATH` 的非阻塞单实例锁；已有进程控制企业微信时，另一进程立即停止，不排队、不抢焦点。失败发生在输入消息之前时写入 `PausedBeforePaste`，人工确认确实没有输入后才可恢复：
+本机账本按 `PasteStarted`、`SendPressed`、`Sent` 逐步追加并同步落盘，不保存群名、平台订单号、售后单号、运单号或完整消息。`Sent` 可用于本地状态对账，避免已经发出但数据库回写失败时重复发送。后台运行器与人工命令还会共同竞争 `MODULE1_DESKTOP_LOCK_PATH` 的非阻塞单实例锁；已有进程控制企业微信时，另一进程立即停止，不排队、不抢焦点。失败发生在输入消息之前时写入 `PausedBeforePaste`。2026-09-10 起，仅主窗口激活超时且账本明确标记 `retry_after` 的任务，至少等待60秒后由后台自动重新检查并重试；ESC、安全验证、未知异常、旧账本和已经开始输入的任务不自动重发。详见[前台激活失败自动重试与独立部署说明](docs/desktop-foreground-retry-20260910.md)。其他输入前暂停仍需人工确认后恢复：
 
 ```powershell
 .\.venv\Scripts\aftersales-send-desktop-notices.exe --resume-before-paste 任务ID --limit 1 --apply
