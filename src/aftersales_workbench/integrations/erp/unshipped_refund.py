@@ -22,6 +22,7 @@ class ErpUnshippedRefundError(RuntimeError):
 class ErpUnshippedRefundStatus(StrEnum):
     READY = "ready"
     COMPLETED = "completed"
+    NOT_REQUIRED = "not_required"
     NOT_FOUND = "not_found"
     BLOCKED = "blocked"
     UNAVAILABLE = "unavailable"
@@ -62,6 +63,7 @@ class ErpUnshippedRefundLookup:
     receivable_amount: Decimal | None = None
     outstanding_items: tuple[ErpUnshippedItem, ...] = ()
     reference_sn: str | None = None
+    no_erp_order_evidence: dict[str, object] | None = None
 
     def safe_dict(self) -> dict[str, object]:
         result = asdict(self)
@@ -270,6 +272,7 @@ class ErpWebUnshippedRefundClient:
         after_sales_sn: str,
         expected_amount: Decimal | None,
         expected_items: Sequence[ErpUnshippedItem],
+        allow_unimported_refund: bool = False,
     ) -> ErpUnshippedRefundLookup:
         order_sn = str(platform_order_sn or "").strip()
         sales_sn = str(after_sales_sn or "").strip()
@@ -313,6 +316,7 @@ class ErpWebUnshippedRefundClient:
                     platform_order_sn=order_sn,
                     after_sales_sn=sales_sn,
                     expected_amount=expected_amount,
+                    unimported_pending_page=pending_page if allow_unimported_refund else None,
                 )
             validation_error = self._validate_pending(
                 pending,
@@ -558,6 +562,7 @@ class ErpWebUnshippedRefundClient:
         platform_order_sn: str,
         after_sales_sn: str,
         expected_amount: Decimal,
+        unimported_pending_page: str | None = None,
     ) -> ErpUnshippedRefundLookup:
         admin_page = self._get(
             "/leedis2/public/admin/refunds",
@@ -589,6 +594,14 @@ class ErpWebUnshippedRefundClient:
                 ErpUnshippedRefundStatus.BLOCKED,
                 "ERP 已处理列表的退款金额与商家应收不一致",
                 platform_order_sn,
+            )
+        if not erp_order_sn and unimported_pending_page is not None:
+            return self._inspect_unimported_refund(
+                platform_order_sn=platform_order_sn,
+                admin_page=admin_page,
+                pending_page=unimported_pending_page,
+                record=record,
+                remote_amount=remote_amount,
             )
         profile, _customer_id = self._load_customer_profile(
             platform_order_sn,
@@ -631,6 +644,83 @@ class ErpWebUnshippedRefundClient:
             refund_amount=remote_amount,
             receivable_amount=receivable,
             outstanding_items=outstanding,
+        )
+
+    def _inspect_unimported_refund(
+        self,
+        *,
+        platform_order_sn: str,
+        admin_page: str,
+        pending_page: str,
+        record: dict[str, str],
+        remote_amount: Decimal,
+    ) -> ErpUnshippedRefundLookup:
+        """只用于模块3：无 ERP 原订单是无需补单，不是已开退款单/平账。"""
+        rows = _table_rows(pending_page)
+        headers = {"平台单号", "平台状态", "操作记录", "订单编号", "退款单号"}
+        if not any(headers.issubset(set(row)) for row in rows):
+            raise ValueError("ERP 待处理列表结构不完整，不能确认无需补单")
+        # showlist 当前返回平台全量（源代码不分页）。未来出现分页时失败关闭。
+        if re.search(r"[?&](?:amp;)?page=(?:[2-9]\d*|1\d+)\b", pending_page + admin_page):
+            raise ValueError("ERP 退款列表存在未核验分页，不能确认无需补单")
+        if any(platform_order_sn in row for row in rows):
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "ERP 待处理列表仍有该订单，不能跳过报价单删除或其他待处理动作",
+                platform_order_sn,
+            )
+        matches = [
+            item for item in _find_table_records(
+                admin_page,
+                required_headers={"平台单号", "状态", "平台", "退款单号", "系统订单号"},
+            ) if item.get("平台单号") == platform_order_sn
+        ]
+        if len(matches) != 1:
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "ERP 退款事实不是唯一记录，不能确认无需补单",
+                platform_order_sn,
+            )
+        if (
+            record.get("平台") != "拼多多"
+            or record.get("状态") not in {"退款成功", "同意退款，退款成功"}
+            or record.get("操作记录") != "移除"
+        ):
+            return self._lookup(
+                ErpUnshippedRefundStatus.NOT_FOUND,
+                "ERP 尚未明确归档该笔无原订单的退款，等待同步后复查",
+                platform_order_sn,
+            )
+        matches = self._get_response(
+            "/leedis2/public/customer/GetCustomerName",
+            params={"keyword": platform_order_sn},
+        ).json()
+        if not isinstance(matches, list):
+            raise ValueError("ERP 客户自动补全响应格式错误")
+        if matches:
+            return self._lookup(
+                ErpUnshippedRefundStatus.BLOCKED,
+                "ERP 已存在平台订单关联，不能按快速退款未入 ERP 跳过补单",
+                platform_order_sn,
+            )
+        return ErpUnshippedRefundLookup(
+            status=ErpUnshippedRefundStatus.NOT_REQUIRED,
+            message=(
+                "快速退款未入 ERP：退款事实、售后单号及商家应收已核对，"
+                "ERP 已归档且无原订单关联、无待处理记录，无需 ERP 补单；"
+                "每天复查一次，如后续入 ERP 则重新核验。不代表已开退款单或客户已平账。"
+            ),
+            platform_order_sn=platform_order_sn,
+            customer_name=record.get("系统客户名称") or None,
+            refund_amount=remote_amount,
+            no_erp_order_evidence={
+                "version": 1,
+                "pending_record_absent": True,
+                "unique_refund_matches": True,
+                "erp_order_sn_empty": True,
+                "erp_order_customer_matches": 0,
+                "erp_refund_archived": True,
+            },
         )
 
     def _validate_pending(

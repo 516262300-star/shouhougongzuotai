@@ -528,6 +528,7 @@ class AftersalesRecordService:
         workflow = _enum_value(order.workflow_status)
         after_sales_type = _enum_value(order.after_sales_type)
         logistics = order.logistics_state or self._fallback_logistics(order)
+        no_erp = self._module3_no_erp_details(order, tasks)
         product_name = order.product_name or (
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
@@ -541,6 +542,8 @@ class AftersalesRecordService:
                 logistics,
                 after_sales_type=after_sales_type,
             )
+        elif no_erp:
+            decision_note = str(no_erp["erp_refund_message"])
         elif (
             shop.platform == Platform.TMALL
             and order.order_shipping_status == ShippingStatus.UNKNOWN
@@ -631,9 +634,11 @@ class AftersalesRecordService:
                 "status": (
                     "仅记录"
                     if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
+                    else "无需 ERP 补单"
+                    if no_erp
                     else WORKFLOW_LABELS.get(workflow, workflow)
                 ),
-                "status_tone": _tone_for_workflow(workflow),
+                "status_tone": "success" if no_erp else _tone_for_workflow(workflow),
                 "handler": (
                     "平台处理"
                     if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
@@ -641,7 +646,10 @@ class AftersalesRecordService:
                     if workflow not in MANUAL_WORKFLOWS
                     else serialized_owner["sales_owner"]
                 ),
-                "handled_at": _dt(order.updated_at),
+                "handled_at": (
+                    no_erp["erp_refund_checked_at"] if no_erp else _dt(order.updated_at)
+                ),
+                "handled_at_label": "ERP最近核对" if no_erp else "处理时间",
                 "note": decision_note,
             },
             "logistics": {
@@ -679,6 +687,8 @@ class AftersalesRecordService:
         )
         intercept_label = WORKFLOW_LABELS.get(workflow, workflow)
         intercept_tone = _tone_for_workflow(workflow)
+        if self._module3_no_erp_details(order, tasks):
+            intercept_label, intercept_tone = "无需 ERP 补单", "success"
         if qywx_task and workflow == WorkflowStatus.PENDING_CHECK.value:
             task_status = _enum_value(qywx_task.action_status)
             intercept_label = {
@@ -753,6 +763,28 @@ class AftersalesRecordService:
             "platform_refund_reason": refund["reason"],
             "updated_at": _dt(order.updated_at),
         }
+
+    @staticmethod
+    def _module3_no_erp_details(
+        order: AfterSalesOrder, tasks: list[AftersalesActionTask],
+    ) -> dict[str, Any] | None:
+        from aftersales_workbench.workflows.module3_erp_refund import (
+            unimported_refund_candidate,
+        )
+
+        if not unimported_refund_candidate(order):
+            return None
+        check = AftersalesRecordService._latest_task(
+            tasks, AutomationActionType.ERP_CHECK_FULFILLMENT,
+        )
+        payload = (check.payload or {}) if check else {}
+        if (
+            payload.get("origin") == "module3"
+            and payload.get("erp_refund_status") == "not_required"
+            and payload.get("erp_no_order_evidence")
+        ):
+            return payload
+        return None
 
     def _serialize_intercept_item(
         self,
@@ -1651,6 +1683,11 @@ class AftersalesRecordService:
             action = _enum_value(task.action_type)
             status = _enum_value(task.action_status)
             description = ACTION_STATUS_LABELS.get(status, status)
+            if (
+                action == AutomationActionType.ERP_CHECK_FULFILLMENT.value
+                and (task.payload or {}).get("erp_refund_status") == "not_required"
+            ):
+                description = str((task.payload or {}).get("erp_refund_message") or "无需 ERP 补单")
             if (task.payload or {}).get("refund_gate") == "DUAL_NO_TRACE_RISK":
                 description += "：按已授权双接口无轨迹风险规则处理，非确定未揽收"
             if action == AutomationActionType.ERP_CREATE_MANUAL_TODO.value:

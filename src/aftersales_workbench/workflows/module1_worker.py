@@ -272,6 +272,7 @@ class Module1WorkerCycleResult:
                     "scanned",
                     "ready",
                     "already_completed",
+                    "not_required",
                     "applied",
                     "not_found",
                     "blocked",

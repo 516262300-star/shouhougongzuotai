@@ -40,6 +40,7 @@ class Module3ErpRefundRunResult:
     scanned: int = 0
     ready: int = 0
     already_completed: int = 0
+    not_required: int = 0
     applied: int = 0
     not_found: int = 0
     blocked: int = 0
@@ -66,6 +67,22 @@ def expected_items_from_order(order: AfterSalesOrder) -> tuple[ErpUnshippedItem,
             )
         )
     return tuple(result)
+
+
+def unimported_refund_candidate(order: AfterSalesOrder) -> bool:
+    """页面标签仅作为入口；还必须由 ERP 客户端查证无原订单和待处理动作。"""
+    return (
+        getattr(order, "erp_sales_owner_status", None) == "not_required"
+        and getattr(order, "workflow_status", None) == WorkflowStatus.PENDING_CHECK
+        and getattr(order, "after_sales_type", None) == AfterSalesType.ONLY_REFUND
+        and getattr(order, "order_shipping_status", None) == ShippingStatus.UNSHIPPED
+        and getattr(order, "refund_financial_status", None) == "SUCCESS"
+        and not getattr(order, "forward_tracking_number", None)
+        and not getattr(order, "return_tracking_number", None)
+        and not getattr(order, "logistics_physical_seen_at", None)
+        and not getattr(order, "erp_customer_name", None)
+        and not getattr(order, "erp_sales_owner", None)
+    )
 
 
 class Module3ErpRefundService:
@@ -111,20 +128,15 @@ class Module3ErpRefundService:
                     after_sales_sn=order.after_sales_sn,
                     expected_amount=order.merchant_receivable_amount,
                     expected_items=expected_items,
+                    allow_unimported_refund=unimported_refund_candidate(order),
                 )
             except Exception as exc:
                 self.session.rollback()
-                result.unavailable += 1
-                if not dry_run:
-                    record_poll(
-                        self.session,
-                        scope="module3_erp",
-                        reference=order.after_sales_sn,
-                        delay_seconds=max(refresh_seconds, 300),
-                        error=f"ERP 未发货核验失败（{type(exc).__name__}）",
-                    )
-                    self.session.commit()
-                continue
+                lookup = ErpUnshippedRefundLookup(
+                    status=ErpUnshippedRefundStatus.UNAVAILABLE,
+                    message=f"ERP 未发货核验失败（{type(exc).__name__}）",
+                    platform_order_sn=order.platform_order_sn,
+                )
             count_field = (
                 "already_completed"
                 if lookup.status is ErpUnshippedRefundStatus.COMPLETED
@@ -135,12 +147,22 @@ class Module3ErpRefundService:
                 if include_details and result.details is not None:
                     result.details.append(self._safe_detail(task, order, lookup))
                 continue
+            if lookup.status is ErpUnshippedRefundStatus.NOT_REQUIRED:
+                self.record_not_required(task, order, lookup)
+                if include_details and result.details is not None:
+                    result.details.append(self._safe_detail(task, order, lookup))
+                self.session.commit()
+                continue
             self._save_lookup(task, lookup)
             record_poll(
                 self.session,
                 scope="module3_erp",
                 reference=order.after_sales_sn,
-                delay_seconds=refresh_seconds,
+                delay_seconds=(
+                    max(refresh_seconds, 300)
+                    if lookup.status is ErpUnshippedRefundStatus.UNAVAILABLE
+                    else refresh_seconds
+                ),
                 error=lookup.message
                 if lookup.status
                 in {
@@ -166,6 +188,50 @@ class Module3ErpRefundService:
                 result.details.append(self._safe_detail(task, order, lookup))
             self.session.commit()
         return result
+
+    def record_not_required(
+        self,
+        task: AftersalesActionTask,
+        order: AfterSalesOrder,
+        lookup: ErpUnshippedRefundLookup,
+    ) -> None:
+        """只落地核验结论及复查计划，不执行 ERP 资金动作，不生成虚假平账链。"""
+        if (
+            lookup.status is not ErpUnshippedRefundStatus.NOT_REQUIRED
+            or not lookup.no_erp_order_evidence
+            or not unimported_refund_candidate(order)
+            or task.action_type != AutomationActionType.ERP_CHECK_FULFILLMENT
+            or task.action_status != AutomationTaskStatus.PENDING
+            or task.after_sales_sn != order.after_sales_sn
+            or lookup.platform_order_sn != order.platform_order_sn
+        ):
+            raise ValueError("不满足无需 ERP 补单核验条件，禁止记录")
+        self._save_lookup(task, lookup)
+        record_poll(
+            self.session,
+            scope="module3_erp",
+            reference=order.after_sales_sn,
+            delay_seconds=86400,
+        )
+        # 只撤销本单从未发送的模块3误报；已发待办、模块1同包裹待办保持原样。
+        for todo in self.session.scalars(
+            select(AftersalesActionTask).where(
+                AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+                AftersalesActionTask.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                AftersalesActionTask.attempts == 0,
+            )
+        ):
+            payload = todo.payload or {}
+            if payload.get("origin") != "module3" or payload.get("external_todo_id"):
+                continue
+            todo.action_status = AutomationTaskStatus.CANCELLED
+            todo.last_error = None
+            todo.payload = {
+                **payload,
+                "cancel_reason": "已核实快速退款未入 ERP，无需补单，取消未发送误报",
+                "cancelled_at": datetime.now(UTC).isoformat(),
+            }
 
     @staticmethod
     def _checked_recently(
@@ -255,6 +321,7 @@ class Module3ErpRefundService:
             "erp_refund_check_count": int(payload.get("erp_refund_check_count") or 0) + 1,
             "erp_refund_status": lookup.status.value,
             "erp_refund_message": lookup.message,
+            "erp_no_order_evidence": lookup.no_erp_order_evidence,
             "erp_refund_record_id": lookup.record_id,
             "erp_order_sn": lookup.erp_order_sn,
             "erp_customer_name": lookup.customer_name,

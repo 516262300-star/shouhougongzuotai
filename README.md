@@ -649,6 +649,8 @@ alembic upgrade head
 
 未发货补单必须先只读预演。`refund_amount` 采用 ERP 商家口径，必须等于本地 `merchant_receivable_amount`，不使用买家优惠后实付额替代：
 
+已核实“快速退款未入 ERP”、无原订单且无待处理记录的拼多多模块3订单，单独显示“无需 ERP 补单”，不再作为 ERP 查询失败。原售后记录保留，每天复查一次，不伪造 ERP 已平账；参见[模块3快速退款未入 ERP 分流](docs/module3-unimported-fast-refund.md)。
+
 ```powershell
 .\.venv\Scripts\aftersales-execute-module3-erp-refunds.exe --platform-order-sn "平台订单号" --details
 ```
