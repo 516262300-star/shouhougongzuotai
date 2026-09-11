@@ -63,12 +63,15 @@ class Client:
 @pytest.fixture
 def db():
     import aftersales_workbench.workflows.actions as actions
+    import aftersales_workbench.workflows.refund_preflight as refund_preflight
     class Clock(datetime):
         @classmethod
         def now(cls, tz=None):
             return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(actions, "datetime", Clock)
+        # 预检默认读取当前时间，须与样本日期一致，避免跨日后误触24小时保护。
+        patch.setattr(refund_preflight, "datetime", Clock)
         yield from baseline.db.__wrapped__()
 
 
@@ -270,6 +273,21 @@ def test_execution_needs_fresh_gate_and_rechecks_current_platform(db, sample, mo
 def test_explicit_timezone_required():
     with pytest.raises(ValueError):
         parse_confirmed_at("2026-09-09T12:00:00")
+
+
+@pytest.mark.parametrize("age_seconds,allowed", [
+    (-1, False), (0, True), (86399, True), (86400, True), (86401, False),
+])
+def test_shipping_age_boundary_uses_explicit_clock(age_seconds, allowed):
+    shipped = (NOW - timedelta(seconds=age_seconds)).isoformat()
+    info = dict(shipping_time=shipped, logistics_id=384)
+    confirmation = dict(shipping_time=shipped, confirmed_at=NOW.isoformat(),
+                        snapshot={"carrier_code": "384"})
+    if allowed:
+        validate_shipping_snapshot(info, confirmation, now=NOW)
+    else:
+        with pytest.raises(ValueError, match="24小时"):
+            validate_shipping_snapshot(info, confirmation, now=NOW)
 
 
 def test_mysql_seconds_precision_and_request_started_marker(db, sample):

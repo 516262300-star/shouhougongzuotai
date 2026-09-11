@@ -19,6 +19,8 @@
 
 针对性47项通过，覆盖身份/金额冲突、缺字段、正数/非法/小数金额、原订单查询超时、重复导入、无自动资金任务、不可覆盖既有资金事实。7笔真实只读样本在本地规范化预演均通过；未把真实客户和订单样本提交GitHub。
 
+初次独立候选全量回归为1087通过、21失败；失败集中于旧未揽收测试使用固定样本日期、平台预检却读取真实时钟，跨日后触发24小时保护。测试夹具已统一冻结预检时钟，新增未来1秒、刚发货、24小时前1秒、恰好24小时及超时1秒边界，相关29项通过。未修改生产时钟或放宽24小时保护，全量复测通过后才能部署。
+
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_1688_non_financial.py tests/test_marketplace_mappers.py tests/test_refund_financial.py tests/test_marketplace_sync.py -q --basetemp=.runtime/audits/1688-check-new-temp
 ```
