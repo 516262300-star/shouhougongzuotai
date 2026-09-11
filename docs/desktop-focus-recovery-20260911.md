@@ -28,3 +28,11 @@
 相关测试：`test_wecom_focus_recovery.py`、`test_windows_wecom.py`、`test_wecom_receipt.py`、`test_desktop_sender.py`、`test_desktop_foreground_retry.py` 和 `test_parcel_notice_store.py`。全部使用隔离夹具，不向快递群发送测试消息。真实群只读核对与模拟失焦测试分开记录，不能把单元测试通过说成已做真实批量发群验收。
 
 说明同步到本仓库和 GitHub；当前没有可用 Notion 连接器，未更新 Notion。
+
+## 本机验收与发布
+
+- 实现提交 `f17bb51`。77 项相关测试在独立 worker 候选源码上通过，定向 Python 静态检查通过；重点覆盖只读恢复最多一次、重新累计连续观测、输入中失焦绝不恢复输入、未知结果仍不能记成功、普通异常恢复页面、用户已切页不抢回、ESC/验证冻结操作及原进程身份检查。
+- 对运行中的 `.runtime/releases/return-todo-worker-20260911/src` 逐个 Python 文件比对，新目录 `.runtime/releases/wecom-focus-worker-20260911/src` 只有 `windows_wecom.py` 不同，原资金、包裹防重和全部业务流程文件不变。没有安装依赖或迁移数据库。
+- 指定历史任务经用户确认及目标群本账号完整消息的两次只读观察复核后，按原计划哈希、群名、运单、任务类型/状态和唯一关联任务检查，通过原带锁确认服务登记 `SUCCEEDED / Sent`。没有再次输入、发送消息、执行退款或 ERP 补单；真实个案证据与前后状态只保存在 `.runtime/audits/wecom-focus-recovery-20260911/`。
+- worker 自然结束当前周期后安全切换，PID 51412 → 43988；守护已恢复。Web 进程和 Web 版本指针保持不变。在线恢复接口已显示无阻塞任务，原提示解除。
+- 单笔历史消息的真实只读核对不等于新网关真实发群压力验收；没有人为制造一条生产消息或模拟资金操作来测试。本次通过隔离测试验证失焦分支，后续真实队列仍遵循已开启的自动化及所有既有安全保护。
