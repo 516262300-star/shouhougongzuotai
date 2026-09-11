@@ -299,8 +299,26 @@ def _shop_capabilities(
         "平台已退款后自动核对未发货订单并完成 ERP 平账",
     )
     if platform is Platform.TMALL:
-        module1 = _unsupported("整包裹关联尚未适配，自动退款已失败关闭，须人工核验")
-        module2 = _unsupported("整包裹实收分配尚未适配，自动退款已失败关闭，须人工核验")
+        for key, capability in (("module1", module1), ("module2", module2)):
+            limited = _requirements(
+                (
+                    (capability["state"] == "enabled", capability["detail"]),
+                    (configured.shop_number in range(1, 6), "该店不在前五店有限退款范围"),
+                    (settings.tmall_single_parcel_refund_enabled, "天猫单订单单包裹退款尚未启用"),
+                    (settings.erp_web_lookup_enabled, "ERP原销售只读核验未开启"),
+                    (bool(settings.erp_web_username and settings.erp_web_password), "ERP核验凭据缺失"),
+                ),
+                "仅独立原销售、单订单单子单单包裹；"
+                + ("通知成功并通过实时物流闸门后退款" if key == "module1"
+                   else "真实实收、独立仓库验货及ERP明细一致后退款")
+                + "；复杂订单转人工，开启不代表已有真实退款验收",
+            )
+            if limited["state"] == "enabled":
+                limited["label"] = "有限开启"
+            if key == "module1":
+                module1 = limited
+            else:
+                module2 = limited
         module1_erp = _unsupported("逐单ERP资金闭环目前仅适配拼多多")
         module3 = _requirements(
             (

@@ -1231,6 +1231,12 @@ class ExternalActionExecutor:
             raise WorkflowTransitionError("天猫关联售后不存在")
         if not self.settings.tmall_single_parcel_refund_enabled:
             raise WorkflowTransitionError("天猫单包裹恢复候选尚未启用，自动退款保持关闭")
+        if task.shop_code not in {
+            getattr(self.settings, f"tmall_shop_{number}_code")
+            for number in range(1, 6)
+            if number in self.settings.tmall_refund_enabled_shop_numbers
+        }:
+            raise WorkflowTransitionError("该店不在天猫前五店有限退款范围")
         self._require_final_refund_gate(order, task, Platform.TMALL)
         # 仅恢复有完整独立原销售依据的单子单单包裹；复杂合包仍转人工。
         from aftersales_workbench.workflows.tmall_single_parcel import TmallSingleParcelVerifier

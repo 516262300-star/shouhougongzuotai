@@ -139,6 +139,7 @@ def test_failed_receipt_or_package_never_reaches_money(case, monkeypatch):
     )
     executor = ExternalActionExecutor(c.session, Settings(
         _env_file=None, tmall_single_parcel_refund_enabled=True,
+        tmall_refund_enabled_shop_numbers=[1],
     ))
     monkeypatch.setattr(executor, "_require_final_refund_gate", lambda *a: None)
     monkeypatch.setattr(actions, "require_sync_safe_order", lambda *a: None)
@@ -169,3 +170,59 @@ def test_restoration_requires_separate_explicit_rollout_switch(case):
         executor._execute_tmall_refund(c.client, object(), task)
     c.client.get_refund.assert_not_called()
     c.client.agree_refund.assert_not_called()
+
+
+@pytest.mark.parametrize("origin", ["module1", "module2"])
+@pytest.mark.parametrize("failure", [None, "changed", "expired", "lost_task", "receipt", "shop6"])
+def test_limited_executor_rechecks_before_single_money_call(case, monkeypatch, origin, failure):
+    from datetime import UTC, datetime, timedelta
+    from aftersales_workbench.db.models import AutomationActionType, AutomationTaskStatus
+    from aftersales_workbench.workflows import actions, module2_safety
+    from aftersales_workbench.workflows.actions import ExternalActionExecutor, ExternalTaskSnapshot
+    from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
+
+    c = case
+    c.session.scalar.return_value = c.order
+    current = SimpleNamespace(action_status=AutomationTaskStatus.RUNNING, payload={})
+    c.session.get.return_value = current
+    task = ExternalTaskSnapshot(
+        1, c.order.after_sales_sn, AutomationActionType.TMALL_AGREE_REFUND,
+        {"origin": origin, "refund_gate": "IN_TRANSIT"}, c.order.platform_order_sn,
+        "tmall-shop-06" if failure == "shop6" else "tmall-shop-01",
+    )
+    executor = ExternalActionExecutor(c.session, Settings(
+        _env_file=None, tmall_single_parcel_refund_enabled=True,
+        tmall_refund_enabled_shop_numbers=[1, 6],
+    ))
+    gate = Mock()
+    monkeypatch.setattr(executor, "_require_final_refund_gate", gate)
+    monkeypatch.setattr(actions, "require_sync_safe_order", Mock())
+    verify = Mock(return_value={"status": "WAIT_SELLER_AGREE"})
+    monkeypatch.setattr(actions, "verify_tmall_refund", verify)
+    proof = {"snapshot": refund_snapshot(c.order), "started_at": datetime.now(UTC).isoformat()}
+    monkeypatch.setattr(TmallSingleParcelVerifier, "inspect", Mock(return_value=proof))
+    receipt = Mock()
+    monkeypatch.setattr(module2_safety, "require_erp_receipt", receipt)
+    funds = Mock(side_effect=lambda *a, **kw: kw["write"]())
+    monkeypatch.setattr(actions, "run_money_write", funds)
+    if failure == "changed":
+        c.session.refresh.side_effect = lambda *a, **kw: setattr(c.order, "refund_amount", Decimal("21"))
+    elif failure == "expired":
+        proof["started_at"] = (datetime.now(UTC) - timedelta(seconds=81)).isoformat()
+    elif failure == "lost_task":
+        current.action_status = AutomationTaskStatus.FAILED
+    elif failure == "receipt":
+        receipt.side_effect = ValueError("未独立验货")
+    blocked = failure is not None and not (failure == "receipt" and origin == "module1")
+    if blocked:
+        with pytest.raises(ValueError):
+            executor._execute_tmall_refund(c.client, object(), task)
+        funds.assert_not_called()
+        c.client.agree_refund.assert_not_called()
+    else:
+        executor._execute_tmall_refund(c.client, object(), task)
+        funds.assert_called_once()
+        c.client.agree_refund.assert_called_once()
+        assert gate.call_count == 2 and verify.call_count == 2
+        assert current.payload["tmall_parcel_check"] == proof
+        assert receipt.call_count == (1 if origin == "module2" else 0)

@@ -105,7 +105,7 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
         "refund_enabled_shop_count": 2,
         "full_module_shop_count": 1,
     }
-    assert tmall_shops["tmall-shop-01"]["capabilities"]["module1"]["state"] == "unsupported"
+    assert tmall_shops["tmall-shop-01"]["capabilities"]["module1"]["state"] == "disabled"
     assert tmall_shops["tmall-shop-02"]["capabilities"]["refund_permission"]["state"] == "disabled"
     assert tmall_shops["tmall-shop-02"]["capabilities"]["module3"]["state"] == "disabled"
     assert platforms["TAOBAO"]["shops"][0]["capabilities"]["module1"]["state"] == "unsupported"
@@ -123,6 +123,31 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
         "douyin-secret",
     ):
         assert secret not in serialized
+
+
+def test_tmall_limited_rollout_keeps_other_gates_and_module3_closed() -> None:
+    settings = _settings()
+    settings.tmall_single_parcel_refund_enabled = True
+    settings.erp_web_lookup_enabled = True
+    from pydantic import SecretStr
+
+    settings.erp_web_username = SecretStr("synthetic")
+    settings.erp_web_password = SecretStr("synthetic")
+    def capabilities():
+        result = build_integration_capabilities(settings, [])
+        return next(p for p in result["platforms"] if p["platform"] == "TMALL")["shops"][0]["capabilities"]
+
+    caps = capabilities()
+    for key in ("module1", "module2"):
+        assert caps[key]["state"] == "enabled"
+        assert caps[key]["label"] == "有限开启"
+        assert "单包裹" in caps[key]["detail"]
+    assert caps["module1_erp"]["state"] == "unsupported"
+    assert caps["module3"]["state"] == "disabled"
+    settings.module1_tmall_refund_execution_enabled = False
+    assert capabilities()["module1"]["state"] == "disabled"
+    settings.module2_worker_enabled = False
+    assert capabilities()["module2"]["state"] == "disabled"
 
 
 class FakeCapabilityService:
