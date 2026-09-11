@@ -105,6 +105,9 @@ def outstanding_records(document: str) -> list[dict[str, str]]:
                 or any(node.tag == "table" and node is not table for node in table.nodes())):
             raise ValueError("ERP欠货表结构异常或未完整返回")
         all_cells = [node for node in table.nodes() if node.tag in {"td", "th"}]
+        if any(node.attrs.get("colspan", "1") != "1"
+               or node.attrs.get("rowspan", "1") != "1" for node in all_cells):
+            raise ValueError("ERP欠货表含合并单元格，无法唯一对应明细")
         if len(all_cells) != sum(len(row) for row in cells) or any(
             isinstance(part, str) and part.strip()
             for node in table.nodes() if node.tag in {"table", "thead", "tbody", "tfoot", "tr"}
@@ -115,11 +118,8 @@ def outstanding_records(document: str) -> list[dict[str, str]]:
         headers = cells[0]
         if len(headers) != len(set(headers)):
             raise ValueError("ERP欠货表头重复，无法唯一对应明细")
-        for row, values in zip(rows[1:], cells[1:], strict=True):
-            if len(values) != len(headers) or any(
-                node.attrs.get("colspan", "1") != "1"
-                or node.attrs.get("rowspan", "1") != "1" for node in row.children
-            ):
+        for values in cells[1:]:
+            if len(values) != len(headers):
                 raise ValueError("ERP欠货明细列数不完整，禁止跳过明细")
             record = dict(zip(headers, values, strict=True))
             if not record["订单编号"].strip() or not record["型号"].strip():

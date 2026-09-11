@@ -91,7 +91,7 @@ def test_tables_are_scoped_and_all_outstanding_tables_are_read():
 @pytest.mark.parametrize("case", [
     "short_first_row", "short_later_row", "extra_cell", "partial_header", "duplicate_header",
     "duplicate_row", "empty_order", "empty_product", "colspan", "unclosed_table",
-    "cell_outside_row", "loading_text", "unclosed_cell",
+    "cell_outside_row", "loading_text", "unclosed_cell", "header_colspan",
 ])
 def test_malformed_rows_cannot_disappear_from_outstanding(case):
     headers, rows = HEADERS.copy(), [ROW.copy()]
@@ -123,6 +123,8 @@ def test_malformed_rows_cannot_disappear_from_outstanding(case):
         page = baseline._table(HEADERS, []).replace("</table>", "正在加载</table>")
     elif case == "unclosed_cell":
         page = page.replace("</td>", "", 1)
+    elif case == "header_colspan":
+        page = page.replace("<th>", '<th colspan="2">', 1)
     with pytest.raises(ValueError):
         outstanding_records(page)
 
