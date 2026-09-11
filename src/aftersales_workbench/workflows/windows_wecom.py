@@ -40,6 +40,10 @@ SW_RESTORE = 9
 _ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
 
+class _ReceiptForegroundLost(DesktopAmbiguousSendError):
+    """仅在已经按过发送键后的只读核验阶段允许有限恢复前台。"""
+
+
 @dataclass(frozen=True, slots=True)
 class _WeComWindowCandidate:
     hwnd: int
@@ -215,12 +219,15 @@ class WindowsWeComGateway:
 
     def send(self, plan: DesktopNoticePlan, hooks: DesktopSendHooks) -> None:
         previous_hwnd = int(self.user32.GetForegroundWindow())
-        completed = False
-        input_started = False
+        self._restore_hwnd = previous_hwnd
+        self._target_hwnd = None
+        self._target_process_id = None
+        self._ui_suspended = False
         self._raise_if_escape()
         try:
             hwnd, process_id = self._activate_wecom_foreground()
             self._target_hwnd = hwnd
+            self._target_process_id = process_id
             self._raise_if_security_window(process_id)
 
             self._hotkey(VK_CONTROL, VK_1)
@@ -257,7 +264,6 @@ class WindowsWeComGateway:
                 raise DesktopBeforePasteError("目标群已存在相同消息，须核对历史发送，禁止重复输入")
             before_input = self._snapshot(hwnd, region=self._INPUT_CHANGE_REGION)
             hooks.paste_started()
-            input_started = True
             self._type_multiline_message(plan.message)
             self._wait_for_change(
                 hwnd,
@@ -284,16 +290,18 @@ class WindowsWeComGateway:
             self._sleep_range(2200, 3100, ambiguous=True)
             self._wait_for_receipt(hwnd, plan)
             hooks.sent()
-            completed = True
         finally:
-            self._target_hwnd = None
-            # 只有确认发送成功或尚未开始输入时才恢复原窗口。结果不明时保留
-            # 企业微信在前台，方便操作员立即核验，避免盲目重发。
-            if completed or not input_started:
-                self._restore_previous_window(previous_hwnd)
+            # 窗口恢复与发送成功分开：切回页面不代表 Sent，也不解除发送账本。
+            try:
+                self._restore_after_send()
+            finally:
+                self._target_hwnd = None
+                self._target_process_id = None
 
     def _activate_wecom_foreground(self) -> tuple[int, int]:
         candidate = _select_wecom_window(self._visible_wecom_windows())
+        self._target_hwnd = candidate.hwnd
+        self._target_process_id = candidate.process_id
         self._raise_if_security_window(candidate.process_id)
         deadline = time.monotonic() + 2.0
         stable_since: float | None = None
@@ -360,6 +368,7 @@ class WindowsWeComGateway:
 
         self.user32.EnumWindows(callback, 0)
         if security_detected:
+            self._ui_suspended = True
             raise DesktopBeforePasteError("检测到企业微信安全验证或登录验证窗口")
         return candidates
 
@@ -383,6 +392,22 @@ class WindowsWeComGateway:
         finally:
             for thread_id in reversed(attached):
                 self.user32.AttachThreadInput(current_thread, thread_id, False)
+
+    def _restore_after_send(self) -> None:
+        if getattr(self, "_ui_suspended", False):
+            return
+        try:
+            self._raise_if_escape(ambiguous=True)
+            process_id = getattr(self, "_target_process_id", None)
+            if process_id is not None:
+                self._raise_if_security_window(process_id, ambiguous=True)
+            # 用户已转到其他页面时不再抢回；只有仍占用企微时才归还焦点。
+            if int(self.user32.GetForegroundWindow()) != self._target_hwnd:
+                return
+            self._restore_previous_window(self._restore_hwnd)
+        except Exception:
+            # 恢复失败、ESC 或安全验证不能覆盖原发送结果，更不能操作验证窗口。
+            return
 
     def _restore_previous_window(self, hwnd: int) -> None:
         if not hwnd or not self.user32.IsWindow(hwnd):
@@ -487,9 +512,9 @@ class WindowsWeComGateway:
         self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
         process_name = Path(self._process_path(process_id.value)).name.lower()
         if process_name != self.process_name:
-            error = f"企业微信没有进入前台，当前前台进程为 {process_name or '<unknown>'}"
+            error = f"企业微信已离开前台，当前前台进程为 {process_name or '<unknown>'}"
             if ambiguous:
-                raise DesktopAmbiguousSendError(error)
+                raise _ReceiptForegroundLost(error)
             raise DesktopBeforePasteError(error)
         return hwnd, int(process_id.value)
 
@@ -533,6 +558,7 @@ class WindowsWeComGateway:
 
         self.user32.EnumWindows(callback, 0)
         if any(self._SECURITY_TITLE.search(title) for title in titles):
+            self._ui_suspended = True
             error = "检测到企业微信安全验证或登录验证窗口"
             if ambiguous:
                 raise DesktopAmbiguousSendError(error)
@@ -541,21 +567,67 @@ class WindowsWeComGateway:
     def _read_receipt(self, hwnd: int, plan: DesktopNoticePlan, *, ambiguous: bool = False):
         error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
         self._raise_if_escape(ambiguous=ambiguous)
+        process_id = getattr(self, "_target_process_id", None)
+        if process_id is not None:
+            self._raise_if_security_window(process_id, ambiguous=ambiguous)
         snapshot = self._full_snapshot(hwnd, ambiguous=ambiguous)
         try:
             result = self.receipt_reader.inspect(snapshot, plan.target_group, plan.message)
         except Exception as exc:
             raise error_type("无法识别企微群名或消息界面，未确认发送成功") from exc
         self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        if process_id is not None:
+            self._raise_if_security_window(process_id, ambiguous=ambiguous)
         self._raise_if_escape(ambiguous=ambiguous)
         return result
+
+    def _recover_receipt_foreground(self, hwnd: int) -> None:
+        """只恢复原企微窗口用于读回执，绝不搜索、输入、粘贴或按发送键。"""
+        self._raise_if_escape(ambiguous=True)
+        if getattr(self, "_ui_suspended", False):
+            raise DesktopAmbiguousSendError("桌面操作已停止，禁止恢复核验窗口")
+        process_id = wintypes.DWORD()
+        if not self.user32.IsWindow(hwnd) or hwnd != self._target_hwnd:
+            raise DesktopAmbiguousSendError("原企业微信窗口已失效，消息发送结果待核验")
+        self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
+        if process_id.value != self._target_process_id:
+            raise DesktopAmbiguousSendError("原企业微信进程已变化，消息发送结果待核验")
+        self._raise_if_security_window(process_id.value, ambiguous=True)
+        current = int(self.user32.GetForegroundWindow())
+        # 若用户已切到有标题的其他页面，复核结束后回到那个页面；桌面临时
+        # 抢焦点但没有标题时，继续恢复最初记录的工作窗口。
+        if current != hwnd and self.user32.IsWindow(current):
+            if self.user32.GetWindowTextLengthW(current) > 0:
+                self._restore_hwnd = current
+        self._focus_window(hwnd)
+        self._sleep_range(120, 260, ambiguous=True)
+        self._raise_if_security_window(process_id.value, ambiguous=True)
+        self._require_target_foreground(hwnd=hwnd, ambiguous=True)
 
     def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan) -> None:
         deadline = time.monotonic() + 12.0
         stable_since: float | None = None
         confirmations = 0
+        recovered_focus = False
         while time.monotonic() < deadline:
-            observation = self._read_receipt(hwnd, plan, ambiguous=True)
+            try:
+                observation = self._read_receipt(hwnd, plan, ambiguous=True)
+            except _ReceiptForegroundLost as exc:
+                if recovered_focus:
+                    raise DesktopAmbiguousSendError(
+                        "已按发送键，成功核验期间再次失焦；消息可能已发出，禁止重发"
+                    ) from exc
+                recovered_focus = True
+                try:
+                    self._recover_receipt_foreground(hwnd)
+                except _ReceiptForegroundLost as recovery_error:
+                    raise DesktopAmbiguousSendError(
+                        "已按发送键，无法恢复原窗口只读核验；消息可能已发出，禁止重发"
+                    ) from recovery_error
+                # 丢弃失焦前观测，只用恢复后的连续新截图判断；仅延长一次。
+                stable_since, confirmations = None, 0
+                deadline = time.monotonic() + 12.0
+                continue
             if observation.sent_visible:
                 confirmations += 1
                 if stable_since is None:
@@ -629,6 +701,7 @@ class WindowsWeComGateway:
 
     def _raise_if_escape(self, *, ambiguous: bool = False) -> None:
         if _is_key_currently_down(self.user32.GetAsyncKeyState(VK_ESCAPE)):
+            self._ui_suspended = True
             if ambiguous:
                 raise DesktopAmbiguousSendError("用户按下 ESC，已停止后续所有操作")
             raise DesktopBeforePasteError("用户按下 ESC，已停止后续所有操作")
