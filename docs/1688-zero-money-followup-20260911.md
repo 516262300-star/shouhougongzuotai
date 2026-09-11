@@ -58,4 +58,6 @@ try {
 
 企业微信后续新通知的SendPressed必须逐条人工核验，上一运单的确认不能复用到另一条通知。前台激活已能在后续周期恢复，但当前仍无可靠的消息级自动回执，不能靠窗口变化或按键成功自动确认Sent。
 
-证据与数据备份仅存Git忽略的`.runtime/audits/post-upgrade-followup-20260911/`。代码与说明已本地提交；本轮多次推送因GitHub连接重置或443端口连接失败未完成，远端尚未同步本轮改动。无可调用Notion连接器，未更新Notion。
+证据与数据备份仅存Git忽略的`.runtime/audits/post-upgrade-followup-20260911/`。该轮推送曾因GitHub连接重置或443端口连接失败未完成，后续ERP修复时连接恢复，本轮代码、说明及发布分支已补推到远端。无可调用Notion连接器，未更新Notion。
+
+后续ERP欠货查询误报与恢复过程见[ERP空状态修复记录](erp-outstanding-empty-state-20260911.md)，保留本记录中各时间点的原始观察，不把后续恢复改写为当时已完成。

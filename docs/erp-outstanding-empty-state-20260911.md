@@ -16,10 +16,26 @@
 
 ## 验证与部署
 
-针对性138项通过、变更文件Ruff通过。首版独立候选全量1150项通过，0失败、0错误、0跳过；收尾新增表头合并单元格保护，需在最终候选再次全量复测。三份真实只读样本重放分别识别0行、4行、0行，与页面结构一致。测试仓库使用人工构造的相同结构，不包含真实客户与订单。
+针对性138项通过、变更文件Ruff通过。首版独立候选全量1150项通过；收尾新增表头合并单元格保护，最终候选`5926a0e`全量1151项通过，0失败、0错误、0跳过。三份真实只读样本重放分别识别0行、4行、0行，与页面结构一致。测试仓库使用人工构造的相同结构，不包含真实客户与订单。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_erp_outstanding.py tests/test_erp_unshipped_refund.py tests/test_module3_unimported_refund.py tests/test_audit_safety_regressions.py -q --basetemp=.runtime/audits/erp-outstanding-new-temp
+```
+
+最终候选全量验收命令（从项目根目录执行，每次使用新的临时目录）：
+
+```powershell
+$project = (Get-Location).Path
+$testTemp = Join-Path $project '.runtime/audits/erp-outstanding-acceptance-new-temp'
+$previousPythonPath = $env:PYTHONPATH
+Push-Location .runtime/releases/safety-erp-outstanding-final-20260911
+try {
+  $env:PYTHONPATH = (Join-Path (Get-Location).Path 'src')
+  & (Join-Path $project '.venv/Scripts/python.exe') -m pytest tests -q --basetemp $testTemp
+} finally {
+  $env:PYTHONPATH = $previousPythonPath
+  Pop-Location
+}
 ```
 
 从实际运行的`5c60f2e`建立独立候选`f9f7d45`，仅叠加本修复。北京时间10:45完成全量验证、最新只读复核、自然停止和备份后，后台切换到`.runtime/releases/safety-erp-outstanding-20260911/src`；数据库仍为`20260910_0027`，无结构迁移。完整数据库备份25,782,071字节，并保留配置、账本、旧版本指针、任务与资金状态明细及SHA-256清单。后台和守护均恢复，进程健康检查正常。
@@ -27,5 +43,11 @@
 10:48通过既有定向核验服务完成本地对账，客户端只允许只读页面，`execute`入口明确禁止调用。最新客户身份、金额、唯一退款流水、累计应收零和无欠货全部复核通过后，原待核验任务完成，ERP资金账本对应1个键由`UNKNOWN`转`CONFIRMED`；资金键总数仍为2540，其余资金记录不变。新增的本地成功任务是对既有ERP成功事实的审计补记，不是重新取消订单或创建ERP退款。历史FAILED任务、133条发送凭证、发送JSONL和`.env`均不变。
 
 历史FAILED/UNKNOWN不直接重试，结果未知只允许回查；不得以删除账本或恢复旧库覆盖后续资金/发送事实。此次只读恢复不等于把全部历史UNKNOWN标为成功，只有该笔得到独立完整证据的事实被确认。
+
+10:57再次自然停止并备份后，后台切换至最终候选`5926a0e`，路径`.runtime/releases/safety-erp-outstanding-final-20260911/src`。最终切换前数据库备份25,794,030字节，已包含前述只读对账事实；再次确认ERP现状仍为完成后仅切换代码，没有再次执行本地对账或资金操作。最终候选与首版一样从隔离发布树启动，不带入主工作区其他开发改动。
+
+最终版本首个完整周期为10:57:18至10:59:37，`ok=true`：拼多多7店、天猫6店、其他平台4店同步完成，所有执行阶段无失败。该周期又通过只读回查确认1笔既有ERP成功事实，平台退款和ERP补单执行数仍为0。11:00数据库复核确认：相对本轮开始共2个既有ERP资金键从`UNKNOWN`转`CONFIRMED`，均有成功审计任务和退款流水引用，其他键字段与快照未改、未新建资金键；总数仍为2540。原定向核验任务及其两条审计任务没有重复新增，发送账本和历史FAILED任务仍不变。
+
+生产观察中另有1笔模块2退货记录未唯一匹配客户档案，暂存列表也未找到对应退货单，继续待核验；未将其按空结果放行。后续已观察到无执行失败的完整周期，但人工核验项和历史UNKNOWN仍按原有保护保留，不能据此宣称无人值守已验收。
 
 原始响应、个案结果、备份和运行证据仅存Git忽略的`.runtime/audits/erp-outstanding-followup-20260911/`。说明与代码随本次变更提交推送；无可调用Notion连接器，未更新Notion。该修复不代表整体ERP闭环或无人值守发送已验收，网页展示服务也不随本次后台切换更新。
