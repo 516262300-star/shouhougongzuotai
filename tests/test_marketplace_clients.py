@@ -149,3 +149,25 @@ def test_douyin_self_authorization_is_cached(tmp_path: Path) -> None:
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
     assert cache[shop.shop_code]["access_token"] == "generated-token"
     http_client.close()
+
+
+def test_taobao_requires_explicit_empty_count():
+    from types import SimpleNamespace
+
+    import pytest
+
+    from aftersales_workbench.integrations.marketplace.taobao import TaobaoReadClient
+
+    client = object.__new__(TaobaoReadClient)
+    for body, allowed in (({"total_results": 0}, True),
+                          ({"total_results": 3}, False),
+                          ({"has_next": False}, False)):
+        client._client = SimpleNamespace(
+            get_refunds=lambda body=body, **_: {"refunds_receive_get_response": body},
+        )
+        query = client.fetch_window(start_modified_at=0, end_modified_at=10, page_size=100)
+        if allowed:
+            assert list(query) == []
+        else:
+            with pytest.raises(ValueError, match="退款列表"):
+                list(query)

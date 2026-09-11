@@ -264,7 +264,8 @@ class TmallClient:
             end_modified=end_modified,
             page_no=page_no,
             page_size=page_size,
-            use_has_next=True,
+            # 请求明确总数：仅has_next=false且缺列表不能证明查询成功为空。
+            use_has_next=False,
         )
 
     def get_refund(self, *, refund_id: int) -> dict[str, Any]:

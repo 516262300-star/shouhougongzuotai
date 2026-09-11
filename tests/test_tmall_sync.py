@@ -163,3 +163,30 @@ def test_closed_only_refund_also_queries_shipping_evidence():
     assert result.ok and client.logistics_calls == 1
     assert repository.refunds[0].order_shipping_status == "IN_TRANSIT"
     assert repository.refunds[0].platform_after_sales_status_text == "SUCCESS"
+
+
+def test_explicit_zero_count_without_list_advances_cursor():
+    repository = FakeRepository()
+    client = FakeClient()
+    client.get_refunds = lambda **_: {"refunds_receive_get_response": {"total_results": 0}}
+    service = TmallRefundSyncService(
+        repository, Settings(_env_file=None, tmall_sync_initial_lookback_hours=1,
+                             tmall_sync_window_hours=1),
+        client_factory=lambda _: client, now=lambda: 3600,
+    )
+    result = service.sync_all([_shop()], max_windows=1)[0]
+    assert result.ok and repository.cursor_end == 3600
+    assert result.records_seen == 0 and repository.refunds == []
+
+
+def test_missing_list_and_count_still_blocks_cursor_even_with_has_next_false():
+    repository = FakeRepository()
+    client = FakeClient()
+    client.get_refunds = lambda **_: {"refunds_receive_get_response": {"has_next": False}}
+    service = TmallRefundSyncService(
+        repository, Settings(_env_file=None, tmall_sync_initial_lookback_hours=1,
+                             tmall_sync_window_hours=1),
+        client_factory=lambda _: client, now=lambda: 3600,
+    )
+    result = service.sync_all([_shop()], max_windows=1)[0]
+    assert not result.ok and repository.cursor_end is None

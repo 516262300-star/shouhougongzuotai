@@ -72,7 +72,7 @@ def test_refund_list_calls_official_method(credentials: TmallCredentials) -> Non
 
     assert captured["method"] == TAOBAO_REFUNDS_RECEIVE_GET
     assert captured["start_modified"] == "2026-09-01 00:00:00"
-    assert captured["use_has_next"] == "true"
+    assert captured["use_has_next"] == "false"
     http_client.close()
 
 
