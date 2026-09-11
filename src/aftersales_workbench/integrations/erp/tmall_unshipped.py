@@ -1,4 +1,4 @@
-"""天猫模块3专用只读预检。绝不调用有副作用的 showlist。"""
+"""天猫模块3只读预检：现有管理页面或显式选择的专用接口，不调用 showlist。"""
 
 import json
 import re
@@ -95,16 +95,75 @@ def no_shipments(client, customer_id, erp_order, platform_order):
     raise ValueError("ERP发货页未取完")
 
 
-def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, items, child_id):
-    # 管理列表没有执行所用的原始detail字段，必须由专用只读接口补齐；404不回退showlist。
-    raw = client._get_response("/leedis2/public/workbench/tmall/module3-inspect",
-                               params={"order_id": order_sn}).json()
-    if (raw.get("contract") != "tmall_module3_read_v1" or raw.get("order_id") != order_sn
-            or raw.get("complete") is not True or raw.get("activating") is not False
-            or raw.get("editing") is not False or not isinstance(raw.get("records"), list)
-            or len(raw["records"]) != 1):
-        raise ValueError("ERP只读契约缺失、记录不唯一或订单正在启用/编辑")
-    source = raw["records"][0]
+def read_existing_refund(client, order_sn):
+    """复用 Voyager 只读列表/详情；不触发 showlist 或编辑、移除动作。
+
+    启用/编辑互斥由共同的 deleteProdlist 服务端入口在写入前再次检查，
+    此页面并未查询这些表，不伪造 activating=False 等数据库事实。
+    """
+    page = client._get("/leedis2/public/admin/refunds",
+                       params={"key": "orderId", "filter": "equals", "s": order_sn})
+    rows = complete_table(page, {"平台单号", "退款单号", "平台", "操作"})
+    if len(rows) != 1 or rows[0]["平台单号"] != order_sn:
+        raise ValueError("ERP原订单退款记录缺失、不唯一或筛选失效")
+    ids = {m.group(1) for link in rows[0]["_links"]
+           if (m := re.search(r"/admin/refunds/(\d+)(?:[/?#]|$)", link))}
+    if len(ids) != 1:
+        raise ValueError("ERP退款详情ID不唯一")
+    record_id = ids.pop()
+    document = client._get(f"/leedis2/public/admin/refunds/{record_id}", params={})
+    nodes = list(_Page(document).root.nodes())
+    if (re.search(r"权限不足|没有权限|登录失效|查询失败|permission denied|access denied",
+                  nodes[0].text(), re.I)
+            or any(not n.closed for n in nodes if n.tag in {"html", "body"})):
+        raise ValueError("ERP退款详情权限不足或页面截断")
+    panels = [n for n in nodes if "panel-bordered" in n.attrs.get("class", "").split()]
+    if len(panels) != 1 or any(not n.closed for n in panels[0].nodes()):
+        raise ValueError("ERP退款详情结构不完整")
+    fields = {}
+    children = panels[0].children
+    for index, heading in enumerate(children):
+        if "panel-heading" not in heading.attrs.get("class", "").split():
+            continue
+        labels = [n.text() for n in heading.nodes() if n.tag == "h3"]
+        if (len(labels) != 1 or labels[0] in fields or index + 1 >= len(children)
+                or "panel-body" not in children[index + 1].attrs.get("class", "").split()):
+            raise ValueError("ERP退款详情字段重复或字段体缺失")
+        fields[labels[0]] = children[index + 1].text().strip()
+    mapping = {"platform": "平台", "orderId": "平台单号", "refundId": "退款单号",
+               "overall_status": "状态", "applyPayment": "退款金额", "applyCarriage": "退款运费",
+               "detail": "Detail", "ddnr": "系统订单号", "csname": "系统客户名称",
+               "isRefundGoods": "是否退货", "waybill": "运单号", "log": "操作记录"}
+    if not set(mapping.values()) <= fields.keys():
+        raise ValueError("ERP退款详情缺少执行所需字段")
+    source = {key: fields[label] for key, label in mapping.items()}
+    source["id"] = record_id
+    if source["orderId"] != order_sn or source["refundId"] != rows[0]["退款单号"]:
+        raise ValueError("ERP退款详情身份与列表不一致")
+    if source["isRefundGoods"] not in {"0", "仅退款", "否"}:
+        raise ValueError("ERP退款详情不是明确的仅退款")
+    source["isRefundGoods"] = 0
+    # 显示为空的运费不能作为明确的零金额使用。
+    amount(source["applyCarriage"])
+    return source
+
+
+def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, items, child_id,
+                            source_mode="dedicated"):
+    # 列表未显示原始detail，但现有管理详情页已提供；不自动切换核验来源。
+    if source_mode == "existing_admin":
+        source = read_existing_refund(client, order_sn)
+    elif source_mode == "dedicated":
+        raw = client._get_response("/leedis2/public/workbench/tmall/module3-inspect",
+                                   params={"order_id": order_sn}).json()
+        if (raw.get("contract") != "tmall_module3_read_v1" or raw.get("order_id") != order_sn
+                or raw.get("complete") is not True or raw.get("activating") is not False
+                or raw.get("editing") is not False or not isinstance(raw.get("records"), list)
+                or len(raw["records"]) != 1):
+            raise ValueError("ERP只读契约缺失、记录不唯一或订单正在启用/编辑")
+        source = raw["records"][0]
+    else:
+        raise ValueError("未知天猫ERP只读来源，禁止自动回退")
     details = json.loads(source.get("detail") or "null")
     quantity = next(iter(items.values())) if len(items) == 1 else None
     if (str(source.get("orderId")) != order_sn or str(source.get("refundId")) != refund_sn
@@ -123,7 +182,7 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
         raise ValueError("ERP订单退款记录不唯一或筛选失效")
     row = records[0]
     if (row["平台"] != "天猫" or row["退款单号"] != refund_sn or row["状态"] != "退款成功"
-            or row["是否退货"] != "仅退款" or row["运单号"]
+            or row["是否退货"] not in {"仅退款", "0", "否"} or row["运单号"]
             or amount(row["退款金额"]) + amount(row["退款运费"] or "0") != expected_amount):
         raise ValueError("ERP平台、退款身份、类型、运单或金额不一致")
     erp_order, customer = row["系统订单号"], row["系统客户名称"]

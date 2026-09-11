@@ -69,6 +69,7 @@ def case(db):
     db.add_all([shop, order, task])
     db.commit()
     cfg = Settings(_env_file=None, tmall_sync_enabled=True, tmall_module123_trial_enabled=True,
+                   tmall_module3_erp_read_mode="dedicated",
                    tmall_module3_erp_refund_enabled=True,
                    module3_erp_refund_execution_enabled=True, erp_write_enabled=True)
     refund = dict(refund_id="9001", tid=OID, oid="2001", status="SUCCESS", has_good_return=False,

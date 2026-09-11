@@ -186,7 +186,8 @@ class TmallModule3Service(Module3ErpRefundService):
             platform_client.close()
         lookup = inspect_tmall_unshipped(self.client, order_sn=order.platform_order_sn,
                                         refund_sn=order.after_sales_sn,
-                                        expected_amount=expected, items=items, child_id=child_id)
+                                        expected_amount=expected, items=items, child_id=child_id,
+                                        source_mode=self.settings.tmall_module3_erp_read_mode)
         if order.erp_customer_name and lookup.customer_name != order.erp_customer_name:
             raise ValueError("ERP客户与本地关联不一致")
         self.session.refresh(order)
@@ -198,7 +199,7 @@ class TmallModule3Service(Module3ErpRefundService):
         proof = dict(scope=SCOPE, snapshot=snapshot, checked_at=datetime.now(UTC).isoformat(),
                      started_at=started.isoformat(), expected_amount=str(expected),
                      erp_record_id=lookup.record_id, erp_order_sn=lookup.erp_order_sn,
-                     state=initial_state)
+                     state=initial_state, erp_read_mode=self.settings.tmall_module3_erp_read_mode)
         return lookup, proof
 
     def _write_once(self, task, order, approved):
@@ -206,6 +207,7 @@ class TmallModule3Service(Module3ErpRefundService):
         lookup, proof = self.inspect(task, order)
         if any(proof[k] != approved[k] for k in (
             "scope", "snapshot", "expected_amount", "erp_record_id", "erp_order_sn", "state",
+            "erp_read_mode",
         )):
             raise ValueError("天猫模块3资金前核验变化，禁止补单")
         if lookup.status == Status.COMPLETED:
