@@ -495,10 +495,17 @@ class AftersalesRecordService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         ).all()
-        items = [
-            self._serialize_manual_todo(task, order, shop)
-            for task, order, shop in rows
-        ]
+        from aftersales_workbench.services.return_todo_policy import return_problem_state
+
+        linked_tasks = self._tasks_by_order([order.after_sales_sn for _, order, _ in rows])
+        items = []
+        for task, order, shop in rows:
+            match = next((item for item in linked_tasks.get(order.after_sales_sn, [])
+                          if _enum_value(item.action_type) == "ERP_MATCH_RETURN_ORDER"), None)
+            items.append({
+                **self._serialize_manual_todo(task, order, shop),
+                **return_problem_state(task.payload or {}, order, match),
+            })
         return {
             "summary": self._manual_todo_summary(),
             "assignees": self._manual_todo_assignees(),

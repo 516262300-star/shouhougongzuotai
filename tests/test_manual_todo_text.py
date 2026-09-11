@@ -13,7 +13,7 @@ def prepare(payload):
 
 @pytest.mark.parametrize("status,handling", [
     ("staged", "认领到正确客户名下"),
-    ("receivable_open", "确认是否需要补单"),
+    ("receivable_open", "勿重复给买家退款"),
     ("item_mismatch", "型号、颜色和数量差异"),
     ("customer_conflict", "客户档案及退货归属"),
 ])
@@ -32,7 +32,8 @@ def test_return_closure_hides_long_detail_without_losing_audit(status, handling)
     assert payload == original
     assert result["content"].count("order-A") == 1
     assert all(x not in result["content"] for x in ("M1", "模块1", "TH-EXAMPLE", "SKU"))
-    assert handling in result["content"] and "-12.30元" in result["content"]
+    assert handling in result["content"]
+    assert ("-12.30元" in result["content"]) == (status != "receivable_open")
     assert len(result["content"]) < 200
     assert result["erp_return_rows"] == original["erp_return_rows"]
     assert result["manual_context"] == original["manual_context"]

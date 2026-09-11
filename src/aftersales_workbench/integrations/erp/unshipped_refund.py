@@ -477,6 +477,7 @@ class ErpWebUnshippedRefundClient:
                 pending,
                 after_sales_sn=sales_sn,
                 expected_amount=expected_amount,
+                shipped_return=True,
             )
             if validation_error:
                 return self._lookup(
@@ -737,6 +738,7 @@ class ErpWebUnshippedRefundClient:
         *,
         after_sales_sn: str,
         expected_amount: Decimal,
+        shipped_return: bool = False,
     ) -> str | None:
         if pending.action_id != "1":
             return "ERP 待处理动作不是补开退款单"
@@ -744,7 +746,7 @@ class ErpWebUnshippedRefundClient:
             return "ERP 待处理退款单号与本地售后单号不一致"
         if pending.after_sales_type != "仅退款":
             return "ERP 待处理记录不是仅退款"
-        if pending.return_tracking_number:
+        if pending.return_tracking_number and not shipped_return:
             return "ERP 待处理记录存在退货运单，不属于未发货退款"
         if not pending.erp_order_sn.startswith("DD-"):
             return "ERP 待处理记录缺少有效系统订单号"

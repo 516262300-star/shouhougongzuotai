@@ -35,6 +35,7 @@ class ErpClosureEvidence:
     matched_items: tuple[ExpectedReturnItem, ...]
     return_rows: tuple[ErpReturnRow, ...]
     verified_at: datetime
+    platform: str
 
     def safe_dict(self) -> dict:
         return {
@@ -44,11 +45,11 @@ class ErpClosureEvidence:
             "reference_sn": self.reference_sn,
             "amount": str(self.amount),
             "verified_at": self.verified_at.isoformat(),
+            "platform": self.platform,
         }
 
 
-def platform_closure_error(order) -> str | None:
-    # 当前流水适配器查询页固定为拼多多；不能借用其结果放行其他平台。
+def order_platform(order) -> str:
     platform = getattr(getattr(order, "shop", None), "platform", "")
     if isinstance(order, AfterSalesOrder):
         session = object_session(order)
@@ -56,10 +57,31 @@ def platform_closure_error(order) -> str | None:
             session.scalar(select(Shop.platform).where(Shop.shop_id == order.shop_id))
             if session else ""
         )
-    if str(platform) != "PDD":
+    return str(platform)
+
+
+def closure_amount(order):
+    amount = order.merchant_receivable_amount
+    if order_platform(order) == "TMALL" and amount is None:
+        # 只支持金额口径一致的全额退款；优惠/差额未知时不猜商家应收。
+        amount = getattr(order, "refund_amount", None)
+        if (amount != getattr(order, "platform_order_amount", None)
+                or amount != getattr(order, "platform_goods_amount", None)):
+            return None
+    return amount
+
+
+def platform_closure_error(order) -> str | None:
+    platform = order_platform(order)
+    if platform not in {"PDD", "TMALL"}:
         return "该平台逐单 ERP 退款流水核验尚未接入，不能自动闭环"
     if str(order.after_sales_type) != "ONLY_REFUND":
         return "本闭环核验仅支持发货后仅退款"
+    if platform == "TMALL" and (
+        getattr(order, "refund_amount", None) is None
+        or order.refund_amount != getattr(order, "platform_order_amount", None)
+    ):
+        return "天猫只读闭环尚未确认全额退款范围"
     if str(order.order_shipping_status) not in {"IN_TRANSIT", "DELIVERED"}:
         return "缺少明确的已发货事实，不能登记拦截退回闭环"
     financial = str(getattr(order, "refund_financial_status", "") or "").upper()
@@ -67,9 +89,11 @@ def platform_closure_error(order) -> str | None:
         getattr(order, "platform_after_sales_status", None) == 10
         or getattr(order, "platform_order_refund_status", None) == 4
     )
-    if financial != "SUCCESS" and not (financial in {"", "UNKNOWN"} and legacy_success):
+    if financial != "SUCCESS" and not (
+        platform == "PDD" and financial in {"", "UNKNOWN"} and legacy_success
+    ):
         return "平台退款尚未明确成功，不能登记闭环"
-    amount = order.merchant_receivable_amount
+    amount = closure_amount(order)
     if not isinstance(amount, Decimal) or not amount.is_finite() or amount <= 0:
         return "缺少有效商家应收金额，不能核验对应 ERP 退款流水"
     return None
@@ -91,10 +115,11 @@ def closure_evidence_error(order, lookup: ErpReturnMatchLookup) -> str | None:
     if (proof.verified_at.tzinfo is None
             or not timedelta(0) <= datetime.now(UTC) - proof.verified_at <= timedelta(minutes=5)):
         return "ERP 闭环证据已过期，需重新查询"
-    if (proof.platform_order_sn != order.platform_order_sn
+    if (proof.platform != order_platform(order)
+            or proof.platform_order_sn != order.platform_order_sn
             or proof.after_sales_sn != order.after_sales_sn
             or proof.tracking_number != order.forward_tracking_number
-            or proof.amount != order.merchant_receivable_amount
+            or proof.amount != closure_amount(order)
             or proof.order_items != expected_items_from_order(order)):
         return "订单标识、金额或明细发生变化，需重新核对闭环证据"
     if (lookup.source_location != "customer_profile"
@@ -132,16 +157,29 @@ def verify_closure(order, lookup, refund_client, *, expected_items=None, refund_
             or any(r.tracking_number != order.forward_tracking_number for r in lookup.rows)
             or lookup.receivable_amount != 0):
         return unverified(lookup, "客户名下完整退货明细或零应收尚未确认，不能闭环")
-    bill = refund_result or refund_client.inspect_shipped_return(
-        platform_order_sn=order.platform_order_sn,
-        after_sales_sn=order.after_sales_sn,
-        expected_amount=order.merchant_receivable_amount,
-        expected_items=tuple(ErpUnshippedItem(i.product, i.color, i.quantity) for i in own_items),
-    )
+    if order_platform(order) == "TMALL":
+        from aftersales_workbench.integrations.erp.settled_refund import (
+            inspect_settled_tmall_refund,
+        )
+
+        # 非拼多多只读取已存在的流水，绝不调用补单预检/执行，也不借用传入资金回执。
+        bill = inspect_settled_tmall_refund(
+            refund_client, platform_order_sn=order.platform_order_sn,
+            after_sales_sn=order.after_sales_sn, expected_amount=closure_amount(order),
+        )
+    else:
+        bill = refund_result or refund_client.inspect_shipped_return(
+            platform_order_sn=order.platform_order_sn,
+            after_sales_sn=order.after_sales_sn,
+            expected_amount=closure_amount(order),
+            expected_items=tuple(
+                ErpUnshippedItem(i.product, i.color, i.quantity) for i in own_items
+            ),
+        )
     if (bill.status is not ErpUnshippedRefundStatus.COMPLETED
             or bill.platform_order_sn != order.platform_order_sn
             or bill.customer_name != lookup.customer_name
-            or bill.refund_amount != order.merchant_receivable_amount
+            or bill.refund_amount != closure_amount(order)
             or bill.receivable_amount != 0 or bill.outstanding_items
             or not bill.reference_sn or not bill.reference_sn.startswith("SK-")
             or not bill.erp_order_sn):
@@ -154,6 +192,7 @@ def verify_closure(order, lookup, refund_client, *, expected_items=None, refund_
         order.platform_order_sn, order.after_sales_sn, lookup.customer_name,
         order.forward_tracking_number, bill.erp_order_sn, bill.reference_sn,
         bill.refund_amount, own_items, matched, lookup.rows, datetime.now(UTC),
+        order_platform(order),
     )
     verified = replace(lookup, status=ErpReturnMatchStatus.CLOSED_LOOP,
                        message="平台已退款、客户名下退货明细及对应退款流水已核实，累计应收为零",

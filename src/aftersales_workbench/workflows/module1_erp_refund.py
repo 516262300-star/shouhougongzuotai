@@ -18,7 +18,11 @@ from aftersales_workbench.db.models import (
     ShippingStatus,
     WorkflowStatus,
 )
-from aftersales_workbench.integrations.erp.closure import platform_closure_error, verify_closure
+from aftersales_workbench.integrations.erp.closure import (
+    order_platform,
+    platform_closure_error,
+    verify_closure,
+)
 from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchStatus,
     ErpReturnMatchSyncService,
@@ -105,7 +109,8 @@ class Module1ErpRefundService:
         )
         for task, order in rows:
             result.scanned += 1
-            if platform_closure_error(order):
+            # 天猫新增的是只读闭环核验，不扩大任何平台的自动补单权限。
+            if order_platform(order) != "PDD" or platform_closure_error(order):
                 result.refund_unverified += 1
                 continue
             expected_return_items = expected_items_from_order(order)
@@ -172,6 +177,8 @@ class Module1ErpRefundService:
             )
             if dry_run:
                 continue
+            # 保存本次实际核查的退货快照，禁止旧预检结论套用到后来的退货变化。
+            ErpReturnMatchSyncService.apply_lookup(task, order, return_lookup, datetime.now(UTC))
             self._save_preflight(task, refund_lookup)
             if refund_lookup.status is ErpUnshippedRefundStatus.READY:
                 require_sync_safe_order(self.session, order.after_sales_sn)
@@ -270,6 +277,8 @@ class Module1ErpRefundService:
         task: AftersalesActionTask,
         lookup: ErpUnshippedRefundLookup,
     ) -> None:
+        from aftersales_workbench.services.return_todo_policy import match_snapshot
+
         task.payload = {
             **(task.payload or {}),
             "erp_refund_checked_at": datetime.now(UTC).isoformat(),
@@ -277,6 +286,7 @@ class Module1ErpRefundService:
             "erp_refund_message": lookup.message,
             "erp_refund_record_id": lookup.record_id,
             "erp_order_sn": lookup.erp_order_sn,
+            "erp_refund_match_snapshot": match_snapshot(task.payload),
         }
         task.last_error = (
             lookup.message[:2000]

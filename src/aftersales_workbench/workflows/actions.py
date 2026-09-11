@@ -667,6 +667,25 @@ class ExternalActionExecutor:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    from aftersales_workbench.services.return_todo_policy import (
+                        check_balance_todo_before_publish,
+                    )
+
+                    accounting_decision, accounting_reason = check_balance_todo_before_publish(
+                        self.session, task.payload, task.after_sales_sn,
+                    )
+                    if accounting_decision != "ALLOW":
+                        if accounting_decision == "RESOLVED":
+                            self.session.execute(update(AftersalesActionTask).where(
+                                AftersalesActionTask.id == task.id,
+                                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                            ).values(action_status=AutomationTaskStatus.CANCELLED,
+                                     last_error="已核实平账，取消未发送的旧核账提醒"))
+                            self.session.commit()
+                        result.skipped += 1
+                        continue
+                    if accounting_reason:
+                        task = replace(task, payload={**task.payload, "reason_text": accounting_reason})
                     if (task.payload.get("task_scope") == "shared_package"
                             and not str(task.payload.get("assignee") or "").strip()):
                         current = self.session.scalar(select(AfterSalesOrder).where(
@@ -776,6 +795,14 @@ class ExternalActionExecutor:
                     else:
                         if erp_todo_client is None:
                             raise WorkflowTransitionError("ERP 待办客户端未初始化")
+                        accounting_decision, accounting_reason = check_balance_todo_before_publish(
+                            self.session, task.payload, task.after_sales_sn,
+                        )
+                        if accounting_decision != "ALLOW":
+                            raise ManualTodoPublishingPaused("核账状态已变化，暂停旧提醒")
+                        if accounting_reason:
+                            task = replace(task, payload={**task.payload,
+                                                         "reason_text": accounting_reason})
                         todo_request = self._build_erp_todo_request(task)
                         receipt = erp_todo_client.create_todo(todo_request)
                         result_payload = {

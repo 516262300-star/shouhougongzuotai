@@ -911,7 +911,7 @@ function ManualTodoTable({ items, selected, onSelect, loading, error, onRetry })
           <tr key={item.task_id} className={selected === item.task_id ? "selected" : ""} onClick={() => onSelect(item.task_id)}>
             <td><StatusTag tone={item.status_tone}>{item.status_label}</StatusTag></td>
             <td><div className="stacked-cell"><b>{item.assignee}</b><small>{item.sent_to_assignee ? "已确认发送" : "尚未确认发送"}</small></div></td>
-            <td className="manual-reason-cell" title={item.reason}>{item.reason}</td>
+            <td className="manual-reason-cell" title={item.problem_message || item.reason}><div className="stacked-cell">{item.problem_label && <StatusTag tone={item.problem_tone}>{item.problem_label}</StatusTag>}<span>{item.problem_status === "RESOLVED" ? "已平账，无需按旧通知补单" : item.reason}</span></div></td>
             <td>{item.origin_label}</td>
             <td className="mono">{item.platform_order_sn}</td>
             <td className="mono">{item.after_sales_sn}</td>
@@ -937,7 +937,8 @@ function ManualTodoDetail({ item }) {
           {item.sent_to_assignee ? <CheckCircle size={22} /> : <WarningCircle size={22} />}
           <div><strong>{item.sent_to_assignee ? `已发送给 ${item.assignee}` : `尚未发送给 ${item.assignee}`}</strong><span>{item.sent_to_assignee ? `发送时间 ${formatDateTime(item.sent_at, true)}` : `当前状态：${item.status_label}`}</span></div>
         </section>
-        <section className="detail-section"><h3>触发原因</h3><p className="manual-reason-detail">{item.reason}</p><dl><DetailRow label="原因代码" value={item.reason_code} /><DetailRow label="触发模块" value={item.origin_label} /><DetailRow label="对应业务员" value={item.assignee} /></dl></section>
+        {item.problem_label && <section className="detail-section"><h3>当前处理情况 <StatusTag tone={item.problem_tone}>{item.problem_label}</StatusTag></h3><p className="manual-reason-detail">{item.problem_message}</p>{item.problem_resolved_at && <dl><DetailRow label="解除核验时间" value={formatDateTime(item.problem_resolved_at, true)} /></dl>}</section>}
+        <section className="detail-section"><h3>发送时的触发原因</h3><p className="manual-reason-detail">{item.reason}</p><dl><DetailRow label="原因代码" value={item.reason_code} /><DetailRow label="触发模块" value={item.origin_label} /><DetailRow label="对应业务员" value={item.assignee} /></dl></section>
         <section className="detail-section"><h3>发送给业务员的具体事项</h3><p className="manual-content-detail">{item.content}</p></section>
         <section className="detail-section"><h3>关联订单</h3><dl><DetailRow label="平台订单号" value={item.platform_order_sn} /><DetailRow label="售后单号" value={item.after_sales_sn} /><DetailRow label="店铺" value={item.shop_name} /><DetailRow label="任务编号" value={item.task_id} /></dl></section>
         <section className="detail-section"><h3>发送审计</h3><dl><DetailRow label="是否已发送" value={item.sent_to_assignee ? "是" : "否"} /><DetailRow label="ERP待办 ID" value={item.external_todo_id || "—"} /><DetailRow label="已尝试次数" value={item.attempts} /><DetailRow label="待办发起时间" value={formatDateTime(item.started_at, true)} /><DetailRow label="本地创建时间" value={formatDateTime(item.created_at, true)} /><DetailRow label="最近更新" value={formatDateTime(item.updated_at, true)} /></dl>{item.last_error && <div className={item.task_status === "CANCELLED" ? "manual-cancel-box" : "manual-error-box"}><strong>{item.task_status === "CANCELLED" ? "取消/未发送原因" : "发送失败原因"}</strong><span>{item.last_error}</span></div>}{item.cancel_reason && <div className="manual-cancel-box"><strong>取消原因</strong><span>{item.cancel_reason}</span></div>}</section>

@@ -941,6 +941,7 @@ class ErpReturnMatchSyncService:
                         "refund_financial_status", "platform_after_sales_status",
                         "platform_order_refund_status", "platform_order_sn", "after_sales_sn",
                         "forward_tracking_number", "merchant_receivable_amount",
+                        "refund_amount", "platform_order_amount", "platform_goods_amount",
                         "after_sales_type", "order_shipping_status", "erp_customer_name",
                         "shop_id",
                     ], with_for_update=True)

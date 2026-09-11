@@ -94,13 +94,13 @@ def prepare_manual_todo(
                 or "退货需核对" in content):
             handling = {
                 "staged": "请核对退货单并认领到正确客户名下",
-                "receivable_open": "请核对客户应收及退款流水，确认是否需要补单",
+                "receivable_open": "请按上述差异核对本笔退款记录，勿重复给买家退款",
                 "item_mismatch": "请核对退货型号、颜色和数量差异，再处理平账",
                 "customer_conflict": "请核实该订单对应的客户档案及退货归属",
             }.get(return_status, "请核对退货归属、实收和客户账务")
             content = f"{marker} 店铺：{shop}；原因：{reason}；"
             amount = payload.get("erp_receivable_amount")
-            if amount is not None and str(amount).strip():
+            if return_status != "receivable_open" and amount is not None and str(amount).strip():
                 content += f"客户累计应收：{amount}元；"
             content += f"{handling}。明细见售后工作台。"
         else:

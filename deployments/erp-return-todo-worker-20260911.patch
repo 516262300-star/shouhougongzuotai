@@ -1,0 +1,66 @@
+diff --git a/src/aftersales_workbench/workflows/module1_manual_todo.py b/src/aftersales_workbench/workflows/module1_manual_todo.py
+index 49aa01c..1089ecd 100644
+--- a/src/aftersales_workbench/workflows/module1_manual_todo.py
++++ b/src/aftersales_workbench/workflows/module1_manual_todo.py
+@@ -1,7 +1,7 @@
+ from __future__ import annotations
+ 
+ from dataclasses import asdict, dataclass
+-from datetime import datetime
++from datetime import UTC, datetime, timedelta
+ from enum import StrEnum
+ from typing import Any, ClassVar, Protocol
+ 
+@@ -23,6 +23,7 @@ from aftersales_workbench.services.manual_todo_policy import (
+     is_no_trace_reason,
+ )
+ from aftersales_workbench.services.manual_todo_text import module1_todo_marker, prepare_manual_todo
++from aftersales_workbench.services.return_todo_policy import MANUAL_REASONS, manual_balance_reason
+ from aftersales_workbench.workflows.polling import due_first, record_poll
+ 
+ 
+@@ -78,6 +79,8 @@ class Module1ManualTodoCandidate:
+     @property
+     def reason_text(self) -> str:
+         if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
++            if (self.erp_match_payload or {}).get("erp_match_status") == "receivable_open":
++                return manual_balance_reason(self.erp_match_payload) or "等待系统逐单核验退款流水"
+             return self.exception_type or "ERP 退货闭环存在异常，需要人工核对"
+         if self.workflow_status is WorkflowStatus.INTERCEPT_FAILED:
+             return self.exception_type or "快递拦截失败，需要人工处理平台售后"
+@@ -146,6 +149,7 @@ class Module1ManualTodoRunResult:
+     tasks_requeued: int = 0
+     skipped_missing_owner: int = 0
+     skipped_no_trace: int = 0
++    skipped_accounting_verification: int = 0
+ 
+     def safe_dict(self) -> dict[str, int | bool]:
+         return asdict(self)
+@@ -206,6 +210,16 @@ class SqlAlchemyModule1ManualTodoRepository:
+         return_match_state = and_(
+             AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+             AfterSalesOrder.exception_type.in_(self._ACTIONABLE_RETURN_EXCEPTIONS),
++            or_(
++                AfterSalesOrder.exception_type != "退货单已入客户名下，累计应收未归零",
++                and_(
++                    AftersalesActionTask.payload["erp_refund_status"].as_string() == "blocked",
++                    AftersalesActionTask.payload["erp_refund_record_id"].as_string().is_not(None),
++                    AftersalesActionTask.payload["erp_refund_message"].as_string().in_(tuple(MANUAL_REASONS)),
++                    AftersalesActionTask.payload["erp_refund_checked_at"].as_string()
++                    >= (datetime.now(UTC) - timedelta(minutes=30)).isoformat(),
++                ),
++            ),
+         )
+         statement = (
+             select(AfterSalesOrder, Shop.shop_name, AftersalesActionTask.payload)
+@@ -348,6 +362,10 @@ class Module1ManualTodoService:
+             )
+             result.scanned = len(candidates)
+             for candidate in candidates:
++                if (candidate.reason_code == "ERP_RETURN_RECEIVABLE_OPEN"
++                        and not manual_balance_reason(candidate.erp_match_payload)):
++                    result.skipped_accounting_verification += 1
++                    continue
+                 if is_no_trace_reason(candidate.exception_type):
+                     result.skipped_no_trace += 1
+                     continue
