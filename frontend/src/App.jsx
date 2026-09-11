@@ -23,6 +23,7 @@ import {
 } from "@phosphor-icons/react";
 import { ScrapWorkspace } from "./ScrapWorkspace.jsx";
 import { ManualTodoPublishing } from "./ManualTodoPublishing.jsx";
+import { MonitorIssues } from "./MonitorIssues.jsx";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
 const PLATFORM_OPTIONS = [
@@ -1141,7 +1142,7 @@ function monitorStageSummary(stage) {
   return details.join(" · ") || "本周期已完成";
 }
 
-function MonitorWorkspace() {
+function MonitorWorkspace({ onOpenOrder }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1227,9 +1228,10 @@ function MonitorWorkspace() {
           </div>
           <button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />立即刷新</button>
         </section>
+        <MonitorIssues onOpenOrder={onOpenOrder} />
         <section className="monitor-metrics">
           <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
-          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "周期存在失败" : `间隔 ${worker.interval_seconds ?? "—"} 秒`}</small></article>
+          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : `本轮完成；未解决异常请看上方明细`}</small></article>
           <article><span>企微待发送</span><strong className={queue.pending ? "monitor-warn" : "monitor-good"}>{queue.pending ?? "—"}</strong><small>发送中 {queue.running ?? 0} · 已成功 {queue.succeeded ?? 0}</small></article>
           <article><span>发送失败</span><strong className={queue.failed ? "monitor-bad" : "monitor-good"}>{queue.failed ?? "—"}</strong><small>当前启用范围共 {queue.total ?? 0} 条任务</small></article>
         </section>
@@ -1241,7 +1243,7 @@ function MonitorWorkspace() {
                 {module.stages.map((stage) => (
                   <div className="monitor-stage" key={stage.id}>
                     <span className={`monitor-stage-dot stage-${stage.status}`} />
-                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small></div>
+                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small>{stage.error && <a href="#monitor-issues-title">查看异常明细及处理建议</a>}</div>
                     <StatusTag tone={monitorTone(stage.status)}>{monitorStageStatus(stage.status)}</StatusTag>
                   </div>
                 ))}
@@ -1707,6 +1709,18 @@ export function App() {
     window.setTimeout(() => setCopied(false), 1500);
   };
 
+  const openMonitoredOrder = (item) => {
+    if (!item.can_open_order || !item.after_sales_sn) return;
+    const next = { ...createInitialFilters(), started_on: "", ended_on: "", platform: item.platform || "", shop_id: String(item.shop_id || ""), keyword: item.platform_order_sn || item.after_sales_sn };
+    setDraftFilters(next);
+    setFilters(next);
+    setRecordView("ALL");
+    setPage(1);
+    setSelected(item.after_sales_sn);
+    setDetailOpen(true);
+    setActiveView("orders");
+  };
+
   const detailVisible = (
     (activeView === "orders" && detailOpen)
     || (activeView === "intercepts" && interceptDetailOpen)
@@ -1751,7 +1765,7 @@ export function App() {
       ) : activeView === "capabilities" ? (
         <IntegrationWorkspace />
       ) : activeView === "monitor" ? (
-        <MonitorWorkspace />
+        <MonitorWorkspace onOpenOrder={openMonitoredOrder} />
       ) : (
         <WarehouseWorkspace />
       )}

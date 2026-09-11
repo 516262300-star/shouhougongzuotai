@@ -1,8 +1,10 @@
-from typing import Annotated, Any
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from aftersales_workbench.core.config import get_settings
 from aftersales_workbench.db.session import get_db_session
 from aftersales_workbench.services.desktop_notice_recovery import (
     DesktopNoticeRecoveryService,
@@ -10,10 +12,49 @@ from aftersales_workbench.services.desktop_notice_recovery import (
 from aftersales_workbench.services.integration_capabilities import (
     IntegrationCapabilityService,
 )
+from aftersales_workbench.services.runtime_issues import RuntimeIssueCollector, RuntimeIssueService
 from aftersales_workbench.services.runtime_monitor import RuntimeMonitorService
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeSendError
 
 router = APIRouter()
+
+
+def get_issue_service(session: Annotated[Session, Depends(get_db_session)]) -> RuntimeIssueService:
+    root = Path(__file__).resolve().parents[4]
+    return RuntimeIssueService(
+        RuntimeIssueCollector(session, get_settings(), root),
+        root / ".runtime" / "monitor-incidents.sqlite3",
+    )
+
+
+@router.get("/issues")
+def runtime_issues(
+    service: Annotated[RuntimeIssueService, Depends(get_issue_service)],
+    state: Literal["OPEN", "RESOLVED", "STOPPED", "ALL"] = "OPEN",
+    category: Literal["ERP", "NOTICE", "REFUND", "LOGISTICS", "SYNC", "TODO", "OTHER"]
+    | None = None,
+    platform: Literal["PDD", "TMALL", "TAOBAO", "1688", "JD", "DOUYIN"] | None = None,
+    shop_id: Annotated[int | None, Query(gt=0)] = None,
+    keyword: Annotated[str, Query(max_length=100)] = "",
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 15,
+) -> dict[str, Any]:
+    try:
+        return service.list_issues(
+            state=state,
+            category=category,
+            platform=platform,
+            shop_id=shop_id,
+            keyword=keyword,
+            page=page,
+            page_size=page_size,
+        )
+    except Exception as exc:
+        # 不向浏览器回显数据库连接串、凭据或原始 API 响应。
+        raise HTTPException(
+            status_code=503,
+            detail="异常明细暂时无法完整读取，保留原记录；请稍后刷新或联系维护人员。",
+        ) from exc
 
 
 def get_monitor_service(

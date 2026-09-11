@@ -1,0 +1,46 @@
+.monitor-issues { background: #fff; border: 1px solid #dce5ef; border-radius: 10px; padding: 22px; color: #253650; }
+.issues-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.issues-heading h2 { margin: 0 0 8px; font-size: 20px; }
+.issues-heading p, .issues-note { color: #607086; font-size: 14px; line-height: 1.7; margin: 0; }
+.issues-heading .button { flex-shrink: 0; }
+.issues-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0; }
+.issues-tabs button { border: 1px solid #dce5ef; border-radius: 6px; padding: 10px 16px; background: #fff; color: #465773; font: inherit; font-size: 14px; cursor: pointer; }
+.issues-tabs button.is-active { background: #edf5ff; color: #1764cd; border-color: #90bbf0; }
+.issues-tabs strong { margin-left: 12px; }
+.issues-filters { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.issues-filters label { display: flex; flex-direction: column; gap: 7px; font-size: 14px; min-width: 130px; }
+.issues-filters input, .issues-filters select { width: 100%; background: white; border: 1px solid #cbd7e5; border-radius: 5px; min-height: 40px; padding: 8px; font: inherit; color: #334760; }
+.issues-search { flex: 1; min-width: 250px !important; }
+.issues-table-wrap { overflow-x: auto; }
+.issues-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.issues-table th { text-align: left; background: #f4f7fb; color: #56657a; padding: 12px; white-space: nowrap; }
+.issues-table td { padding: 14px 12px; border-bottom: 1px solid #e7edf5; vertical-align: top; line-height: 1.65; }
+.issues-table td:first-child { min-width: 115px; }
+.issues-table small { display: block; font-size: 13px; color: #64748b; margin-top: 4px; }
+.issue-order-number { overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.issue-reason { min-width: 190px; max-width: 420px; overflow-wrap: anywhere; }
+.issue-state { display: block; width: fit-content; border-radius: 4px; padding: 1px 6px; margin-top: 5px; font-size: 13px; }
+.issue-state-open { color: #a43418; background: #fff0e9; }
+.issue-state-resolved { color: #147548; background: #e8f6ee; }
+.issue-state-stopped { color: #566477; background: #eef1f5; }
+.issue-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 95px; }
+.issue-actions .button { padding: 6px 10px; min-height: 34px; white-space: nowrap; }
+.issue-expand { display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 2px 0; cursor: pointer; color: #1764cd; font: inherit; }
+.issue-expanded td { background: #f7faff; }
+.issue-expanded h3 { font-size: 15px; margin: 8px 0; }
+.issue-help { display: grid; grid-template-columns: 1.3fr 1fr; gap: 32px; }
+.issue-help p { font-size: 14px; line-height: 1.8; margin: 8px 0; }
+.issue-help dl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 14px; margin: 8px 0; }
+.issue-help dt { color: #64748b; }
+.issue-help dd { margin: 0; overflow-wrap: anywhere; }
+.issue-events { padding-left: 20px; max-height: 250px; overflow-y: auto; }
+.issue-events li { margin: 8px 0; }
+.issue-events strong { margin: 0 10px; }
+.issue-events time { color: #64748b; }
+.issues-error { display: flex; align-items: flex-start; gap: 8px; padding: 14px; color: #a82d19; background: #fff1eb; margin-bottom: 12px; font-size: 14px; }
+.issues-empty { padding: 34px; text-align: center; color: #607086; }
+.issues-footer, .issues-footer > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 14px; font-size: 14px; }
+.issues-note { margin-top: 16px; }
+.monitor-issues button:focus-visible, .monitor-issues input:focus-visible, .monitor-issues select:focus-visible { outline: 3px solid #79b3ff; outline-offset: 2px; }
+@media (max-width: 1000px) { .issue-help { grid-template-columns: 1fr; gap: 12px; } .issues-heading { flex-direction: column; } }
+@media (max-width: 600px) { .monitor-issues { padding: 14px; } .issues-filters label { flex: 1 1 150px; } .issues-search { min-width: 100% !important; } }
