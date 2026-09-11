@@ -16,6 +16,7 @@ from aftersales_workbench.db.models import (
 )
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
+from aftersales_workbench.workflows.pdd_refund_cases import apply_case, observe_case
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -33,7 +34,7 @@ class PddFailedRefundReconciler:
             )
         )
 
-    def run(self, *, limit=20, dry_run=True):
+    def run(self, *, limit=20, dry_run=True, after_sales_sns=None):
         if not 1 <= limit <= 500:
             raise ValueError("limit 必须在 1–500 之间")
         statement = (
@@ -55,6 +56,10 @@ class PddFailedRefundReconciler:
             reference=AfterSalesOrder.after_sales_sn,
             tie_breaker=AftersalesActionTask.id,
         ).limit(limit)
+        if after_sales_sns is not None:
+            if not after_sales_sns:
+                raise ValueError("指定售后范围不能为空")
+            statement = statement.where(AfterSalesOrder.after_sales_sn.in_(after_sales_sns))
         rows = self.session.execute(statement).all()
         shops = (
             {
@@ -71,11 +76,14 @@ class PddFailedRefundReconciler:
         for task, order, shop_code in rows:
             reference = order.after_sales_sn
             try:
+                observed_updated_at = order.updated_at
+                observed_payload = dict(task.payload or {})
                 with self.client_factory(shops[shop_code]) as client:
                     detail = client.get_refund_information(
                         order_sn=order.platform_order_sn,
                         after_sales_id=int(reference),
                     )
+                    case = observe_case(self.session, client, order, task, detail)
                 if (
                     str(detail.get("id")) != reference
                     or detail.get("order_sn") != order.platform_order_sn
@@ -101,7 +109,19 @@ class PddFailedRefundReconciler:
                     self.session.rollback()
                     continue
                 self.session.refresh(order)
-                self.apply_observation(current, order, status, amount)
+                if case and (
+                    order.updated_at != observed_updated_at or current.payload != observed_payload
+                ):
+                    self.session.rollback()
+                    continue
+                if case:
+                    apply_case(current, order, case)
+                else:
+                    if (current.payload or {}).get("pdd_refund_case"):
+                        previous = dict(current.payload)
+                        previous["previous_refund_case"] = previous.pop("pdd_refund_case")
+                        current.payload = previous
+                    self.apply_observation(current, order, status, amount)
                 record_poll(
                     self.session, scope="pdd_failed_refund", reference=reference, delay_seconds=1800
                 )

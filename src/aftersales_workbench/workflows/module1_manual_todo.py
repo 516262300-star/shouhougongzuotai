@@ -23,6 +23,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     is_no_trace_reason,
 )
 from aftersales_workbench.services.manual_todo_text import module1_todo_marker, prepare_manual_todo
+from aftersales_workbench.workflows.pdd_refund_cases import CASE_MESSAGES, RELATED_SUCCESS
 from aftersales_workbench.workflows.polling import due_first, record_poll
 
 
@@ -70,6 +71,9 @@ class Module1ManualTodoCandidate:
         if self.workflow_status is WorkflowStatus.INTERCEPT_FAILED:
             return "INTERCEPT_FAILED"
         if self.workflow_status is WorkflowStatus.MANUAL_PROCESSING:
+            for code, message in CASE_MESSAGES.items():
+                if self.exception_type == message:
+                    return code
             return "MANUAL_PROCESSING"
         if self.logistics_state == "DELIVERED":
             return "DELIVERED_WITHOUT_RETURN"
@@ -218,7 +222,15 @@ class SqlAlchemyModule1ManualTodoRepository:
                 ),
             )
             .where(
-                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                or_(
+                    AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                    and_(
+                        AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
+                        AfterSalesOrder.exception_type.in_(tuple(CASE_MESSAGES.values())),
+                    ),
+                ),
+                or_(AfterSalesOrder.exception_type.is_(None),
+                    AfterSalesOrder.exception_type != CASE_MESSAGES[RELATED_SUCCESS]),
                 AfterSalesOrder.platform_order_amount.is_not(None),
                 AfterSalesOrder.refund_amount == AfterSalesOrder.platform_order_amount,
                 AfterSalesOrder.order_shipping_status.in_(

@@ -39,6 +39,12 @@ from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlanner
 from aftersales_workbench.workflows.module1_logistics import (
     build_refund_business_hours,
 )
+from aftersales_workbench.workflows.pdd_refund_cases import (
+    CASE_LABELS,
+    CASE_MESSAGES,
+    RELATED_SUCCESS,
+    case_for_display,
+)
 
 WORKFLOW_LABELS = {
     "PENDING_CHECK": "待系统判定",
@@ -567,6 +573,9 @@ class AftersalesRecordService:
         serialized_owner = self._serialize_owner(owner)
         serialized_owner["checked_at"] = _dt(order.erp_sales_owner_synced_at)
         refund = self._refund_display(order, shop, tasks)
+        case = next((case_for_display(t) for t in reversed(tasks) if case_for_display(t)), None)
+        if case and not confirmed_refund(order, shop.platform):
+            decision_note = CASE_MESSAGES[case["code"]]
         return {
             "after_sales_sn": order.after_sales_sn,
             "shop_name": shop.shop_name,
@@ -632,6 +641,9 @@ class AftersalesRecordService:
                     )
                 ),
                 "status": (
+                    CASE_LABELS[case["code"]]
+                    if case and not confirmed_refund(order, shop.platform)
+                    else
                     "仅记录"
                     if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
                     else "无需 ERP 补单"
@@ -936,6 +948,10 @@ class AftersalesRecordService:
             return "平台已退款", "success"
         if order.refund_financial_status == "CLOSED":
             return "退款已关闭", "neutral"
+        case = case_for_display(refund_task)
+        if case:
+            tone = "info" if case["code"] == RELATED_SUCCESS else "warning"
+            return CASE_LABELS[case["code"]], tone
         if refund_task is not None:
             status = _enum_value(refund_task.action_status)
             if status == "CANCELLED" and "非快递拦截客服工作时间" in str(
@@ -1049,10 +1065,18 @@ class AftersalesRecordService:
                 AutomationActionType.TMALL_AGREE_RETURN_REFUND,
             ),
         )
-        return refund_display(
+        result = refund_display(
             order, shop.platform,
             submitted=task is not None and _enum_value(task.action_status) == "SUCCEEDED",
         )
+        case = case_for_display(task)
+        if case and not confirmed_refund(order, shop.platform):
+            status = "RELATED_SUCCESS" if case["code"] == RELATED_SUCCESS else "NEEDS_REVIEW"
+            return {"status": status,
+                    "label": CASE_LABELS[case["code"]], "tone": "info",
+                    "reason": CASE_MESSAGES[case["code"]],
+                    "related_after_sales_sn": case.get("related_after_sales_sn")}
+        return result
 
     @staticmethod
     def _serialize_owner(owner: SalesOwnerLookup) -> dict[str, Any]:

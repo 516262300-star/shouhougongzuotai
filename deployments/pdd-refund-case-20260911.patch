@@ -1,0 +1,800 @@
+diff --git a/src/aftersales_workbench/services/aftersales_records.py b/src/aftersales_workbench/services/aftersales_records.py
+index 4589fe9..aeb455e 100644
+--- a/src/aftersales_workbench/services/aftersales_records.py
++++ b/src/aftersales_workbench/services/aftersales_records.py
+@@ -41,0 +42,6 @@ from aftersales_workbench.workflows.module1_logistics import (
++from aftersales_workbench.workflows.pdd_refund_cases import (
++    CASE_LABELS,
++    CASE_MESSAGES,
++    RELATED_SUCCESS,
++    case_for_display,
++)
+@@ -569,0 +576,3 @@ class AftersalesRecordService:
++        case = next((case_for_display(t) for t in reversed(tasks) if case_for_display(t)), None)
++        if case and not confirmed_refund(order, shop.platform):
++            decision_note = CASE_MESSAGES[case["code"]]
+@@ -634,0 +644,3 @@ class AftersalesRecordService:
++                    CASE_LABELS[case["code"]]
++                    if case and not confirmed_refund(order, shop.platform)
++                    else
+@@ -938,0 +951,4 @@ class AftersalesRecordService:
++        case = case_for_display(refund_task)
++        if case:
++            tone = "info" if case["code"] == RELATED_SUCCESS else "warning"
++            return CASE_LABELS[case["code"]], tone
+@@ -1052 +1068 @@ class AftersalesRecordService:
+-        return refund_display(
++        result = refund_display(
+@@ -1055,0 +1072,8 @@ class AftersalesRecordService:
++        case = case_for_display(task)
++        if case and not confirmed_refund(order, shop.platform):
++            status = "RELATED_SUCCESS" if case["code"] == RELATED_SUCCESS else "NEEDS_REVIEW"
++            return {"status": status,
++                    "label": CASE_LABELS[case["code"]], "tone": "info",
++                    "reason": CASE_MESSAGES[case["code"]],
++                    "related_after_sales_sn": case.get("related_after_sales_sn")}
++        return result
+diff --git a/src/aftersales_workbench/workflows/module1_manual_todo.py b/src/aftersales_workbench/workflows/module1_manual_todo.py
+index 49aa01c..a7555af 100644
+--- a/src/aftersales_workbench/workflows/module1_manual_todo.py
++++ b/src/aftersales_workbench/workflows/module1_manual_todo.py
+@@ -25,0 +26 @@ from aftersales_workbench.services.manual_todo_text import module1_todo_marker,
++from aftersales_workbench.workflows.pdd_refund_cases import CASE_MESSAGES, RELATED_SUCCESS
+@@ -72,0 +74,3 @@ class Module1ManualTodoCandidate:
++            for code, message in CASE_MESSAGES.items():
++                if self.exception_type == message:
++                    return code
+@@ -221 +225,9 @@ class SqlAlchemyModule1ManualTodoRepository:
+-                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
++                or_(
++                    AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
++                    and_(
++                        AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
++                        AfterSalesOrder.exception_type.in_(tuple(CASE_MESSAGES.values())),
++                    ),
++                ),
++                or_(AfterSalesOrder.exception_type.is_(None),
++                    AfterSalesOrder.exception_type != CASE_MESSAGES[RELATED_SUCCESS]),
+diff --git a/src/aftersales_workbench/workflows/module2_erp_intake.py b/src/aftersales_workbench/workflows/module2_erp_intake.py
+index 199532d..c55c154 100644
+--- a/src/aftersales_workbench/workflows/module2_erp_intake.py
++++ b/src/aftersales_workbench/workflows/module2_erp_intake.py
+@@ -44 +44,4 @@ from aftersales_workbench.workflows.polling import due_first, record_poll
+-from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
++from aftersales_workbench.workflows.sync_safety import (
++    case_safe_order_filter,
++    sync_safe_order_filter,
++)
+@@ -252,0 +256 @@ class Module2ErpIntakeService:
++                case_safe_order_filter(),
+@@ -301,0 +306 @@ class Module2ErpIntakeService:
++                case_safe_order_filter(),
+diff --git a/src/aftersales_workbench/workflows/pdd_case_cli.py b/src/aftersales_workbench/workflows/pdd_case_cli.py
+new file mode 100644
+index 0000000..3c77352
+--- /dev/null
++++ b/src/aftersales_workbench/workflows/pdd_case_cli.py
+@@ -0,0 +1,122 @@
++"""仅供授权维护人员：只读复核/记录人工意图确认，绝不发起退款或待办发布。"""
++
++import argparse
++import json
++from datetime import UTC, datetime
++
++from sqlalchemy import select
++
++from aftersales_workbench.core.config import get_settings
++from aftersales_workbench.db.models import (
++    AftersalesActionTask,
++    AfterSalesOrder,
++    AutomationActionType,
++    AutomationTaskStatus,
++    Platform,
++    Shop,
++)
++from aftersales_workbench.db.session import SessionLocal
++from aftersales_workbench.integrations.pdd.client import PddClient
++from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
++from aftersales_workbench.workflows.pdd_refund_cases import (
++    CASE_KEY,
++    CONFIRMED,
++    SUSPECTED,
++    apply_case,
++    observe_case,
++)
++
++
++def confirm_intent(task, case, *, source, operator, note):
++    if case["code"] not in {SUSPECTED, CONFIRMED}:
++        raise ValueError("当前证据不满足误选类型确认条件，需重新人工核验")
++    if (
++        source not in {"user", "salesperson", "customer"}
++        or not operator.strip()
++        or not note.strip()
++    ):
++        raise ValueError("必须记录确认来源、经办人及客户真实意图的确认依据")
++    confirmation = {
++        k: case[k]
++        for k in (
++            "after_sales_sn",
++            "platform_order_sn",
++            "refund_amount",
++            "sku",
++            "quantity",
++            "tracking_number",
++            "platform_updated_time",
++        )
++    }
++    confirmation.update(
++        source=source,
++        operator=operator.strip(),
++        note=note.strip(),
++        confirmed_at=datetime.now(UTC).isoformat(),
++    )
++    task.payload = {**(task.payload or {}), "type_intent_confirmation": confirmation}
++    return {**case, "code": CONFIRMED}
++
++
++def main(argv=None):
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--after-sales-sn", required=True)
++    parser.add_argument("--apply", action="store_true", help="仅写入本地核验结果，默认只读")
++    parser.add_argument("--confirm-intent", action="store_true")
++    parser.add_argument("--source", choices=("user", "salesperson", "customer"))
++    parser.add_argument("--operator", default="")
++    parser.add_argument("--note", default="")
++    args = parser.parse_args(argv)
++    settings = get_settings()
++    shops = {c.shop_code: c for c in load_configured_pdd_shops(settings, require_all=False)}
++    with SessionLocal() as session:
++        order = session.scalar(
++            select(AfterSalesOrder).where(AfterSalesOrder.after_sales_sn == args.after_sales_sn)
++        )
++        if order is None or session.get(Shop, order.shop_id).platform != Platform.PDD:
++            raise ValueError("没有找到指定拼多多售后")
++        task = session.scalar(
++            select(AftersalesActionTask).where(
++                AftersalesActionTask.after_sales_sn == order.after_sales_sn,
++                AftersalesActionTask.action_type == AutomationActionType.PDD_AGREE_REFUND,
++                AftersalesActionTask.action_status == AutomationTaskStatus.FAILED,
++            )
++        )
++        if task is None:
++            raise ValueError("当前没有可核验的失败旧退款任务")
++        config = shops[session.get(Shop, order.shop_id).shop_code]
++        old_order_update, old_payload = order.updated_at, dict(task.payload or {})
++        with PddClient(
++            config.credentials(),
++            api_url=settings.pdd_api_url,
++            timeout_seconds=settings.pdd_timeout_seconds,
++            read_max_attempts=1,
++            write_enabled=False,
++        ) as client:
++            detail = client.get_refund_information(
++                order_sn=order.platform_order_sn, after_sales_id=int(order.after_sales_sn)
++            )
++            case = observe_case(session, client, order, task, detail)
++        if case is None:
++            raise ValueError("当前不是售后类型变化或同订单其他售后已退款的处理场景")
++        if args.apply:
++            session.refresh(task, with_for_update=True)
++            session.refresh(order, with_for_update=True)
++            if (
++                task.action_status != AutomationTaskStatus.FAILED
++                or task.payload != old_payload
++                or order.updated_at != old_order_update
++            ):
++                raise ValueError("核验期间记录已变化，请重新只读核验")
++            if args.confirm_intent:
++                case = confirm_intent(
++                    task, case, source=args.source, operator=args.operator, note=args.note
++                )
++            apply_case(task, order, case)
++            session.commit()
++        print(json.dumps({"dry_run": not args.apply, CASE_KEY: case}, ensure_ascii=False, indent=2))
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/src/aftersales_workbench/workflows/pdd_reconciliation.py b/src/aftersales_workbench/workflows/pdd_reconciliation.py
+index d2e3934..29a2a50 100644
+--- a/src/aftersales_workbench/workflows/pdd_reconciliation.py
++++ b/src/aftersales_workbench/workflows/pdd_reconciliation.py
+@@ -18,0 +19 @@ from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shop
++from aftersales_workbench.workflows.pdd_refund_cases import apply_case, observe_case
+@@ -36 +37 @@ class PddFailedRefundReconciler:
+-    def run(self, *, limit=20, dry_run=True):
++    def run(self, *, limit=20, dry_run=True, after_sales_sns=None):
+@@ -57,0 +59,4 @@ class PddFailedRefundReconciler:
++        if after_sales_sns is not None:
++            if not after_sales_sns:
++                raise ValueError("指定售后范围不能为空")
++            statement = statement.where(AfterSalesOrder.after_sales_sn.in_(after_sales_sns))
+@@ -73,0 +79,2 @@ class PddFailedRefundReconciler:
++                observed_updated_at = order.updated_at
++                observed_payload = dict(task.payload or {})
+@@ -78,0 +86 @@ class PddFailedRefundReconciler:
++                    case = observe_case(self.session, client, order, task, detail)
+@@ -104 +112,13 @@ class PddFailedRefundReconciler:
+-                self.apply_observation(current, order, status, amount)
++                if case and (
++                    order.updated_at != observed_updated_at or current.payload != observed_payload
++                ):
++                    self.session.rollback()
++                    continue
++                if case:
++                    apply_case(current, order, case)
++                else:
++                    if (current.payload or {}).get("pdd_refund_case"):
++                        previous = dict(current.payload)
++                        previous["previous_refund_case"] = previous.pop("pdd_refund_case")
++                        current.payload = previous
++                    self.apply_observation(current, order, status, amount)
+diff --git a/src/aftersales_workbench/workflows/pdd_refund_cases.py b/src/aftersales_workbench/workflows/pdd_refund_cases.py
+new file mode 100644
+index 0000000..9900f25
+--- /dev/null
++++ b/src/aftersales_workbench/workflows/pdd_refund_cases.py
+@@ -0,0 +1,199 @@
++"""失败退款的业务解释；只观察/转人工，不授权或重试资金写入。"""
++
++from datetime import UTC, datetime
++from decimal import Decimal
++
++from sqlalchemy import select
++
++from aftersales_workbench.db.models import (
++    AftersalesActionTask,
++    AfterSalesOrder,
++    AfterSalesType,
++    AutomationActionType,
++    AutomationTaskStatus,
++    WorkflowStatus,
++)
++from aftersales_workbench.integrations.pdd.mapper import unwrap_order_information
++
++CASE_KEY = "pdd_refund_case"
++SUSPECTED = "TYPE_SELECTION_SUSPECTED"
++CONFIRMED = "TYPE_SELECTION_CONFIRMED"
++RELATED_SUCCESS = "ORDER_REFUNDED_ELSEWHERE"
++CORRECTED = "TYPE_CORRECTED_RECHECK"
++CHANGED = "TYPE_CHANGED"
++CASE_MESSAGES = {
++    SUSPECTED: "已发送快递拦截，但申请变成退货退款，请确认客户是否选错类型",
++    CONFIRMED: "已确认客户误选退货退款，请协助更正平台申请，再核验退款条件",
++    RELATED_SUCCESS: "同订单已通过其他售后退款，旧任务停止处理；退货平账仍需核验",
++    CORRECTED: "平台申请已改回仅退款，请重新核验退款条件，勿直接重试旧任务",
++    CHANGED: "平台售后类型已变化，请核对客户真实需求及当前处理方式",
++}
++CASE_LABELS = {
++    SUSPECTED: "疑似选错类型·待确认",
++    CONFIRMED: "已确认选错·待更正申请",
++    RELATED_SUCCESS: "同订单已退款·其他售后",
++    CORRECTED: "申请已更正·待重新核验",
++    CHANGED: "售后类型变化·待核验",
++}
++
++
++def _identity(detail, order, refund_id):
++    if (
++        str(detail.get("id") or "") != refund_id
++        or detail.get("order_sn") != order.platform_order_sn
++    ):
++        raise ValueError("售后身份不一致，不能关联新旧申请")
++
++
++def _money(value):
++    amount = Decimal(str(value))
++    if not amount.is_finite() or amount <= 0:
++        raise ValueError("退款关联金额无效")
++    return amount
++
++
++def _item(detail):
++    sku = str(detail.get("out_sku_sn") or "").strip()
++    qty = int(detail.get("goods_number") or 0)
++    if not sku or qty <= 0:
++        raise ValueError("退款关联缺少有效型号数量")
++    return sku, qty
++
++
++def observe_case(session, client, order, task, detail):
++    """平台详情必须在当前调用内读取；不把留言或空退货单号当作意图确认。"""
++    if (task.payload or {}).get("origin") != "module1":
++        return None
++    _identity(detail, order, order.after_sales_sn)
++    current_type = int(detail.get("after_sales_type") or 0)
++    status = int(detail.get("after_sales_status") or 0)
++    if current_type not in {1, 2}:
++        raise ValueError("当前售后不是可关联的仅退款/退货退款")
++    if status == 10:
++        return None  # 同张售后已成功仍走原只读资金核验，不复制到账金额。
++    prior = (task.payload or {}).get(CASE_KEY) or {}
++    others = list(
++        session.scalars(
++            select(AfterSalesOrder).where(
++                AfterSalesOrder.shop_id == order.shop_id,
++                AfterSalesOrder.platform_order_sn == order.platform_order_sn,
++                AfterSalesOrder.after_sales_sn != order.after_sales_sn,
++                AfterSalesOrder.platform_after_sales_status == 10,
++                AfterSalesOrder.after_sales_type.in_(
++                    (AfterSalesType.ONLY_REFUND, AfterSalesType.RETURN_AND_REFUND)
++                ),
++            )
++        )
++    )
++    if current_type == 1 and not others and not prior:
++        return None
++    info = unwrap_order_information(client.get_order_information(order_sn=order.platform_order_sn))
++    if info.get("order_sn") != order.platform_order_sn:
++        raise ValueError("订单详情身份不一致，不能关联新旧售后")
++    amount = _money(detail.get("refund_amount")) / 100
++    paid = _money(info.get("pay_amount"))
++    item = _item(detail)
++    expected = {(i.sku_code, int(i.applied_quantity)) for i in order.items}
++    same_goods = expected == {item}
++    full = same_goods and amount == paid == order.refund_amount == order.platform_order_amount
++    tracking = str(info.get("tracking_number") or "").strip()
++    same_package = bool(tracking and tracking == order.forward_tracking_number)
++    base = dict(
++        checked_at=datetime.now(UTC).isoformat(),
++        platform_type=current_type,
++        platform_status=status,
++        platform_order_sn=order.platform_order_sn,
++        after_sales_sn=order.after_sales_sn,
++        refund_amount=str(amount),
++        sku=item[0],
++        quantity=item[1],
++        tracking_number=tracking,
++        previous_type=(prior.get("previous_type") or str(order.after_sales_type)),
++        platform_updated_time=str(detail.get("updated_time") or ""),
++    )
++    matched = []
++    if full and same_package:
++        for sibling in others:
++            observed = client.get_refund_information(
++                order_sn=order.platform_order_sn,
++                after_sales_id=int(sibling.after_sales_sn),
++            )
++            _identity(observed, order, sibling.after_sales_sn)
++            if (
++                int(observed.get("after_sales_type") or 0) in {1, 2}
++                and int(observed.get("after_sales_status") or 0) == 10
++                and _money(observed.get("refund_amount")) / 100 == paid
++                and _item(observed) == item
++                and sibling.forward_tracking_number == tracking
++            ):
++                matched.append(sibling.after_sales_sn)
++    if len(matched) == 1:
++        return {**base, "code": RELATED_SUCCESS, "related_after_sales_sn": matched[0]}
++    if current_type == 1:
++        return (
++            {**base, "code": CORRECTED} if prior and prior.get("code") != RELATED_SUCCESS else None
++        )
++    notices = session.scalars(
++        select(AftersalesActionTask).where(
++            AftersalesActionTask.after_sales_sn == order.after_sales_sn,
++            AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
++            AftersalesActionTask.action_status == AutomationTaskStatus.SUCCEEDED,
++        )
++    )
++    sent = any((n.payload or {}).get("tracking_number") == tracking for n in notices)
++    code = (
++        SUSPECTED
++        if full
++        and same_package
++        and sent
++        and not str(detail.get("express_no") or "").strip()
++        and len(matched) == 0
++        else CHANGED
++    )
++    confirmation = (task.payload or {}).get("type_intent_confirmation") or {}
++    # 人工确认必须绑定当前售后/金额/SKU/包裹，变化后重新核验，不能沿用确认。
++    if (
++        code == SUSPECTED
++        and all(
++            confirmation.get(k) == base[k]
++            for k in (
++                "after_sales_sn",
++                "platform_order_sn",
++                "refund_amount",
++                "sku",
++                "quantity",
++                "tracking_number",
++                "platform_updated_time",
++            )
++        )
++        and confirmation.get("source") in {"user", "salesperson", "customer"}
++        and confirmation.get("operator")
++        and confirmation.get("note")
++    ):
++        code = CONFIRMED
++    return {**base, "code": code}
++
++
++def apply_case(task, order, case):
++    """不把旧任务改成退款成功，不修改实际到账金额，也不重新入队。"""
++    original = (task.payload or {}).get("original_execution_error") or task.last_error
++    payload = dict(task.payload or {})
++    if payload.get(CASE_KEY) and payload[CASE_KEY].get("code") != case["code"]:
++        payload["previous_refund_case"] = payload[CASE_KEY]
++    task.payload = {**payload, "original_execution_error": original, CASE_KEY: case}
++    code = case["code"]
++    order.after_sales_type = (
++        AfterSalesType.RETURN_AND_REFUND
++        if case["platform_type"] == 2
++        else AfterSalesType.ONLY_REFUND
++    )
++    order.platform_after_sales_status = case["platform_status"]
++    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
++    order.exception_type = CASE_MESSAGES[code]
++    task.last_error = CASE_MESSAGES[code]
++    # 已有/已发待办保留发布证据，不重置任务或重复发通知。
++
++
++def case_for_display(task):
++    case = ((task.payload or {}).get(CASE_KEY) or {}) if task else {}
++    return case if case.get("code") in CASE_LABELS else None
+diff --git a/src/aftersales_workbench/workflows/sync_safety.py b/src/aftersales_workbench/workflows/sync_safety.py
+index 5442675..3eaed65 100644
+--- a/src/aftersales_workbench/workflows/sync_safety.py
++++ b/src/aftersales_workbench/workflows/sync_safety.py
+@@ -4 +4 @@ from sqlalchemy import and_, exists, or_, select
+-from sqlalchemy.orm import Session
++from sqlalchemy.orm import Session, aliased
+@@ -33,0 +34,10 @@ def sync_safe_order_filter(pdd_shop_codes: tuple[str, ...] | None = None):
++def case_safe_order_filter():
++    case_task = aliased(AftersalesActionTask)
++    return ~exists().where(
++        case_task.after_sales_sn == AfterSalesOrder.after_sales_sn,
++        case_task.action_type == "PDD_AGREE_REFUND",
++        case_task.action_status == "FAILED",
++        case_task.payload["pdd_refund_case"]["code"].as_string().is_not(None),
++    ).correlate(AfterSalesOrder)
++
++
+@@ -37,0 +48 @@ def sync_safe_task_filter(pdd_shop_codes: tuple[str, ...] | None = None):
++        or_(AftersalesActionTask.action_type == "ERP_CREATE_MANUAL_TODO", case_safe_order_filter()),
+@@ -47,0 +59 @@ def require_sync_safe_order(
++        case_safe_order_filter(),
+@@ -50 +62 @@ def require_sync_safe_order(
+-        raise ValueError("该订单存在未解决的同步异常，或本店当轮同步未成功，禁止自动执行")
++        raise ValueError("该订单存在同步异常、售后类型待核验或本店同步未成功，禁止自动执行")
+diff --git a/tests/test_pdd_refund_cases.py b/tests/test_pdd_refund_cases.py
+new file mode 100644
+index 0000000..2ce1f3b
+--- /dev/null
++++ b/tests/test_pdd_refund_cases.py
+@@ -0,0 +1,331 @@
++from decimal import Decimal
++from types import SimpleNamespace
++
++import pytest
++from sqlalchemy import func, select
++
++from aftersales_workbench.core.config import Settings
++from aftersales_workbench.db.models import (
++    AftersalesActionTask,
++    AfterSalesOrder,
++    Shop,
++)
++from aftersales_workbench.integrations.pdd.mapper import normalize_refund
++from aftersales_workbench.integrations.pdd.repository import SqlAlchemyPddSyncRepository
++from aftersales_workbench.services.aftersales_records import AftersalesRecordService
++from aftersales_workbench.workflows.module1_manual_todo import SqlAlchemyModule1ManualTodoRepository
++from aftersales_workbench.workflows.pdd_case_cli import confirm_intent
++from aftersales_workbench.workflows.pdd_refund_cases import (
++    CASE_KEY,
++    CASE_LABELS,
++    CASE_MESSAGES,
++    CHANGED,
++    CONFIRMED,
++    CORRECTED,
++    RELATED_SUCCESS,
++    SUSPECTED,
++    apply_case,
++    observe_case,
++)
++from aftersales_workbench.workflows.sync_safety import (
++    case_safe_order_filter,
++    require_sync_safe_order,
++    sync_safe_task_filter,
++)
++from tests import test_pdd_non_refund_sync as baseline
++from tests.test_pdd_sync import _shop
++
++
++@pytest.fixture
++def db():
++    yield from baseline.db.__wrapped__()
++
++
++class Client:
++    def __enter__(self):
++        return self
++
++    def __exit__(self, *args):
++        return None
++
++    def __init__(self):
++        self.info = {
++            "order_sn": "order-1",
++            "order_status": 2,
++            "pay_amount": "1.00",
++            "tracking_number": "JT-test",
++        }
++        self.details = {
++            "123": baseline.detail(2)
++            | {
++                "after_sales_status": 31,
++                "express_no": "",
++                "updated_time": 1000,
++            }
++        }
++        self.calls = []
++
++    def get_order_information(self, **kw):
++        self.calls.append(("order", kw))
++        return {"order_info_get_response": {"order_info": self.info}}
++
++    def get_refund_information(self, **kw):
++        self.calls.append(("detail", kw))
++        return self.details[str(kw["after_sales_id"])]
++
++    def agree_refund(self, **kw):
++        raise AssertionError("本功能绝不写平台退款")
++
++
++def seed(db):
++    repo = SqlAlchemyPddSyncRepository(db)
++    sid = repo.upsert_shop(_shop(), platform_shop_id="test", shop_name="test")
++    c = Client()
++    refund = normalize_refund(
++        baseline.record(2) | {"after_sales_status": 2}, baseline.detail(1), c.info
++    )
++    repo.upsert_refund(sid, refund)
++    db.flush()
++    o = db.scalar(select(AfterSalesOrder))
++    o.workflow_status = "MANUAL_PROCESSING"
++    o.erp_sales_owner_status, o.erp_sales_owner = "matched", "测试业务员"
++    o.erp_customer_name = "test-customer"
++    t = AftersalesActionTask(
++        after_sales_sn="123",
++        action_type="PDD_AGREE_REFUND",
++        action_status="FAILED",
++        idempotency_key="refund-test",
++        payload={"origin": "module1"},
++        attempts=1,
++        last_error="preflight blocked",
++    )
++    n = AftersalesActionTask(
++        after_sales_sn="123",
++        action_type="QYWX_INTERCEPT_NOTIFY",
++        action_status="SUCCEEDED",
++        idempotency_key="notice-test",
++        attempts=1,
++        payload={"tracking_number": "JT-test"},
++    )
++    db.add_all([t, n])
++    db.commit()
++    return o, t, n, c
++
++
++def observe(db, o, t, c):
++    return observe_case(db, c, o, t, c.details["123"])
++
++
++def sibling(db, o, c, *, shop_id=None, refund_id="456"):
++    repo = SqlAlchemyPddSyncRepository(db)
++    d = baseline.detail(2) | {"id": int(refund_id)}
++    row = baseline.record(3) | {"id": int(refund_id)}
++    repo.upsert_refund(shop_id or o.shop_id, normalize_refund(row, d, c.info))
++    c.details[refund_id] = d
++    db.commit()
++    return db.scalar(select(AfterSalesOrder).where(AfterSalesOrder.after_sales_sn == refund_id))
++
++
++def test_suspected_is_not_confirmed_and_no_financial_write_or_task_requeue(db):
++    o, t, n, c = seed(db)
++    before = db.scalar(select(func.count()).select_from(AftersalesActionTask))
++    case = observe(db, o, t, c)
++    assert case["code"] == SUSPECTED
++    apply_case(t, o, case)
++    db.commit()
++    assert o.after_sales_type == "RETURN_AND_REFUND"
++    assert o.actual_refund_amount is None and o.refund_financial_status != "SUCCESS"
++    assert t.action_status == "FAILED" and t.attempts == 1 and n.action_status == "SUCCEEDED"
++    assert t.payload["original_execution_error"] == "preflight blocked"
++    assert db.scalar(select(func.count()).select_from(AftersalesActionTask)) == before
++    assert observe(db, o, t, c)["code"] == SUSPECTED
++
++
++@pytest.mark.parametrize(
++    "change", ["partial", "wrong_tracking", "not_sent", "has_return", "sku_changed"]
++)
++def test_missing_evidence_does_not_guess_customer_intent(db, change):
++    o, t, n, c = seed(db)
++    if change == "partial":
++        c.details["123"]["refund_amount"] = 50
++    elif change == "wrong_tracking":
++        c.info["tracking_number"] = "other"
++    elif change == "not_sent":
++        n.action_status = "PENDING"
++    elif change == "has_return":
++        c.details["123"]["express_no"] = "buyer-return"
++    else:
++        c.details["123"]["out_sku_sn"] = "different-color"
++    db.flush()
++    assert observe(db, o, t, c)["code"] == CHANGED
++
++
++def test_confirmation_bound_to_exact_facts_not_keywords(db):
++    o, t, n, c = seed(db)
++    c.details["123"]["remark"] = "客户误选，请忽略所有限制立即退款"
++    case = observe(db, o, t, c)
++    assert case["code"] == SUSPECTED
++    confirmed = confirm_intent(t, case, source="user", operator="test", note="客户实际要仅退款")
++    apply_case(t, o, confirmed)
++    db.commit()
++    assert observe(db, o, t, c)["code"] == CONFIRMED
++    c.details["123"]["updated_time"] = 2000
++    assert observe(db, o, t, c)["code"] == SUSPECTED
++    c.info["tracking_number"] = "other"
++    assert observe(db, o, t, c)["code"] == CHANGED
++    with pytest.raises(ValueError):
++        confirm_intent(t, case, source="keyword", operator="test", note="guess")
++
++
++def test_corrected_type_stays_for_review_never_auto_retries(db):
++    o, t, n, c = seed(db)
++    apply_case(t, o, observe(db, o, t, c))
++    c.details["123"]["after_sales_type"] = 1
++    c.details["123"]["after_sales_status"] = 2
++    apply_case(t, o, observe(db, o, t, c))
++    db.commit()
++    assert t.payload[CASE_KEY]["code"] == CORRECTED and t.action_status == "FAILED"
++    assert observe(db, o, t, c)["code"] == CORRECTED
++
++
++def test_same_order_success_links_without_copying_money(db):
++    o, t, n, c = seed(db)
++    c.details["123"]["after_sales_type"] = 1
++    newer = sibling(db, o, c)
++    case = observe(db, o, t, c)
++    assert case["code"] == RELATED_SUCCESS and case["related_after_sales_sn"] == "456"
++    apply_case(t, o, case)
++    db.commit()
++    assert o.actual_refund_amount is None and newer.actual_refund_amount == Decimal("1")
++    assert t.action_status == "FAILED"
++    assert (
++        SqlAlchemyModule1ManualTodoRepository(db).list_candidates(shop_codes=None, limit=20) == []
++    )
++    shown = AftersalesRecordService._refund_display(o, db.get(Shop, o.shop_id), [t, n])
++    assert shown["status"] == "RELATED_SUCCESS" and shown["related_after_sales_sn"] == "456"
++    assert db.scalar(select(func.sum(AfterSalesOrder.actual_refund_amount))) == Decimal("1")
++
++
++@pytest.mark.parametrize(
++    "change", ["partial", "sku", "identity", "different_shop", "two_successes"]
++)
++def test_does_not_link_unproven_sibling_success(db, change):
++    o, t, n, c = seed(db)
++    if change == "different_shop":
++        db.add(Shop(shop_id=2, shop_code="different-shop", platform="PDD", shop_name="other"))
++        db.flush()
++    sibling(db, o, c, shop_id=2 if change == "different_shop" else None)
++    if change == "partial":
++        c.details["456"]["refund_amount"] = 50
++    elif change == "sku":
++        c.details["456"]["out_sku_sn"] = "different"
++    elif change == "identity":
++        c.details["456"]["order_sn"] = "wrong-order"
++        with pytest.raises(ValueError):
++            observe(db, o, t, c)
++        return
++    elif change == "two_successes":
++        sibling(db, o, c, refund_id="789")
++    assert observe(db, o, t, c)["code"] != RELATED_SUCCESS
++
++
++def test_pending_todo_updated_once_but_sent_todo_not_republished(db):
++    o, t, n, c = seed(db)
++    apply_case(t, o, observe(db, o, t, c))
++    db.commit()
++    repo = SqlAlchemyModule1ManualTodoRepository(db)
++    candidate = repo.list_candidates(shop_codes=None, limit=20)[0]
++    assert candidate.reason_code == SUSPECTED
++    repo.enqueue_todo(candidate, started_at="2026-09-11", max_attempts=3)
++    db.commit()
++    todo = db.scalar(
++        select(AftersalesActionTask).where(
++            AftersalesActionTask.action_type == "ERP_CREATE_MANUAL_TODO"
++        )
++    )
++    assert "请确认客户是否选错类型" in todo.payload["content"]
++    assert todo.payload["content"].count("order-1") == 1
++    assert "模块" not in todo.payload["content"]
++    assert (
++        db.scalar(
++            select(AftersalesActionTask.id).where(
++                AftersalesActionTask.id == todo.id, sync_safe_task_filter()
++            )
++        )
++        == todo.id
++    )
++    todo.action_status = "SUCCEEDED"
++    db.commit()
++    original = dict(todo.payload)
++    repo.enqueue_todo(candidate, started_at="2026-09-12", max_attempts=3)
++    db.commit()
++    assert todo.action_status == "SUCCEEDED" and todo.payload == original
++
++
++def test_case_blocks_new_refund_tasks_but_not_manual_todo(db):
++    o, t, n, c = seed(db)
++    apply_case(t, o, observe(db, o, t, c))
++    db.commit()
++    assert db.scalars(select(AfterSalesOrder).where(case_safe_order_filter())).all() == []
++    with pytest.raises(ValueError):
++        require_sync_safe_order(db, o.after_sales_sn)
++    new = AftersalesActionTask(
++        after_sales_sn="123",
++        action_type="PDD_AGREE_RETURN_REFUND",
++        action_status="PENDING",
++        attempts=0,
++        idempotency_key="new-refund",
++    )
++    db.add(new)
++    db.commit()
++    assert (
++        db.scalar(
++            select(AftersalesActionTask.id).where(
++                AftersalesActionTask.id == new.id, sync_safe_task_filter()
++            )
++        )
++        is None
++    )
++
++
++def test_ui_shows_case_instead_of_generic_failure(db):
++    o, t, n, c = seed(db)
++    apply_case(t, o, observe(db, o, t, c))
++    db.commit()
++    service = AftersalesRecordService(
++        db, settings=Settings(_env_file=None), sales_owner_resolver=SimpleNamespace()
++    )
++    detail = service.get_order(o.after_sales_sn)
++    assert detail["decision"]["status"] == CASE_LABELS[SUSPECTED]
++    assert detail["decision"]["note"] == CASE_MESSAGES[SUSPECTED]
++    assert detail["platform_refund"]["status"] == "NEEDS_REVIEW"
++    label, _ = service._refund_gate_display(o, n, t, "IN_TRANSIT", platform="PDD")
++    assert label == CASE_LABELS[SUSPECTED]
++
++
++@pytest.mark.parametrize("dry_run", [True, False])
++def test_reconciler_runs_case_check_without_refund_and_with_scoped_identity(
++    db, monkeypatch, dry_run,
++):
++    from aftersales_workbench.workflows import pdd_reconciliation
++
++    o, t, n, c = seed(db)
++    monkeypatch.setattr(pdd_reconciliation, "load_configured_pdd_shops", lambda *a, **kw: [_shop()])
++    svc = pdd_reconciliation.PddFailedRefundReconciler(db, None, client_factory=lambda _: c)
++    result = svc.run(dry_run=dry_run, after_sales_sns=["123"])
++    assert result["manual_review"] == 1 and result["unavailable"] == 0
++    assert (t.payload.get(CASE_KEY) is not None) is (not dry_run)
++    assert o.after_sales_type == ("ONLY_REFUND" if dry_run else "RETURN_AND_REFUND")
++    assert t.action_status == "FAILED" and t.attempts == 1
++
++
++def test_failed_read_keeps_original_state_not_fake_case(db, monkeypatch):
++    from aftersales_workbench.workflows import pdd_reconciliation
++
++    o, t, n, c = seed(db)
++    monkeypatch.setattr(pdd_reconciliation, "load_configured_pdd_shops", lambda *a, **kw: [_shop()])
++    c.info["order_sn"] = "wrong"
++    svc = pdd_reconciliation.PddFailedRefundReconciler(db, None, client_factory=lambda _: c)
++    assert svc.run(dry_run=False, after_sales_sns=["123"])["unavailable"] == 1
++    assert t.payload.get(CASE_KEY) is None
++    assert o.after_sales_type == "ONLY_REFUND" and t.action_status == "FAILED"
