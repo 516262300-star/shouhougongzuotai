@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import quote, urlencode
 
@@ -191,13 +191,72 @@ def _forward_logistics(order: dict[str, Any]) -> tuple[str | None, str | None]:
     )
 
 
+def _zero_money_kind(detail: dict[str, Any]) -> AfterSalesType | None:
+    """只识别已取得完整标记的非资金流程；0元本身不证明换货或补寄。"""
+    ext = detail.get("extInfo")
+    if not isinstance(ext, dict) or detail.get("onlyRefund") is not False:
+        return None
+    if (
+        str(detail.get("disputeRequest")) == "3"
+        and detail.get("refundGoods") is True
+        and detail.get("newRefundReturn") is True
+        and ext.get("refundFlowType") == "zero_money"
+        and ext.get("workflowName") == "cbu_return_and_refund"
+        and str(ext.get("b_replace_flag")) == "1"
+    ):
+        # 保留平台的退货类型，不能凭内部replace标记改写为普通换货。
+        kind = AfterSalesType.RETURN_AND_REFUND
+    elif (
+        str(detail.get("disputeRequest")) == "10"
+        and detail.get("refundGoods") is False
+        and detail.get("newRefundReturn") is False
+        and ext.get("workflowName") == "cbu_reshipping"
+        and ext.get("serviceType") == "_damaged_reshipping"
+    ):
+        kind = AfterSalesType.RESEND
+    else:
+        return None
+    for field in ("applyPayment", "applyCarriage", "refundPayment", "refundCarriage"):
+        try:
+            value = Decimal(str(detail.get(field)))
+        except InvalidOperation as exc:
+            raise ValueError("1688非资金售后的金额字段缺失或非法") from exc
+        if not value.is_finite() or value != 0:
+            raise ValueError("1688非资金售后标记与金额冲突，保留待核验")
+    return kind
+
+
 def normalize_1688_refund(
     detail: dict[str, Any],
     order: dict[str, Any],
 ) -> NormalizedMarketplaceRefund:
     refund_id = required_text(detail.get("refundId"), field="refundId")
     order_id = required_text(detail.get("orderId"), field="orderId")
+    zero_money_kind = _zero_money_kind(detail)
     entry_counts = detail.get("orderEntryCountMap")
+    if zero_money_kind is not None:
+        base = order.get("baseInfo")
+        if (
+            not isinstance(base, dict)
+            or str(base.get("idOfStr") or base.get("id")) != order_id
+            or not isinstance(entry_counts, dict) or not entry_counts
+        ):
+            raise ValueError("1688非资金售后缺少唯一原订单或明确商品数量")
+        products = order.get("productItems")
+        if not isinstance(products, list):
+            raise ValueError("1688非资金售后商品列表不完整")
+        ids = [str(item.get("subItemID") or item.get("subItemIDString") or "")
+               for item in products if isinstance(item, dict)]
+        if len(ids) != len(products) or "" in ids or len(ids) != len(set(ids)):
+            raise ValueError("1688非资金售后商品身份不唯一")
+        for entry_id, quantity in entry_counts.items():
+            try:
+                number = Decimal(str(quantity))
+            except InvalidOperation as exc:
+                raise ValueError("1688非资金售后数量无效") from exc
+            if (str(entry_id) not in ids or not number.is_finite()
+                    or number <= 0 or number != number.to_integral_value()):
+                raise ValueError("1688非资金售后商品关联或数量不完整")
     if not isinstance(entry_counts, dict) or not entry_counts:
         entry_counts = {order_id: 1}
     product_items = {
@@ -228,7 +287,7 @@ def normalize_1688_refund(
     refund_amount = (apply_payment or Decimal("0")) + (
         apply_carriage or Decimal("0")
     )
-    if refund_amount <= 0:
+    if refund_amount <= 0 and zero_money_kind is None:
         raise ValueError(f"1688 售后 {refund_id} 缺少有效退款金额")
     base = order.get("baseInfo") if isinstance(order.get("baseInfo"), dict) else {}
     goods_amount = sum(
@@ -242,7 +301,7 @@ def normalize_1688_refund(
     return NormalizedMarketplaceRefund(
         after_sales_sn=refund_id,
         platform_order_sn=order_id,
-        after_sales_type=(
+        after_sales_type=zero_money_kind or (
             AfterSalesType.RETURN_AND_REFUND
             if refund_goods
             else AfterSalesType.ONLY_REFUND
