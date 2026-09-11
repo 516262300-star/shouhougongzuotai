@@ -1,5 +1,6 @@
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import select
@@ -210,3 +211,46 @@ def test_order_created_only_then_explicit_uncollected_can_progress(db, sample):
 def test_out_of_order_timestamps_cannot_use_old_uncollected(db, sample):
     run_gate(db, [event(), event(time=NOW.isoformat())])
     assert baseline.task(db) is None
+
+
+@pytest.mark.parametrize("shipped,now,allowed", [
+    ("2026-09-10T22:00:00+08:00", "2026-09-11T10:00:00+08:00", False),
+    ("2026-09-10T23:59:59+08:00", "2026-09-11T00:00:00+08:00", False),
+    ("2026-09-10T23:59:59+08:00", "2026-09-10T23:59:59+08:00", True),
+    ("2026-09-11T00:00:00+08:00", "2026-09-11T10:00:00+08:00", True),
+    ("2026-09-11T10:00:01+08:00", "2026-09-11T10:00:00+08:00", False),
+])
+def test_auto_shipping_requires_shanghai_calendar_date(shipped, now, allowed):
+    from aftersales_workbench.workflows.auto_uncollected import validate_auto_shipping
+    at = datetime.fromisoformat(now).astimezone(ZoneInfo("America/New_York"))
+    info = {"shipping_time": shipped, "logistics_id": 384}
+    evidence = {"checked_at": at.isoformat(), "snapshot": {"carrier_code": "384"}}
+    if allowed:
+        validate_auto_shipping(info, evidence, now=at)
+    else:
+        with pytest.raises(ValueError, match="北京时间当天"):
+            validate_auto_shipping(info, evidence, now=at)
+
+
+@pytest.mark.parametrize("hour,minute,second,allowed", [
+    (8, 59, 59, False), (9, 0, 0, True), (20, 59, 59, True), (21, 0, 0, False),
+])
+def test_auto_execution_cannot_expand_fixed_shanghai_hours(
+    db, sample, hour, minute, second, allowed,
+):
+    order, _ = sample
+    run_gate(db)
+    task = claim(db)
+    at = datetime(2026, 9, 10, hour, minute, second, tzinfo=ZoneInfo("Asia/Shanghai"))
+    evidence = dict(task.payload[EVIDENCE_KEY])
+    evidence["checked_at"] = at.isoformat()
+    evidence["event_at"] = (at - timedelta(minutes=1)).isoformat()
+    task.payload = {**task.payload, EVIDENCE_KEY: evidence}
+    order.logistics_checked_at = at.astimezone(UTC).replace(tzinfo=None)
+    db.commit()
+    # settings()故意配置全天，仍不得扩大固定北京时间9到21点的边界。
+    if allowed:
+        require_auto_execution(db, order, task.id, settings(), now=at)
+    else:
+        with pytest.raises(ValueError, match="工作时间"):
+            require_auto_execution(db, order, task.id, settings(), now=at)

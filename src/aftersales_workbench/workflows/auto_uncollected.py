@@ -1,6 +1,7 @@
 """使用物流接口的明确待揽收状态自动取证，不依赖人工确认或空轨迹推断。"""
 
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 
@@ -23,6 +24,7 @@ from aftersales_workbench.workflows.uncollected_refund import (
 )
 
 EVIDENCE_KEY = "auto_uncollected_evidence"
+SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
 def _require_order_and_notice(session, order):
@@ -109,6 +111,7 @@ def require_auto_execution(session, order, task_id: int, settings, *, now=None) 
         or not timedelta(0) <= now - event_at <= timedelta(hours=24)
         or order.logistics_checked_at is None
         or utc(order.logistics_checked_at).replace(microsecond=0) != checked.replace(microsecond=0)
+        or not 9 <= now.astimezone(SHANGHAI).hour < 21
         or not build_refund_business_hours(settings).is_open(now)
     ):
         raise ValueError("自动待揽收复查已过期或不在客服工作时间")
@@ -121,8 +124,9 @@ def require_auto_execution(session, order, task_id: int, settings, *, now=None) 
 def validate_auto_shipping(info: dict, evidence: dict, *, now: datetime) -> None:
     shipped = parse_shipping_time(info.get("shipping_time"))
     if (
-        not timedelta(0) <= utc(now) - shipped <= timedelta(hours=24)
+        shipped > utc(now)
+        or shipped.astimezone(SHANGHAI).date() != utc(now).astimezone(SHANGHAI).date()
         or shipped > parse_confirmed_at(evidence["checked_at"])
         or str(info.get("logistics_id")) != evidence["snapshot"]["carrier_code"]
     ):
-        raise ValueError("平台不是24小时内已发货订单或快递公司已变更")
+        raise ValueError("平台不是北京时间当天已发货订单、发货时间晚于证据或快递公司已变更")

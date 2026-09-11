@@ -26,6 +26,15 @@ from tests.test_pdd_sync import _shop
 NOW = int(datetime(2026, 9, 10, tzinfo=UTC).timestamp())
 
 
+@pytest.fixture(autouse=True)
+def fixed_history_clock(monkeypatch):
+    # 服务的now与历史仓库的utcnow必须同源，避免隔天运行时用例自动到期。
+    monkeypatch.setattr(
+        "aftersales_workbench.integrations.pdd.history.utcnow",
+        lambda: datetime.fromtimestamp(NOW, UTC).replace(tzinfo=None),
+    )
+
+
 @pytest.fixture
 def db():
     yield from baseline.db.__wrapped__()
@@ -211,3 +220,12 @@ def test_rechecking_history_after_365_days_does_not_make_dismissal_permanent(db)
     assert is_history(row)
     assert not repo.is_issue_dismissed(sid, "123")
     assert row.next_retry_at - row.dismissed_at == timedelta(hours=24)
+
+
+@pytest.mark.parametrize("offset,expected_due", [(-1, False), (0, True), (1, True)])
+def test_history_daily_due_boundary_uses_consistent_clock(db, monkeypatch, offset, expected_due):
+    repo, sid, svc, client = setup(db)
+    save(svc, sid, client)
+    at = datetime.fromtimestamp(NOW, UTC).replace(tzinfo=None) + timedelta(days=1, seconds=offset)
+    monkeypatch.setattr("aftersales_workbench.integrations.pdd.history.utcnow", lambda: at)
+    assert repo.due_issues(sid) == ([("123", "order-1")] if expected_due else [])
