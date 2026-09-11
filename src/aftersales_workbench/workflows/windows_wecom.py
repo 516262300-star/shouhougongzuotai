@@ -504,7 +504,7 @@ class WindowsWeComGateway:
             error = "企业微信前台已切换到其他窗口，已停止输入和发送"
             if ambiguous:
                 raise DesktopAmbiguousSendError(error)
-            raise DesktopBeforePasteError(error)
+            raise DesktopForegroundUnavailableError(error)
 
     def _require_wecom_foreground(self, *, ambiguous: bool = False) -> tuple[int, int]:
         hwnd = int(self.user32.GetForegroundWindow())
@@ -515,7 +515,7 @@ class WindowsWeComGateway:
             error = f"企业微信已离开前台，当前前台进程为 {process_name or '<unknown>'}"
             if ambiguous:
                 raise _ReceiptForegroundLost(error)
-            raise DesktopBeforePasteError(error)
+            raise DesktopForegroundUnavailableError(error)
         return hwnd, int(process_id.value)
 
     def _process_path(self, process_id: int) -> str:

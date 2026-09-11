@@ -22,6 +22,7 @@ MESSAGE = '【售后快递拦截】\n发货运单号：JT12345678\n处理要求�
 def scene(*, bubble=True, draft=False, mark=False, incoming=False):
     image = Image.new('RGB', (1400, 857), (246, 247, 251))
     draw = ImageDraw.Draw(image)
+    draw.rectangle((365, 34, 565, 52), fill='black')
     draw.rectangle((360, 624, 1200, 837), fill='white')
     if bubble:
         draw.rectangle((714, 394, 1199, 484), fill=(225, 228, 232) if incoming
@@ -88,6 +89,46 @@ def test_normalization_never_fuzzes_identifiers_or_chinese_words():
     assert message_key('请退回') != message_key('请退货')
     assert group_key('测试·快递群') == group_key(GROUP)
     assert group_key('测试二-快递群') != group_key(GROUP)
+
+
+@pytest.mark.parametrize('size,offset,scale', [
+    ((1400, 857), 0, 1), ((1127, 743), 0, 1),
+    ((1168, 784), 21, 1), ((1127, 743), 0, 2),
+])
+def test_title_crops_complete_first_line_independent_of_window_size(size, offset, scale):
+    image = Image.new('RGB', size, (246, 247, 251))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((360 + offset, 34 + offset, 560 + offset, 52 + offset), fill='black')
+    # 描述行不能混入标题。
+    draw.rectangle((360 + offset, 62 + offset, 860 + offset, 73 + offset), fill=(100, 100, 100))
+    image = image.resize((size[0] * scale, size[1] * scale))
+    title = WeComReceiptReader._title_image(image, (362 + offset) * scale, (923 + offset) * scale)
+    assert title is not None
+    content = title.point(lambda v: 255 if v < 130 else 0).getbbox()
+    assert content[3] - content[1] == 19
+    assert abs((content[2] - content[0]) - 201) <= 2
+    assert content[0] >= 8 and content[1] >= 8
+
+
+def test_title_missing_or_cut_at_header_edge_is_rejected():
+    image = Image.new('RGB', (1127, 743), 'white')
+    assert WeComReceiptReader._title_image(image, 362, 923) is None
+    ImageDraw.Draw(image).rectangle((360, 3, 560, 25), fill='black')
+    assert WeComReceiptReader._title_image(image, 362, 923) is None
+
+
+def test_title_never_tries_description_after_wrong_first_line():
+    image = scene()
+    ImageDraw.Draw(image).rectangle((365, 62, 800, 73), fill='black')
+    calls = []
+
+    class Ocr(FakeOcr):
+        def read_title(self, image):
+            calls.append(image)
+            return '其他群' if len(calls) == 1 else GROUP
+
+    assert not WeComReceiptReader(Ocr()).inspect(image, GROUP, MESSAGE).group_matches
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize('always_clear', [True, False])

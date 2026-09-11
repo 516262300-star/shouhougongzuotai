@@ -134,6 +134,30 @@ def test_activation_timeout_is_explicitly_retryable(monkeypatch):
     assert 2 <= now[0] < 3
 
 
+@pytest.mark.parametrize('ambiguous', [False, True])
+def test_same_process_window_change_only_retries_before_input(monkeypatch, ambiguous):
+    gateway = object.__new__(windows.WindowsWeComGateway)
+    gateway._target_hwnd = 11
+    monkeypatch.setattr(gateway, '_require_wecom_foreground', lambda **kwargs: (12, 101))
+    error = (sender.DesktopAmbiguousSendError if ambiguous
+             else sender.DesktopForegroundUnavailableError)
+    with pytest.raises(error):
+        gateway._require_target_foreground(ambiguous=ambiguous)
+
+
+@pytest.mark.parametrize('ambiguous', [False, True])
+def test_other_app_focus_only_retries_before_input(monkeypatch, ambiguous):
+    gateway = object.__new__(windows.WindowsWeComGateway)
+    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 12,
+                                    GetWindowThreadProcessId=lambda *args: None)
+    gateway.process_name = 'wxwork.exe'
+    monkeypatch.setattr(gateway, '_process_path', lambda pid: 'other.exe')
+    error = (sender.DesktopAmbiguousSendError if ambiguous
+             else sender.DesktopForegroundUnavailableError)
+    with pytest.raises(error):
+        gateway._require_wecom_foreground(ambiguous=ambiguous)
+
+
 @pytest.mark.parametrize('due', [False, True])
 def test_worker_retries_due_activation_failure_before_preview(tmp_path, monkeypatch, due):
     from aftersales_workbench.workflows import module1_worker as worker

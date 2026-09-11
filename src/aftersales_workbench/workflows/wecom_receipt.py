@@ -113,10 +113,39 @@ class WeComReceiptReader:
     def __init__(self, ocr=None) -> None:
         self.ocr = ocr or _local_ocr()
 
+    @staticmethod
+    def _title_image(image: Image, left: int, right: int) -> Image | None:
+        from PIL import ImageOps
+
+        w, h = image.size
+        # 窗口边框、大小改变时标题不会按窗口高度等比移动。只在聊天顶部
+        # 找第一行完整深色文字，不扫描描述、历史消息或侧栏来凑目标群名。
+        header = image.crop((max(0, left - round(w * .007)), int(h * .015),
+                             right - int(w * .05), int(h * .12)))
+        dark = header.convert("L").point(lambda v: 255 if v < 130 else 0)
+        rows = [y for y in range(dark.height)
+                if dark.crop((0, y, dark.width, y + 1)).getbbox()]
+        lines = [(a, b) for a, b in _runs(rows, max_gap=1) if b - a >= 5]
+        if not lines:
+            return None
+        top, bottom = lines[0]
+        if top == 0 or bottom == header.height:
+            return None  # 截断行不可作为完整群名证据。
+        box = dark.crop((0, top, dark.width, bottom)).getbbox()
+        if box[0] == 0 or box[2] == header.width:
+            return None
+        title = header.crop((box[0], top, box[2], bottom)).convert("L")
+        if title.height > 24:
+            title = title.resize((round(title.width * 19 / title.height), 19))
+        # 原生字形裁剪后补干净留白，避免大块背景和重复缩放导致 OCR 漏字。
+        return ImageOps.expand(title.point(lambda v: 255 if v > 180 else v),
+                               border=8, fill=255)
+
     def inspect(self, image: Image, group: str, message: str) -> ReceiptObservation:
         from PIL import ImageChops
 
         rgb = image.convert("RGB")
+        original = rgb
         w, h = rgb.size
         if w < 800 or h < 550:
             raise ValueError("企微窗口过小，无法核验消息")
@@ -153,9 +182,10 @@ class WeComReceiptReader:
         # 空框可能有一条闪烁插入光标；任何更宽的深色内容都不是空框。
         empty = bbox is None or bbox[2] - bbox[0] <= max(2, int(w / 700))
         draft_matches = not empty and message_key(self.ocr.read(draft)) == message_key(message)
-        title = rgb.crop((left, int(h * .023), right - int(w * .05), int(h * .071)))
+        title = self._title_image(original, round(left * original.width / w),
+                                  round(right * original.width / w))
         read_title = getattr(self.ocr, "read_title", self.ocr.read)
-        title_matches = group_key(read_title(title)) == group_key(group)
+        title_matches = title is not None and group_key(read_title(title)) == group_key(group)
 
         # 蓝色、自右侧对齐的完整气泡才算本账号消息；左侧复述/机器人回复不算。
         red, green, blue = rgb.split()
