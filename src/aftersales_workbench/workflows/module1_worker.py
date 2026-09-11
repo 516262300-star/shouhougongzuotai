@@ -280,6 +280,10 @@ class Module1WorkerCycleResult:
                     "blocked",
                     "unavailable",
                     "skipped_recent",
+                    "tmall_scanned",
+                    "tmall_ready",
+                    "tmall_applied",
+                    "tmall_blocked",
                 ),
             ),
             "module3_exception_todos": self._stage_counts(
@@ -685,6 +689,7 @@ class Module1WorkerRuntime:
                     dry_run=False,
                     refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
                 )
+                tmall_counts = {}
                 if self.settings.tmall_module3_erp_refund_enabled:
                     from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
 
@@ -696,9 +701,12 @@ class Module1WorkerRuntime:
                     for field in ("scanned", "ready", "already_completed", "not_required",
                                   "applied", "not_found", "blocked", "unavailable"):
                         setattr(run, field, getattr(run, field) + getattr(tmall_run, field))
+                    tmall_counts = {f'tmall_{key}': getattr(tmall_run, key)
+                                    for key in ('scanned', 'ready', 'applied', 'blocked')}
         finally:
             client.close()
         details = run.safe_dict()
+        details.update(tmall_counts)
         if run.unavailable:
             return WorkerStageResult(
                 status="failed",

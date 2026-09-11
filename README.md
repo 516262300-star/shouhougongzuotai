@@ -102,6 +102,8 @@ alembic downgrade -1
 | `MODULE2_ERP_INTAKE_MIN_ORDER_ID` | ERP退货单自动接入水位，只处理不小于该本地售后订单 ID 的记录 | `0` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |
+| `TMALL_MODULE3_ERP_REFUND_ENABLED` | 天猫前五店独立未发货ERP补单执行；[开启及回退说明](docs/tmall-module3-enabled-20260911.md)，不等于平台退款权限 | `false` |
+| `TMALL_MODULE3_ERP_READ_MODE` | 天猫ERP只读核验来源；默认复用现有管理列表和详情，不需要新服务器接口 | `existing_admin` |
 | `MODULE3_WORKER_BATCH_LIMIT` | 模块 3 每周期最多新建及处理的订单数；首次上线保持 1 | `1` |
 | `MODULE3_ERP_REFUND_RECHECK_SECONDS` | 同一未闭环 ERP 异常的最短复查间隔 | `1800` |
 | `QYWX_INTERCEPT_WEBHOOK_URL` | 模块 1 快递拦截群机器人 Webhook（密钥） | 无 |

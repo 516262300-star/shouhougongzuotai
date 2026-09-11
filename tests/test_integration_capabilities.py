@@ -171,6 +171,27 @@ def test_tmall_limited_rollout_keeps_other_gates_and_module3_closed() -> None:
     assert capabilities()["module2"]["state"] == "disabled"
 
 
+def test_tmall_module3_enablement_does_not_imply_platform_refund_permission():
+    from pydantic import SecretStr
+
+    settings = _settings()
+    settings.tmall_module3_erp_refund_enabled = True
+    settings.erp_web_lookup_enabled = True
+    settings.erp_web_username = SecretStr('synthetic')
+    settings.erp_web_password = SecretStr('synthetic')
+    settings.tmall_shop_6_session_key = SecretStr('synthetic-sixth')
+    result = build_integration_capabilities(settings, [])
+    shops = next(p for p in result['platforms'] if p['platform'] == 'TMALL')['shops']
+    shops = {s['shop_code']: s['capabilities'] for s in shops}
+    assert shops['tmall-shop-02']['module3']['label'] == '有限开启·未发货平账'
+    assert shops['tmall-shop-02']['refund_permission']['state'] != 'enabled'
+    assert shops['tmall-shop-06']['module3']['state'] == 'disabled'
+    settings.module3_erp_refund_execution_enabled = False
+    result = build_integration_capabilities(settings, [])
+    shops = next(p for p in result['platforms'] if p['platform'] == 'TMALL')['shops']
+    assert all(s['capabilities']['module3']['state'] != 'enabled' for s in shops)
+
+
 def test_tmall_return_accounting_is_readonly_and_not_a_refund_permission_claim():
     from pydantic import SecretStr
 

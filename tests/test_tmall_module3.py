@@ -137,6 +137,12 @@ def case(db):
 
     erp._get.side_effect = get
     erp._get_response.side_effect = response
+    def money_get(path, *, params, follow_redirects):
+        assert follow_redirects is False
+        erp._get_response(path, params=params)
+        return Mock()
+
+    erp._client.get.side_effect = money_get
     erp._load_customer_profile.side_effect = profile
     service = TmallModule3Service(db, erp, cfg, platform_client_factory=lambda _: platform)
     return SimpleNamespace(**locals())
@@ -180,6 +186,17 @@ def test_unknown_unconfirmed_cannot_write_again(case):
     case.state["completed"] = False
     result = case.service.run(dry_run=False, platform_order_sn=OID)
     assert result.blocked == 1 and case.state["writes"] == 1
+
+
+def test_money_request_never_follows_redirect_or_retries(case):
+    case.erp._client.get.side_effect = httpx.ReadTimeout('synthetic unknown')
+    result = case.service.run(dry_run=False)
+    assert result.unavailable == 1
+    assert case.erp._client.get.call_count == 1
+    assert case.erp._client.get.call_args.kwargs['follow_redirects'] is False
+    assert case.db.scalar(select(MoneyOperation)).state == 'UNKNOWN'
+    case.service.run(dry_run=False, platform_order_sn=OID)
+    assert case.erp._client.get.call_count == 1
 
 
 @pytest.mark.parametrize("change", [
@@ -326,6 +343,8 @@ def test_worker_dispatches_separate_tmall_service_only_when_enabled(case, monkey
                   if isinstance(cls, type) and hasattr(cls, "_process_module3_erp_refunds"))
     result = method(runtime)
     assert result.details["scanned"] == 3 and factory.call_count == 1
+    assert result.details['tmall_scanned'] == 2
+    assert result.details['tmall_blocked'] == 2
     case.cfg.tmall_module3_erp_refund_enabled = False
     method(runtime)
     assert factory.call_count == 1

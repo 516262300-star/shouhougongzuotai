@@ -214,10 +214,13 @@ class TmallModule3Service(Module3ErpRefundService):
             return lookup, False
         if lookup.status != Status.READY:
             raise ValueError("天猫模块3不满足补单条件")
-        self.client._get_response(
+        self.client._ensure_logged_in()
+        response = self.client._client.get(
             f"/leedis2/public/1688api/deleteprodlist/{lookup.record_id}",
             params={"actionid": "1"},
-        )  # 旧客户端对该写入口不重试，响应正文不是成功证据。
+            follow_redirects=False,
+        )  # 单次发送，不跟随重定向；响应正文不是成功证据。
+        response.raise_for_status()
         verified, _ = self.inspect(task, order)
         if verified.status != Status.COMPLETED:
             raise ValueError("ERP补单请求已发出，尚未核实退款流水与零余额；禁止重发")

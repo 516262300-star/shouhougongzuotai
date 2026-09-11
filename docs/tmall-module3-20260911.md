@@ -1,6 +1,6 @@
 # 天猫模块3：未发货退款的ERP核账和单次补单
 
-后续纠正：现有ERP的 `/admin/refunds/{id}` 只读详情页已经提供原始 `Detail`，不必新建服务器接口。已增加 `existing_admin` 适配并设为新代码的默认读取方式，详见[现有ERP复用说明](tmall-module3-existing-erp-20260911.md)。下文为最初 `dedicated` 方案的历史部署说明；专用接口404不再是现有页面方案的阻碍。生产补单开关仍关闭，不将代码完成当作真实闭环验收。
+后续纠正：现有ERP的 `/admin/refunds/{id}` 只读详情页已经提供原始 `Detail`，不必新建服务器接口。已增加 `existing_admin` 适配并设为新代码的默认读取方式，详见[现有ERP复用说明](tmall-module3-existing-erp-20260911.md)。下文为最初 `dedicated` 方案的历史部署说明；专用接口404不再是现有页面方案的阻碍。当前开关和限定范围以[用户授权开启记录](tmall-module3-enabled-20260911.md)为准，不把开启功能当作真实闭环验收。
 
 ## 实际进度
 

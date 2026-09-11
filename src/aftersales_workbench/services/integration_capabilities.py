@@ -352,7 +352,7 @@ def _shop_capabilities(
                 (sync_enabled, "售后同步未开启"),
                 (tmall_modules_enabled, "天猫模块接入开关未开启"),
                 (configured.shop_number in range(1, 6), "该店暂未纳入天猫ERP补单范围"),
-                (settings.tmall_module3_erp_refund_enabled, "天猫模块3已适配，尚未验收启用"),
+                (settings.tmall_module3_erp_refund_enabled, "天猫模块3专用执行开关关闭"),
                 (settings.module3_worker_enabled, "模块3后台运行未开启"),
                 (settings.module3_erp_refund_execution_enabled, "模块3ERP补单总开关未开启"),
                 (settings.erp_web_lookup_enabled, "ERP只读核验未配置"),
@@ -361,6 +361,8 @@ def _shop_capabilities(
             ),
             "仅独立未发货、单子单全额退款；原收款和SKU核对后单次ERP补单，回查平账",
         )
+        if module3['state'] == 'enabled':
+            module3['label'] = '有限开启·未发货平账'
     return {
         "sync": sync,
         "attribution": attribution,
