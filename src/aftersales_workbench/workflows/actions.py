@@ -1229,14 +1229,49 @@ class ExternalActionExecutor:
         ))
         if order is None:
             raise WorkflowTransitionError("天猫关联售后不存在")
+        if not self.settings.tmall_single_parcel_refund_enabled:
+            raise WorkflowTransitionError("天猫单包裹恢复候选尚未启用，自动退款保持关闭")
         self._require_final_refund_gate(order, task, Platform.TMALL)
-        # 当前ERP关联适配器只支持PDD；未完成跨店整包裹适配前不能猜测天猫无冲突。
-        if task.payload.get("origin") in {"module1", "module2"}:
-            raise WorkflowTransitionError("天猫整包裹核验尚未适配，自动退款保持关闭，须人工核验")
+        # 仅恢复有完整独立原销售依据的单子单单包裹；复杂合包仍转人工。
+        from aftersales_workbench.workflows.tmall_single_parcel import TmallSingleParcelVerifier
+
+        origin = task.payload.get("origin")
+        if origin == "module1" and task.payload.get("refund_gate") not in {
+            "IN_TRANSIT", "RETURNING", "RETURNED",
+        }:
+            raise WorkflowTransitionError("天猫无轨迹/未揽收特殊退款策略尚未适配，须人工核验")
+        require_sync_safe_order(self.session, order.after_sales_sn)
         verified = verify_tmall_refund(client, order, origin=task.payload.get("origin"))
         if verified.get("status") == "SUCCESS":
             record_money_reconciled(self.session, order, "PLATFORM_REFUND")
             return {"already_refunded": True}
+        evidence = TmallSingleParcelVerifier(self.session, self.settings).inspect(order, client)
+        if origin == "module2":
+            from aftersales_workbench.workflows.module2_safety import require_erp_receipt
+
+            require_erp_receipt(self.session, self.settings, order, task)
+        # 查询期间的任何变化均阻断；资金前留存本次核验，不复用旧人工批准范围。
+        self.session.refresh(order, with_for_update=True)
+        from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
+
+        if evidence["snapshot"] != refund_snapshot(order):
+            raise WorkflowTransitionError("天猫核验期间订单改变，禁止退款")
+        from datetime import timedelta
+
+        if not timedelta(0) <= (
+            datetime.now(UTC) - datetime.fromisoformat(evidence["started_at"])
+        ) <= timedelta(seconds=80):
+            raise WorkflowTransitionError("天猫包裹核验证据已过期，禁止退款")
+        current_task = self.session.get(AftersalesActionTask, task.id, with_for_update=True)
+        if current_task is None or current_task.action_status != AutomationTaskStatus.RUNNING:
+            raise WorkflowTransitionError("天猫核验期间退款任务执行权改变")
+        current_task.payload = {**(current_task.payload or {}), "tmall_parcel_check": evidence}
+        self.session.commit()
+        verified = verify_tmall_refund(client, order, origin=origin)
+        if verified.get("status") == "SUCCESS":
+            record_money_reconciled(self.session, order, "PLATFORM_REFUND")
+            return {"already_refunded": True}
+        require_sync_safe_order(self.session, order.after_sales_sn)
         self._require_final_refund_gate(order, task, Platform.TMALL)
         verified_task = replace(
             task, payload={**task.payload, "platform_verified_refund": verified}

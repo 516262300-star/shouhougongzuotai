@@ -24,6 +24,12 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
     MAX_PAGES = 20
     HEADERS = {"编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只"}
 
+    def __init__(self, *, platform="PDD", **kwargs):
+        if platform not in {"PDD", "TMALL"}:
+            raise ValueError("未适配的平台原销售关联")
+        super().__init__(**kwargs)
+        self.platform = platform
+
     def read(self, order_sn: str) -> CustomerSales:
         payload = self._get_response(
             "/leedis2/public/customer/GetCustomerName", params={"keyword": order_sn}
@@ -83,8 +89,9 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                 if not row["编号"].startswith("RC-") or row["型号"] in {"税点", "运费"}:
                     continue
                 sn = row["客户编号"].strip()
-                if not re.fullmatch(r"\d{6}-\d{15}", sn):
-                    raise ValueError("原销售缺少可确认的拼多多订单号或含其他平台，不能跳过")
+                pattern = r"\d{6}-\d{15}" if self.platform == "PDD" else r"\d{15,22}"
+                if not re.fullmatch(pattern, sn):
+                    raise ValueError("原销售订单号格式不符或含其他平台，不能跳过")
                 quantity = Decimal(row["入库化只"])
                 if not quantity.is_finite() or quantity <= 0 or not row["订单编号"].isdigit():
                     raise ValueError("ERP 原销售关联或数量无效")
@@ -111,10 +118,11 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
         return CustomerSales(customer_id, name, owner, tuple(all_rows), expected_pages)
 
 
-def build_package_source(settings):
+def build_package_source(settings, *, platform="PDD"):
     if not settings.erp_web_username or not settings.erp_web_password:
         raise ValueError("同包裹核验缺少 ERP 只读凭据")
     return ErpPackageOrderSource(
+        platform=platform,
         base_url=settings.erp_web_base_url,
         username=settings.erp_web_username.get_secret_value(),
         password=settings.erp_web_password.get_secret_value(),
