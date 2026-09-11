@@ -421,6 +421,10 @@ class ErpWebReturnMatcher:
             source_location="customer_profile",
         )
 
+    def inspect_post_refund_bill(self, order, expected):
+        from aftersales_workbench.workflows.module2_post_refund import inspect_pdd_bill
+        return inspect_pdd_bill(self, order, expected)
+
     def verify_closure(self, order, lookup, *, expected_items=None):
         from aftersales_workbench.integrations.erp.closure import verify_closure
         from aftersales_workbench.integrations.erp.unshipped_refund import (

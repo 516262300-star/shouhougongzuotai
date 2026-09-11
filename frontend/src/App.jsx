@@ -1125,7 +1125,7 @@ const MONITOR_DETAIL_LABELS = {
 };
 
 const monitorTone = (status) => ({ healthy: "success", completed: "success", warning: "warning", starting: "info", skipped: "neutral", disabled: "neutral", stopped: "danger", failed: "danger", missing: "neutral" }[status] ?? "neutral");
-const monitorStageStatus = (status) => ({ completed: "正常", skipped: "跳过", failed: "失败", missing: "暂无周期" }[status] ?? status);
+const monitorStageStatus = (status) => ({ completed: "正常", acknowledged: "人工跟进", warning: "提醒", skipped: "跳过", failed: "失败", missing: "暂无周期" }[status] ?? status);
 const formatAge = (seconds) => {
   if (seconds === null || seconds === undefined) return "暂无记录";
   if (seconds < 60) return `${seconds} 秒前`;

@@ -209,6 +209,34 @@ class Module2ErpIntakeService:
         if not lookup.return_order_sn or not lookup.rows:
             result.unavailable += 1
             return "ERP 退货单缺少单号或明细，禁止生成验货通过记录"
+        if lookup.status is not ErpReturnMatchStatus.ITEM_MISMATCH and self._platform_refunded(
+            order
+        ):
+            # 退款已是平台事实，不能再用“退款前质检”制造失败；核账与质检分开。
+            from aftersales_workbench.workflows.module2_post_refund import (
+                VERIFIED_NOTE,
+                save_evidence,
+                verify_post_refund,
+            )
+
+            if platform != Platform.PDD:
+                message, evidence = "平台已退款，退货明细匹配；对应退款流水待人工核验", None
+            else:
+                message, evidence = verify_post_refund(
+                    order, lookup, self.matcher, self._expected_items(order)
+                )
+            if evidence:
+                result.post_refund_verified += 1
+            if not dry_run:
+                if evidence:
+                    save_evidence(evidence)
+                order.workflow_status = (
+                    WorkflowStatus.RETURN_RECEIVED_STAGED
+                    if lookup.source_location == "staging"
+                    else WorkflowStatus.RETURN_RECEIVED_ASSIGNED
+                )
+                order.exception_type = message or VERIFIED_NOTE
+            return message
         if lookup.status is not ErpReturnMatchStatus.ITEM_MISMATCH:
             # ERP数量匹配只证明收货明细，当前适配器没有质量证据。
             result.unavailable += 1
@@ -547,7 +575,9 @@ class Module2ExceptionTodoService:
             "received_items_summary": received,
         }
         return prepare_manual_todo(
-            payload, platform_order_sn=order.platform_order_sn, after_sales_sn=order.after_sales_sn,
+            payload,
+            platform_order_sn=order.platform_order_sn,
+            after_sales_sn=order.after_sales_sn,
         )
 
     def run(

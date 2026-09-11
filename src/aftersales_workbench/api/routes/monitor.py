@@ -1,6 +1,8 @@
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
@@ -31,7 +33,7 @@ def get_issue_service(session: Annotated[Session, Depends(get_db_session)]) -> R
 @router.get("/issues")
 def runtime_issues(
     service: Annotated[RuntimeIssueService, Depends(get_issue_service)],
-    state: Literal["OPEN", "RESOLVED", "STOPPED", "ALL"] = "OPEN",
+    state: Literal["OPEN", "RESOLVED", "STOPPED", "ACKNOWLEDGED", "ALL"] = "OPEN",
     category: Literal["ERP", "NOTICE", "REFUND", "LOGISTICS", "SYNC", "TODO", "OTHER"]
     | None = None,
     platform: Literal["PDD", "TMALL", "TAOBAO", "1688", "JD", "DOUYIN"] | None = None,
@@ -62,6 +64,44 @@ def runtime_issues(
         ) from exc
 
 
+class IssueAcknowledgement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=200)
+    expected_revision: str = Field(pattern="^[a-f0-9]{64}$")
+    reason: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/issues/acknowledge")
+def acknowledge_issue(
+    update: IssueAcknowledgement,
+    request: Request,
+    service: Annotated[RuntimeIssueService, Depends(get_issue_service)],
+) -> dict:
+    loopback = {"127.0.0.1", "localhost", "::1"}
+    try:
+        origin = urlsplit(request.headers.get("origin", ""))
+    except ValueError as exc:
+        raise HTTPException(403, "无效的页面来源") from exc
+    if (
+        not request.client
+        or request.client.host not in loopback
+        or request.url.hostname not in loopback
+        or request.headers.get("X-Workbench-Action") != "acknowledge-sync-issue"
+        or origin.scheme != request.url.scheme
+        or origin.netloc != request.url.netloc
+        or origin.path
+        or origin.query
+        or origin.fragment
+    ):
+        raise HTTPException(403, "请在本机工作台页面操作异常转人工跟进")
+    try:
+        return service.acknowledge(update.key, update.expected_revision, update.reason)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(503, "保存结果未确认，请刷新核实；不要连续提交") from exc
+
+
 def get_monitor_service(
     session: Annotated[Session, Depends(get_db_session)],
 ) -> RuntimeMonitorService:
@@ -83,8 +123,31 @@ def get_capability_service(
 @router.get("/status")
 def runtime_status(
     service: Annotated[RuntimeMonitorService, Depends(get_monitor_service)],
+    issues: Annotated[RuntimeIssueService, Depends(get_issue_service)],
 ) -> dict[str, Any]:
-    return service.get_status()
+    result = service.get_status()
+    for module in result.get("modules", []):
+        for stage in module.get("stages", []):
+            if (
+                stage.get("id") not in {"sync", "tmall_sync", "marketplace_sync"}
+                or stage.get("status") != "warning"
+            ):
+                continue
+            try:
+                snapshot = issues.list_issues(state="ALL", stage_id=stage["id"])
+                focus = snapshot.get("focus") or {}
+                if (
+                    snapshot["counts"].get("ACKNOWLEDGED", 0)
+                    and not snapshot["counts"]["OPEN"]
+                    and not focus.get("unlocated_count")
+                    and focus.get("issue_keys")
+                ):
+                    stage["source_error"] = stage.get("error")
+                    stage["error"] = "已知悉，转人工跟进；异常单继续隔离重查，其他订单正常同步"
+                    stage["status"] = "acknowledged"
+            except Exception:
+                pass  # 明细读取失败时保留原告警，绝不按零异常处理。
+    return result
 
 
 @router.get("/capabilities")

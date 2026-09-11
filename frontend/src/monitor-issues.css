@@ -45,6 +45,11 @@
 .issues-empty { padding: 34px; text-align: center; color: #607086; }
 .issues-footer, .issues-footer > div { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 14px; font-size: 14px; }
 .issues-note { margin-top: 16px; }
+.issue-state-acknowledged { color: #245891; background: #edf5ff; }
+.monitor-issues form.issue-help { display: block; padding: 16px; border: 1px solid #aac9ed; margin: 12px 0; border-radius: 8px; }
+.monitor-issues form.issue-help label { display: grid; gap: 8px; margin: 12px 0; font-size: 14px; }
+.monitor-issues form.issue-help input { width: 100%; box-sizing: border-box; padding: 10px; }
+.monitor-issues form.issue-help button { margin-right: 10px; }
 .monitor-issues button:focus-visible, .monitor-issues input:focus-visible, .monitor-issues select:focus-visible { outline: 3px solid #79b3ff; outline-offset: 2px; }
 @media (max-width: 1000px) { .issue-help { grid-template-columns: 1fr; gap: 12px; } .issues-heading { flex-direction: column; } }
 @media (max-width: 600px) { .monitor-issues { padding: 14px; } .issues-filters label { flex: 1 1 150px; } .issues-search { min-width: 100% !important; } }

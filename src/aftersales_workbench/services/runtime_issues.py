@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import sqlite3
@@ -327,7 +328,14 @@ class RuntimeIssueCollector:
                 observation(
                     f"poll:{progress.scope}:{progress.reference}",
                     category,
-                    progress.last_error or "该项查询/核验不再报错；不代表售后闭环",
+                    progress.last_error
+                    or (
+                        order.exception_type
+                        if order
+                        and progress.scope == "module2_erp"
+                        and (order.exception_type or "").startswith("退款后核账已核实：")
+                        else "该项查询/核验不再报错；不代表售后闭环"
+                    ),
                     active=bool(progress.last_error) and not normal_wait,
                     recovered=bool(
                         progress.checked_at and (not progress.last_error or normal_wait)
@@ -414,6 +422,46 @@ class RuntimeIssueService:
         self.collector, self.journal_path = collector, journal_path
         self.refresh_seconds = refresh_seconds
 
+    @staticmethod
+    def revision(item):
+        fields = ("key", "state", "reason", "shop_id", "after_sales_sn", "platform_order_sn")
+        return hashlib.sha256(
+            json.dumps([item.get(k) for k in fields], ensure_ascii=False).encode()
+        ).hexdigest()
+
+    def acknowledge(self, key, expected_revision, reason):
+        reason = safe_text(reason.strip())
+        if not reason or len(reason) > 500:
+            raise ValueError("请填写不超过500字的人工跟进说明")
+        # 强制重新观察，防止旧页面隐藏已变化的故障；不修改同步隔离与资金状态。
+        service = RuntimeIssueService(self.collector, self.journal_path, refresh_seconds=0)
+        service.list_issues()
+        with sqlite3.connect(self.journal_path, timeout=10) as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT payload FROM incidents WHERE key=?", (key,)).fetchone()
+            item = json.loads(row[0]) if row else None
+            if not item or item.get("revision") != expected_revision:
+                raise ValueError("异常状态已变化，请刷新后重新确认")
+            if not item.get("can_acknowledge") or item["state"] != "OPEN":
+                raise ValueError("仅支持单笔同步异常转人工跟进；不能隐藏资金结果未知或店铺故障")
+            now = datetime.now(UTC).isoformat()
+            item.update(
+                state="ACKNOWLEDGED",
+                acknowledged_at=now,
+                acknowledgement_reason=reason,
+                acknowledged_source_revision=expected_revision,
+                resolved_at=None,
+                can_acknowledge=False,
+            )
+            item["events"].append({"at": now, "state": "ACKNOWLEDGED", "reason": reason})
+            item["revision"] = self.revision(item)
+            db.execute(
+                "UPDATE incidents SET payload=? WHERE key=?",
+                (json.dumps(item, ensure_ascii=False), key),
+            )
+            db.commit()
+        return item
+
     def list_issues(
         self,
         *,
@@ -452,12 +500,31 @@ class RuntimeIssueService:
                 observations = self.collector.collect()
                 # 必须完整读到所有来源才记录观察，不在失败/分页缺席时假装已解决。
                 for current in observations:
+                    current = dict(current)
                     key = current["key"]
                     previous = saved.get(key)
                     if current["state"] is None or (not previous and current["state"] != "OPEN"):
                         continue
                     first = previous["first_seen_at"] if previous else now
                     events = list(previous.get("events", [])) if previous else []
+                    source_revision = self.revision(current)
+                    if (
+                        previous
+                        and previous["state"] == "ACKNOWLEDGED"
+                        and current["state"] == "OPEN"
+                        and previous.get("acknowledged_source_revision") == source_revision
+                    ):
+                        current.update(
+                            state="ACKNOWLEDGED",
+                            **{
+                                k: previous[k]
+                                for k in (
+                                    "acknowledged_at",
+                                    "acknowledgement_reason",
+                                    "acknowledged_source_revision",
+                                )
+                            },
+                        )
                     if not previous or (previous["state"], previous["reason"]) != (
                         current["state"],
                         current["reason"],
@@ -471,13 +538,21 @@ class RuntimeIssueService:
                         "observed_at": now,
                         "events": events,
                         "resolved_at": None
-                        if current["state"] == "OPEN"
+                        if current["state"] in {"OPEN", "ACKNOWLEDGED"}
                         else (
                             previous.get("resolved_at")
                             if previous and previous["state"] == current["state"]
                             else now
                         ),
                     }
+                    item["revision"] = self.revision(item)
+                    item["can_acknowledge"] = bool(
+                        item["state"] == "OPEN"
+                        and key.startswith("sync:")
+                        and item.get("platform_order_sn")
+                        and item.get("after_sales_sn")
+                        and item.get("shop_id")
+                    )
                     saved[key] = item
                     db.execute(
                         "INSERT INTO incidents(key,payload) VALUES(?,?) "
@@ -497,16 +572,25 @@ class RuntimeIssueService:
         focus = None
         if stage_id:
             focus = select_focus(
-                observations, getattr(self.collector, "latest_cycle", {}),
-                stage_id, cycle_finished_at,
+                observations,
+                getattr(self.collector, "latest_cycle", {}),
+                stage_id,
+                cycle_finished_at,
             )
             focus["stage_error"] = safe_text(
                 (getattr(self.collector, "latest_cycle", {}).get(stage_id) or {}).get("error")
             )
             keys = set(focus["issue_keys"])
             all_items = [item for item in all_items if item["key"] in keys]
+            acknowledged = sum(item["state"] == "ACKNOWLEDGED" for item in all_items)
+            focus["acknowledged_count"] = acknowledged
+            if acknowledged:
+                focus["message"] += (
+                    f" 其中 {acknowledged} 项已知悉，见‘人工跟进’；后台仍会重查，不代表成功。"
+                )
         counts = {
-            s: sum(i["state"] == s for i in all_items) for s in ("OPEN", "RESOLVED", "STOPPED")
+            s: sum(i["state"] == s for i in all_items)
+            for s in ("OPEN", "RESOLVED", "STOPPED", "ACKNOWLEDGED")
         }
         category_counts = {
             c: sum(i["state"] == "OPEN" and i["category"] == c for i in all_items)

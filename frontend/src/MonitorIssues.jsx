@@ -3,7 +3,7 @@ import { ArrowsClockwise, CaretDown, CaretUp, WarningCircle } from "@phosphor-ic
 import "./monitor-issues.css";
 import { issuesRequestParams, loadIssuesSnapshot } from "./monitor-issues-response.mjs";
 
-const labels = { OPEN: "未解决", RESOLVED: "已恢复", STOPPED: "已停止（非成功）", ALL: "全部历史" };
+const labels = { OPEN: "未解决", ACKNOWLEDGED: "人工跟进", RESOLVED: "已恢复", STOPPED: "已停止（非成功）", ALL: "全部历史" };
 const platforms = { PDD: "拼多多", TMALL: "天猫", TAOBAO: "淘宝", "1688": "1688", JD: "京东", DOUYIN: "抖音" };
 const initial = { state: "OPEN", category: "", platform: "", shop_id: "", keyword: "" };
 const time = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" }) : "—";
@@ -17,6 +17,24 @@ export function MonitorIssues({ onOpenOrder, focus = null, onClearFocus }) {
   const [loading, setLoading] = useState(true);
   const [refresh, setRefresh] = useState(0);
   const [expanded, setExpanded] = useState(null);
+  const [ackItem, setAckItem] = useState(null);
+  const [ackReason, setAckReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const acknowledge = async (event) => {
+    event.preventDefault();
+    if (saving) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/v1/monitor/issues/acknowledge", {
+        method: "POST", headers: { "Content-Type": "application/json", "X-Workbench-Action": "acknowledge-sync-issue" },
+        body: JSON.stringify({ key: ackItem.key, expected_revision: ackItem.revision, reason: ackReason.trim() }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || "保存未确认，请刷新核实");
+      setAckItem(null); setAckReason(""); setRefresh((v) => v + 1);
+    } catch (e) { setError(e.message); }
+    finally { setSaving(false); }
+  };
 
   useEffect(() => {
     const controller = new AbortController();
@@ -71,9 +89,14 @@ export function MonitorIssues({ onOpenOrder, focus = null, onClearFocus }) {
       <button type="button" className="button secondary" onClick={() => { setFilters(initial); setDraft(""); setPage(1); setExpanded(null); }}>重置</button>
     </form></>}
     {error && <div className="issues-error" role="alert"><WarningCircle size={18} /><span>{error} {data ? "下方为上次成功读取的结果，不能当作最新状态。" : "未能读取，不代表没有异常。"}</span></div>}
+    {ackItem && <form className="issue-help" onSubmit={acknowledge}>
+      <div><h3>已知悉，转人工跟进 · {ackItem.platform_order_sn}</h3><p>仅移出未解决告警，保留后台同步重查和异常隔离；不退款、不补单、不发送 ERP 待办。原因变化会重新告警，真正同步恢复后自动转为已恢复。</p>
+      <label>人工跟进说明<input required maxLength={500} value={ackReason} onChange={(e) => setAckReason(e.target.value)} placeholder="填写处理人或后续跟进安排" /></label>
+      <button className="button primary" disabled={saving || !ackReason.trim()}>确认转人工跟进</button><button type="button" className="button secondary" disabled={saving} onClick={() => setAckItem(null)}>取消</button></div>
+    </form>}
     <div className="issues-table-wrap" aria-busy={loading}>
       <table className="issues-table"><thead><tr><th>异常 / 状态</th><th>平台订单号 / 店铺</th><th>归属业务员</th><th>原因</th><th>最近核验</th><th>操作</th></tr></thead>
-        <tbody>{(data?.items || []).map((item) => <IssueRows key={item.key} item={item} expanded={expanded === item.key} onExpand={() => setExpanded(expanded === item.key ? null : item.key)} onOpenOrder={onOpenOrder} />)}</tbody>
+        <tbody>{(data?.items || []).map((item) => <IssueRows key={item.key} item={item} expanded={expanded === item.key} onExpand={() => setExpanded(expanded === item.key ? null : item.key)} onOpenOrder={onOpenOrder} onAcknowledge={() => { setAckItem(item); setAckReason(""); }} />)}</tbody>
       </table>
       {!data?.items?.length && <div className="issues-empty">{loading ? "正在读取异常明细…" : error ? "请恢复读取后再确认异常数量" : focus ? data?.focus?.message : "当前筛选下没有异常记录"}</div>}
     </div>
@@ -82,13 +105,13 @@ export function MonitorIssues({ onOpenOrder, focus = null, onClearFocus }) {
   </section>;
 }
 
-function IssueRows({ item, expanded, onExpand, onOpenOrder }) {
+function IssueRows({ item, expanded, onExpand, onOpenOrder, onAcknowledge }) {
   return <>
     <tr>
       <td><strong>{item.category_label}</strong><span className={`issue-state issue-state-${item.state.toLowerCase()}`}>{labels[item.state]}</span></td>
       <td><span className="issue-order-number">{item.platform_order_sn || "无对应平台订单"}</span><small>{platforms[item.platform] || "系统"} · {item.shop_name || "运行阶段"}</small></td>
       <td>{item.sales_owner || "—"}</td>
-      <td className="issue-reason">{item.reason}</td>
+      <td className="issue-reason">{item.reason}{item.acknowledgement_reason && <p>人工跟进：{item.acknowledgement_reason}</p>}{item.can_acknowledge && <button type="button" className="button secondary" onClick={onAcknowledge}>已知悉，转人工跟进</button>}</td>
       <td><time>{time(item.checked_at)}</time></td>
       <td><div className="issue-actions">{item.can_open_order ? <button type="button" className="button secondary" onClick={() => onOpenOrder(item)}>查看订单</button> : <small>{item.scope_label || "尚未同步到订单列表"}</small>}<button type="button" className="issue-expand" aria-expanded={expanded} onClick={onExpand}>{expanded ? "收起" : "如何处理"}{expanded ? <CaretUp size={14} /> : <CaretDown size={14} />}</button></div></td>
     </tr>

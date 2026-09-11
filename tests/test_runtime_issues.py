@@ -93,7 +93,7 @@ def test_cancel_is_not_success_and_read_failure_does_not_clear_history(tmp_path)
     assert journal(tmp_path, []).list_issues()["counts"]["OPEN"] == 1
     service = journal(tmp_path, [issue(stopped=True)])
     result = service.list_issues(state="STOPPED")
-    assert result["counts"] == {"OPEN": 0, "RESOLVED": 0, "STOPPED": 1}
+    assert result["counts"] == {"OPEN": 0, "RESOLVED": 0, "STOPPED": 1, "ACKNOWLEDGED": 0}
 
 
 def test_literal_search_shop_filters_pagination_and_no_duplicate_events(tmp_path):
@@ -319,6 +319,7 @@ def test_frontend_jump_clears_filters_and_has_no_money_write_controls():
     source = (root / "frontend/src/MonitorIssues.jsx").read_text(encoding="utf-8")
     app_source = (root / "frontend/src/App.jsx").read_text(encoding="utf-8")
     assert "onOpenOrder(item)" in source and "如何处理" in source
-    assert 'method: "POST"' not in source
+    assert '/issues/acknowledge' in source
+    assert '/agree-refund' not in source
     assert 'started_on: "", ended_on: ""' in app_source
     assert "setSelected(item.after_sales_sn)" in app_source

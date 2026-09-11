@@ -1,6 +1,6 @@
 const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const count = (value) => Number.isSafeInteger(value) && value >= 0;
-const states = ["OPEN", "RESOLVED", "STOPPED"];
+const states = ["OPEN", "RESOLVED", "STOPPED", "ACKNOWLEDGED"];
 
 export function issuesRequestParams(filters, page, focus) {
   const params = new URLSearchParams({ page: String(page), page_size: "15" });
@@ -17,7 +17,7 @@ export function issuesRequestParams(filters, page, focus) {
 export function validateIssuesResponse(value, expectedStageId) {
   const valid = object(value) && typeof value.checked_at === "string"
     && Number.isFinite(Date.parse(value.checked_at))
-    && object(value.counts) && states.every((key) => count(value.counts[key]))
+    && object(value.counts) && states.every((key) => count(value.counts[key] ?? (key === "ACKNOWLEDGED" ? 0 : undefined)))
     && object(value.category_counts)
     && Array.isArray(value.categories) && value.categories.every((c) => object(c)
       && typeof c.id === "string" && typeof c.label === "string" && count(value.category_counts[c.id]))

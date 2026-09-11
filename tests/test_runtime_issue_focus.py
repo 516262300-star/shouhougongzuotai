@@ -94,7 +94,8 @@ def test_focus_component_remounts_and_retains_no_write_actions():
     assert "stageId: stage.id" in source
     component = (root / "frontend/src/MonitorIssues.jsx").read_text(encoding="utf-8")
     assert "查看全部异常" in component and "expectedStageId: focus?.stageId" in component
-    assert 'method: "POST"' not in component
+    assert '/issues/acknowledge' in component
+    assert '/agree-refund' not in component
 
 
 def test_named_sender_block_only_links_that_task_not_other_send_failures():
