@@ -62,6 +62,8 @@ class Settings(BaseSettings):
         default=Decimal("0.01"), ge=Decimal("0"), le=Decimal("1")
     )
     module1_erp_refund_execution_enabled: bool = False
+    tmall_module1_return_claim_enabled: bool = False
+    erp_automation_account_dedicated: bool = False
     module3_erp_refund_execution_enabled: bool = False
     module3_worker_enabled: bool = False
     module3_worker_batch_limit: int = Field(default=1, ge=1, le=20)

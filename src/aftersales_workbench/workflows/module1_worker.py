@@ -1382,10 +1382,24 @@ class Module1WorkerRuntime:
                     limit=self.settings.erp_return_match_batch_size,
                     dry_run=False,
                 )
+                if self.settings.tmall_module1_return_claim_enabled:
+                    from aftersales_workbench.workflows.tmall_module1_return import (
+                        TmallModule1ReturnService,
+                    )
+
+                    tmall_return = TmallModule1ReturnService(
+                        session, refund_client, matcher, self.settings,
+                    ).run(limit=min(5, self.settings.erp_return_match_batch_size), dry_run=False)
+                    for field in ('scanned', 'ready', 'applied', 'already_completed', 'blocked'):
+                        setattr(run, field, getattr(run, field) + tmall_return[field])
+                else:
+                    tmall_return = None
         finally:
             refund_client.close()
             matcher.close()
         details = run.safe_dict()
+        if tmall_return is not None:
+            details['tmall_return'] = tmall_return
         if run.unavailable:
             return WorkerStageResult(
                 status="failed",

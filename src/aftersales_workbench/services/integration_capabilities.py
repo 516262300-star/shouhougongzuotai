@@ -332,6 +332,21 @@ def _shop_capabilities(
         )
         if module1_erp["state"] == "enabled":
             module1_erp.update(state="warning", label="核账已开·认领补单未接入")
+            if settings.tmall_module1_return_claim_enabled:
+                module1_erp = _requirements(
+                    (
+                        (configured.shop_number in range(1, 6), "该店暂未纳入ERP自动认领补单范围"),
+                        (settings.tmall_module123_trial_enabled, "天猫模块接入开关关闭"),
+                        (settings.erp_automation_account_dedicated, "尚未确认ERP账号专用于自动化"),
+                        (settings.module1_erp_refund_execution_enabled, "ERP补单总开关关闭"),
+                        (settings.erp_write_enabled, "ERP写总开关关闭"),
+                    ),
+                    "独立订单、单包裹、单行TH退货：原销售与实收核验后认领原暂存单，"
+                    "等待正式归属；缺退款单则单次补开并回查。多订单/多包裹、草稿冲突、"
+                    "价格或关联不符转人工；保存响应不代表平账完成",
+                )
+                if module1_erp['state'] == 'enabled':
+                    module1_erp['label'] = '有限开启·认领补单'
         module3 = _requirements(
             (
                 (sync_enabled, "售后同步未开启"),

@@ -69,7 +69,9 @@ switch ($Action) {
         Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
         $arguments = @('--forever', '--stop-file', '.runtime/module1-worker.stop')
         $previousPythonPath = $env:PYTHONPATH
+        $previousRuntimeRoot = $env:AFTERSALES_RUNTIME_ROOT
         try {
+            $env:AFTERSALES_RUNTIME_ROOT = $projectRoot
             if ($releaseSource) {
                 $env:PYTHONPATH = $releaseSource
                 $resolvedPackage = & (Join-Path $projectRoot '.venv/Scripts/python.exe') -c "import os, pathlib, aftersales_workbench; root=pathlib.Path(os.environ['PYTHONPATH']).resolve(); actual=pathlib.Path(aftersales_workbench.__file__).resolve(); assert actual.is_relative_to(root); print('release_import_ok')"
@@ -86,7 +88,10 @@ switch ($Action) {
                 -RedirectStandardError $stderrLog `
                 -PassThru
         }
-        finally { $env:PYTHONPATH = $previousPythonPath }
+        finally {
+            $env:PYTHONPATH = $previousPythonPath
+            $env:AFTERSALES_RUNTIME_ROOT = $previousRuntimeRoot
+        }
         Set-Content -LiteralPath $pidFile -Value $process.Id -Encoding ascii
         Start-Sleep -Seconds 1
         if ($process.HasExited) {

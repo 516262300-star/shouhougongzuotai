@@ -81,6 +81,25 @@ def _shop(platform: Platform, code: str, name: str) -> ShopSnapshot:
     )
 
 
+def test_tmall_claim_capability_requires_dedicated_account_and_keeps_refund_separate():
+    settings = _settings()
+    settings.erp_web_lookup_enabled = True
+    settings.erp_web_username = "synthetic-user"
+    settings.erp_web_password = "synthetic-password"
+    settings.tmall_module1_return_claim_enabled = True
+    settings.erp_automation_account_dedicated = True
+
+    def caps():
+        payload = build_integration_capabilities(settings, [])
+        platform = next(p for p in payload["platforms"] if p["platform"] == "TMALL")
+        return platform["shops"][1]["capabilities"]
+
+    assert caps()["module1_erp"]["label"] == "有限开启·认领补单"
+    assert caps()["refund_permission"]["state"] != "enabled"
+    settings.erp_automation_account_dedicated = False
+    assert caps()["module1_erp"]["state"] != "enabled"
+
+
 def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> None:
     payload = build_integration_capabilities(
         _settings(),
@@ -94,9 +113,7 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
     )
 
     platforms = {item["platform"]: item for item in payload["platforms"]}
-    tmall_shops = {
-        item["shop_code"]: item for item in platforms["TMALL"]["shops"]
-    }
+    tmall_shops = {item["shop_code"]: item for item in platforms["TMALL"]["shops"]}
 
     assert payload["summary"] == {
         "platform_count": 6,
@@ -133,9 +150,12 @@ def test_tmall_limited_rollout_keeps_other_gates_and_module3_closed() -> None:
 
     settings.erp_web_username = SecretStr("synthetic")
     settings.erp_web_password = SecretStr("synthetic")
+
     def capabilities():
         result = build_integration_capabilities(settings, [])
-        return next(p for p in result["platforms"] if p["platform"] == "TMALL")["shops"][0]["capabilities"]
+        return next(p for p in result["platforms"] if p["platform"] == "TMALL")["shops"][0][
+            "capabilities"
+        ]
 
     caps = capabilities()
     for key in ("module1", "module2"):
@@ -163,8 +183,11 @@ def test_tmall_return_accounting_is_readonly_and_not_a_refund_permission_claim()
     settings.module1_erp_refund_execution_enabled = False
 
     def tmall():
-        return next(p for p in build_integration_capabilities(settings, [])["platforms"]
-                    if p["platform"] == "TMALL")
+        return next(
+            p
+            for p in build_integration_capabilities(settings, [])["platforms"]
+            if p["platform"] == "TMALL"
+        )
 
     platform = tmall()
     assert platform["full_module_shop_count"] == 0

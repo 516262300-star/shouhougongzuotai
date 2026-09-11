@@ -94,6 +94,8 @@ alembic downgrade -1
 | `ERP_SCRAP_SYNC_REFRESH_SECONDS` | 模块 5 两次增量同步之间的最短间隔秒数 | `1800` |
 | `ERP_SCRAP_SYNC_LOOKBACK_DAYS` | 首次回填及循环历史复核天数 | `90` |
 | `MODULE1_ERP_REFUND_EXECUTION_ENABLED` | 模块 1 拦截退回补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
+| `TMALL_MODULE1_RETURN_CLAIM_ENABLED` | 天猫前五店独立退回单的原暂存认领、等待正式入账、ERP补单；[运行与恢复说明](docs/tmall-module1-return-claim.md) | `false` |
+| `ERP_AUTOMATION_ACCOUNT_DEDICATED` | 明确确认ERP账号仅用于自动化；并非草稿为空的替代证据 | `false` |
 | `MODULE2_WORKER_ENABLED` | 将模块 2 验货通过后的退款任务接入常驻后台周期 | `false` |
 | `MODULE2_PDD_REFUND_EXECUTION_ENABLED` | 模块 2 平台退款功能开关；还需 `PDD_WRITE_ENABLED=true` | `false` |
 | `MODULE2_REFUND_MIN_RETURN_ID` | 模块 2 自动退款上线水位，只处理不小于该收货记录 ID 的验货通过记录 | `0` |
