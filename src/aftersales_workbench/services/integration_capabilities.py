@@ -319,7 +319,19 @@ def _shop_capabilities(
                 module1 = limited
             else:
                 module2 = limited
-        module1_erp = _unsupported("逐单ERP资金闭环目前仅适配拼多多")
+        module1_erp = _requirements(
+            (
+                (sync_enabled, "天猫售后同步未开启"),
+                (settings.erp_return_match_sync_enabled, "ERP退回归属及流水核账未开启"),
+                (settings.erp_web_lookup_enabled, "ERP只读查询未开启"),
+                (bool(settings.erp_web_username and settings.erp_web_password), "ERP查询凭据缺失"),
+            ),
+            "持续核对退货在客户名下或暂存列表；平台退款成功、退货明细及对应ERP退款流水"
+            "和零应收核实后登记闭环。暂存单仍需人工认领；缺退款单时自动补单尚未接入，"
+            "不代表已开启全部ERP资金操作",
+        )
+        if module1_erp["state"] == "enabled":
+            module1_erp.update(state="warning", label="核账已开·认领补单未接入")
         module3 = _requirements(
             (
                 (sync_enabled, "售后同步未开启"),

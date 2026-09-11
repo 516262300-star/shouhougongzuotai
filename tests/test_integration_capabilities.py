@@ -142,12 +142,38 @@ def test_tmall_limited_rollout_keeps_other_gates_and_module3_closed() -> None:
         assert caps[key]["state"] == "enabled"
         assert caps[key]["label"] == "有限开启"
         assert "单包裹" in caps[key]["detail"]
-    assert caps["module1_erp"]["state"] == "unsupported"
+    assert caps["module1_erp"]["state"] == "warning"
+    assert "认领补单未接入" in caps["module1_erp"]["label"]
     assert caps["module3"]["state"] == "disabled"
     settings.module1_tmall_refund_execution_enabled = False
     assert capabilities()["module1"]["state"] == "disabled"
     settings.module2_worker_enabled = False
     assert capabilities()["module2"]["state"] == "disabled"
+
+
+def test_tmall_return_accounting_is_readonly_and_not_a_refund_permission_claim():
+    from pydantic import SecretStr
+
+    settings = _settings()
+    settings.erp_web_lookup_enabled = True
+    settings.erp_web_username = SecretStr("synthetic")
+    settings.erp_web_password = SecretStr("synthetic")
+    settings.tmall_write_enabled = False
+    settings.erp_write_enabled = False
+    settings.module1_erp_refund_execution_enabled = False
+
+    def tmall():
+        return next(p for p in build_integration_capabilities(settings, [])["platforms"]
+                    if p["platform"] == "TMALL")
+
+    platform = tmall()
+    assert platform["full_module_shop_count"] == 0
+    for shop in platform["shops"]:
+        assert shop["capabilities"]["refund_permission"]["state"] == "disabled"
+        assert shop["capabilities"]["module1_erp"]["state"] == "warning"
+        assert "暂存单仍需人工认领" in shop["capabilities"]["module1_erp"]["detail"]
+    settings.erp_return_match_sync_enabled = False
+    assert tmall()["shops"][0]["capabilities"]["module1_erp"]["state"] == "disabled"
 
 
 class FakeCapabilityService:
