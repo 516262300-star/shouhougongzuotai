@@ -10,6 +10,8 @@ from enum import StrEnum
 
 import httpx
 
+from aftersales_workbench.integrations.erp.outstanding import outstanding_records
+
 
 class ErpUnshippedRefundConfigurationError(ValueError):
     """ERP 未发货退款查询或执行缺少必要配置。"""
@@ -808,13 +810,7 @@ class ErpWebUnshippedRefundClient:
         document: str,
         erp_order_sn: str,
     ) -> tuple[ErpUnshippedItem, ...]:
-        headers = {"订单编号", "型号", "完整颜色", "欠货量"}
-        if not any(headers.issubset(set(row)) for row in _table_rows(document)):
-            raise ValueError("ERP欠货表结构不完整，不能视为无欠货")
-        records = _find_table_records(
-            document,
-            required_headers={"订单编号", "型号", "完整颜色", "欠货量"},
-        )
+        records = outstanding_records(document)
         result: list[ErpUnshippedItem] = []
         for record in records:
             if record.get("订单编号", "").strip() != erp_order_sn:
