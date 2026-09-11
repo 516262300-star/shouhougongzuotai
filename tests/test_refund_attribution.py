@@ -98,7 +98,7 @@ def test_aggregate_filters_reason_and_model_keyword() -> None:
     assert [item["model_code"] for item in payload["model_ranking"]] == ["6050"]
 
 
-def test_financial_summary_uses_success_time_and_keeps_application_amount() -> None:
+def test_financial_summary_groups_successful_refunds_by_application_cohort() -> None:
     payload = aggregate_attribution(
         [
             _fact(
@@ -164,15 +164,20 @@ def test_financial_summary_uses_success_time_and_keeps_application_amount() -> N
     )
 
     summary = payload["financial"]["summary"]
-    assert summary["actual_total"] == 15.0
-    assert summary["actual_only_refund"] == 15.0
+    assert summary["actual_total"] == 10.0
+    assert summary["actual_only_refund"] == 10.0
     assert summary["actual_return_refund"] == 0.0
     assert summary["application_total"] == 30.0
     assert summary["application_only_refund"] == 10.0
     assert summary["application_return_refund"] == 20.0
-    assert summary["successful_orders"] == 2
+    assert summary["successful_orders"] == 1
     assert summary["application_orders"] == 2
-    assert len(payload["financial"]["trend"]) == 2
+    trend = payload["financial"]["trend"]
+    assert len(trend) == 2
+    assert trend[0]["application_total"] == 10.0
+    assert trend[0]["actual_total"] == 10.0
+    assert trend[1]["application_total"] == 20.0
+    assert trend[1]["actual_total"] == 0.0
 
 
 def test_year_trend_always_has_twelve_months_and_month_comparison() -> None:

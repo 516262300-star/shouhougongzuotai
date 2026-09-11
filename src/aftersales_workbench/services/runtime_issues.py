@@ -137,6 +137,8 @@ class RuntimeIssueCollector:
 
         def identity(sn=None, shop_id=None, order_sn=None):
             order = orders.get(sn)
+            if order and shop_id is not None and order.shop_id != shop_id:
+                order = None  # 同号异店来源不能跳转到另一店的售后。
             shop = shops.get(order.shop_id if order else shop_id)
             return {
                 "after_sales_sn": sn,

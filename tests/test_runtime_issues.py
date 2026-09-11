@@ -217,6 +217,20 @@ def test_unknown_parcel_survives_deleted_or_succeeded_task(db, tmp_path):
     assert not orphan["can_open_order"]
 
 
+def test_sync_issue_same_after_sale_id_in_another_shop_cannot_open_wrong_order(db, tmp_path):
+    order, _ = sample_data.sample.__wrapped__(db)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    db.add(MarketplaceSyncIssue(
+        shop_id=2, after_sales_sn=order.after_sales_sn,
+        platform_order_sn="different-shop-order", last_error="identity collision",
+        attempts=1, checked_at=now, next_retry_at=now,
+    ))
+    db.commit()
+    row = next(r for r in collector(db, tmp_path).collect() if r["key"].startswith("sync:2:"))
+    assert row["shop_id"] == 2 and not row["can_open_order"]
+    assert row["platform_order_sn"] == "different-shop-order"
+
+
 def test_unknown_money_is_visible_independently_of_task(db, tmp_path):
     order, _ = sample_data.sample.__wrapped__(db)
     now = datetime.now(UTC).replace(tzinfo=None)

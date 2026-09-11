@@ -1,10 +1,10 @@
-from pathlib import Path
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
+from aftersales_workbench.core.runtime_paths import get_runtime_root
 from aftersales_workbench.db.session import get_db_session
 from aftersales_workbench.services.desktop_notice_recovery import (
     DesktopNoticeRecoveryService,
@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 def get_issue_service(session: Annotated[Session, Depends(get_db_session)]) -> RuntimeIssueService:
-    root = Path(__file__).resolve().parents[4]
+    root = get_runtime_root()
     return RuntimeIssueService(
         RuntimeIssueCollector(session, get_settings(), root),
         root / ".runtime" / "monitor-incidents.sqlite3",

@@ -7,6 +7,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings, get_settings
+from aftersales_workbench.core.runtime_paths import get_runtime_root
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AutomationActionType,
@@ -47,7 +48,7 @@ class DesktopNoticeRecoveryService:
     ) -> None:
         self.session = session
         self.settings = settings or get_settings()
-        self.project_root = project_root or Path(__file__).resolve().parents[3]
+        self.project_root = project_root or get_runtime_root()
 
     def retry_before_paste(self, task_id: int) -> DesktopNoticeRetryResult:
         if self.settings.module1_notification_transport != "desktop":

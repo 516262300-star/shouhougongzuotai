@@ -447,6 +447,26 @@ function Get-WorkbenchWebListenerProcess {
     return Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
 }
 
+function Get-WorkbenchWebReleaseSource {
+    $pointer = Join-Path $runtimeDir 'workbench-web-release.json'
+    if (-not (Test-Path -LiteralPath $pointer)) { return $null }
+    $release = Get-Content -LiteralPath $pointer -Raw -Encoding utf8 | ConvertFrom-Json
+    if (-not $release.source_path) { throw '网页版本缺少 source_path，禁止回退开发代码' }
+    $source = (Resolve-Path -LiteralPath (Join-Path $projectRoot $release.source_path)).Path
+    $allowed = [System.IO.Path]::GetFullPath((Join-Path $runtimeDir 'releases')) + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $source.StartsWith($allowed, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw '网页版本必须位于 .runtime/releases 内'
+    }
+    foreach ($file in @('aftersales_workbench/main.py', 'aftersales_workbench/core/runtime_paths.py')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $source $file) -PathType Leaf)) {
+            throw '网页版本缺少入口或运行路径支持，禁止回退开发代码'
+        }
+    }
+    $index = Join-Path (Split-Path $source -Parent) 'frontend/dist/client/index.html'
+    if (-not (Test-Path -LiteralPath $index -PathType Leaf)) { throw '网页版本缺少配套前端产物' }
+    return $source
+}
+
 function Start-WorkbenchWeb {
     param($Config)
     $endpoint = Get-WorkbenchWebEndpoint -Config $Config
@@ -467,7 +487,8 @@ function Start-WorkbenchWeb {
     if (-not (Test-Path -LiteralPath $webExe -PathType Leaf)) {
         throw "缺少工作台 Web 入口：$webExe"
     }
-    if (-not (Test-Path -LiteralPath $frontendIndex -PathType Leaf)) {
+    $releaseSource = Get-WorkbenchWebReleaseSource
+    if (-not $releaseSource -and -not (Test-Path -LiteralPath $frontendIndex -PathType Leaf)) {
         throw "缺少前端构建产物：$frontendIndex；请先在 frontend 目录执行 npm run build"
     }
     Remove-Item -LiteralPath $webPidFile -Force -ErrorAction SilentlyContinue
@@ -476,14 +497,29 @@ function Start-WorkbenchWeb {
         '--host', $endpoint.HostName,
         '--port', [string]$endpoint.Port
     )
-    $process = Start-Process `
-        -FilePath $webExe `
-        -ArgumentList $arguments `
-        -WorkingDirectory $projectRoot `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $webStdoutLog `
-        -RedirectStandardError $webStderrLog `
-        -PassThru
+    $previousPythonPath = $env:PYTHONPATH
+    $previousRuntimeRoot = $env:AFTERSALES_RUNTIME_ROOT
+    try {
+        $env:AFTERSALES_RUNTIME_ROOT = $projectRoot
+        if ($releaseSource) {
+            $env:PYTHONPATH = $releaseSource
+            $resolved = & (Join-Path $projectRoot '.venv/Scripts/python.exe') -c "import os,pathlib,aftersales_workbench; from aftersales_workbench.core.runtime_paths import get_runtime_root; assert pathlib.Path(aftersales_workbench.__file__).resolve().is_relative_to(pathlib.Path(os.environ['PYTHONPATH']).resolve()); get_runtime_root(); print('web_release_import_ok')"
+            if ($LASTEXITCODE -ne 0 -or $resolved -ne 'web_release_import_ok') { throw '网页版本导入验证失败，未启动' }
+            $arguments += @('--app-dir', "`"$releaseSource`"")
+        }
+        $process = Start-Process `
+            -FilePath $webExe `
+            -ArgumentList $arguments `
+            -WorkingDirectory $projectRoot `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $webStdoutLog `
+            -RedirectStandardError $webStderrLog `
+            -PassThru
+    }
+    finally {
+        $env:PYTHONPATH = $previousPythonPath
+        $env:AFTERSALES_RUNTIME_ROOT = $previousRuntimeRoot
+    }
     Write-AutostartLog "工作台 Web 未运行，已发出隐藏启动请求，启动器 PID=$($process.Id)"
     for ($attempt = 0; $attempt -lt 60; $attempt++) {
         Start-Sleep -Seconds 1

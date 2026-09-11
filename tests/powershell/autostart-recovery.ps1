@@ -25,7 +25,7 @@ $uuid = '11111111-2222-3333-4444-555555555555'
 foreach ($name in @('ibdata1', 'mysql.ibd')) {
     'fake fixture, not a database' | Set-Content -LiteralPath (Join-Path $dataSource $name)
 }
-@('[mysqld]', "datadir=$aliasPath") | Set-Content -LiteralPath $defaultsFile
+@('[mysqld]', "datadir=$aliasPath") | Set-Content -LiteralPath $defaultsFile -Encoding utf8
 $config = [pscustomobject]@{
     MySqlExe = 'C:/fake/mysqld.exe'; MySqlDefaultsFile = $defaultsFile
     MySqlHost = '127.0.0.1'; MySqlPort = 3306; WatchdogMinutes = 5
@@ -54,7 +54,7 @@ switch ($Case) {
     }
     'config_invalid_web_port' {
         $config | Add-Member -NotePropertyName WebPort -NotePropertyValue 70000
-        $config | ConvertTo-Json | Set-Content -LiteralPath $configFile
+        $config | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
         Assert-Throws { Read-AutostartConfiguration -Path $configFile }
     }
     'config_corrupt' {
@@ -71,7 +71,7 @@ switch ($Case) {
     }
     'identity_partial' {
         $config.MySqlServerUuid = $null
-        $config | ConvertTo-Json | Set-Content -LiteralPath $configFile
+        $config | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
         Assert-Throws { Read-AutostartConfiguration -Path $configFile }
     }
     'defaults_missing' {
@@ -112,7 +112,7 @@ switch ($Case) {
         Assert-Throws { Restore-MySqlDataDirectory -Config $config }
     }
     'datadir_changed' {
-        @('[mysqld]', "datadir=$(Join-Path $TestRoot 'different')") | Set-Content -LiteralPath $defaultsFile
+        @('[mysqld]', "datadir=$(Join-Path $TestRoot 'different')") | Set-Content -LiteralPath $defaultsFile -Encoding utf8
         Assert-Throws { Restore-MySqlDataDirectory -Config $config }
     }
     'legacy_missing' {

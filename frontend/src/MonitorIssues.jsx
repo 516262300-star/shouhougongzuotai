@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowsClockwise, CaretDown, CaretUp, WarningCircle } from "@phosphor-icons/react";
 import "./monitor-issues.css";
+import { loadIssuesSnapshot } from "./monitor-issues-response.mjs";
 
 const labels = { OPEN: "未解决", RESOLVED: "已恢复", STOPPED: "已停止（非成功）", ALL: "全部历史" };
 const platforms = { PDD: "拼多多", TMALL: "天猫", TAOBAO: "淘宝", "1688": "1688", JD: "京东", DOUYIN: "抖音" };
@@ -27,13 +28,12 @@ export function MonitorIssues({ onOpenOrder }) {
       const params = new URLSearchParams({ page: String(page), page_size: "15" });
       Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
       try {
-        const response = await fetch(`/api/v1/monitor/issues?${params}`, { cache: "no-store", signal: controller.signal });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.detail || `读取失败（${response.status}）`);
+        const result = await loadIssuesSnapshot(`/api/v1/monitor/issues?${params}`, { signal: controller.signal });
+        if (controller.signal.aborted) return;
         setData(result);
         setError("");
       } catch (e) {
-        if (e.name !== "AbortError") setError(typeof e.message === "string" ? e.message : "异常明细暂时无法读取");
+        if (!controller.signal.aborted && e.name !== "AbortError") setError(typeof e.message === "string" ? e.message : "异常明细暂时无法读取");
       } finally {
         inFlight = false;
         if (!controller.signal.aborted) setLoading(false);

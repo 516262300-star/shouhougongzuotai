@@ -643,10 +643,10 @@ function FinancialSummary({ financial }) {
   const summary = financial.summary ?? {};
   const comparison = financial.comparison ?? {};
   const items = [
-    { key: "actual_total", label: "实际退款成功金额", value: summary.actual_total, primary: true },
-    { key: "actual_only_refund", label: "实际仅退款金额", value: summary.actual_only_refund },
-    { key: "actual_return_refund", label: "实际退货退款金额", value: summary.actual_return_refund },
-    { key: "application_total", label: "申请退款金额", value: summary.application_total, requested: true },
+    { key: "actual_total", label: "同批实际退款成功金额", value: summary.actual_total, primary: true },
+    { key: "actual_only_refund", label: "同批实际仅退款金额", value: summary.actual_only_refund },
+    { key: "actual_return_refund", label: "同批实际退货退款金额", value: summary.actual_return_refund },
+    { key: "application_total", label: "退款申请金额", value: summary.application_total, requested: true },
   ];
   return (
     <section className="financial-summary" aria-label="退款金额摘要">
@@ -676,20 +676,22 @@ function RefundTrend({ financial, period }) {
   return (
     <section className="attribution-card refund-trend-card">
       <div className="card-heading">
-        <div><h2>{title}</h2><p>柱形为实际退款成功金额，橙色短线为申请退款金额</p></div>
-        <div className="trend-legend"><span><i className="only" />仅退款</span><span><i className="returned" />退货退款</span><span><i className="applied" />申请金额</span></div>
+        <div><h2>{title}</h2><p>整柱为申请金额：蓝绿为同批成功退款，浅橙为申请与成功差额</p></div>
+        <div className="trend-legend"><span><i className="only" />仅退款</span><span><i className="returned" />退货退款</span><span><i className="applied" />申请与成功差额</span></div>
       </div>
       <div className="refund-trend-scroll">
         <div className={`refund-trend ${financial.granularity === "MONTH" ? "monthly" : "daily"}`}>
           {rows.map((row) => {
             const onlyHeight = Math.max(0, (row.actual_only_refund ?? 0) * 100 / maxValue);
             const returnHeight = Math.max(0, (row.actual_return_refund ?? 0) * 100 / maxValue);
-            const applicationBottom = Math.max(0, (row.application_total ?? 0) * 100 / maxValue);
-            const tooltip = `${row.label}｜实际 ${formatCurrency(row.actual_total)}（仅退款 ${formatCurrency(row.actual_only_refund)}，退货退款 ${formatCurrency(row.actual_return_refund)}）｜申请 ${formatCurrency(row.application_total)}`;
+            const successfulHeight = onlyHeight + returnHeight;
+            const applicationGap = Math.max(0, (row.application_total ?? 0) - (row.actual_total ?? 0));
+            const applicationGapHeight = applicationGap * 100 / maxValue;
+            const tooltip = `${row.label}｜申请 ${formatCurrency(row.application_total)}｜同批成功 ${formatCurrency(row.actual_total)}（仅退款 ${formatCurrency(row.actual_only_refund)}，退货退款 ${formatCurrency(row.actual_return_refund)}）｜差额 ${formatCurrency(applicationGap)}`;
             return (
               <div key={row.key} className={`trend-column ${row.is_future ? "future" : ""}`} title={tooltip}>
                 <div className="trend-plot">
-                  <i className="application-marker" style={{ bottom: `${applicationBottom}%` }} />
+                  {applicationGap > 0 && <b className="application-gap" style={{ height: `${applicationGapHeight}%`, bottom: `${successfulHeight}%` }} />}
                   <b className="return-bar" style={{ height: `${returnHeight}%`, bottom: `${onlyHeight}%` }} />
                   <b className="only-bar" style={{ height: `${onlyHeight}%` }} />
                 </div>
@@ -1319,7 +1321,8 @@ function DetailPanel({ detail, loading, onClose, onCopy, copied }) {
               <DetailRow label="拦截策略" value={detail.decision.strategy} />
               <div className="detail-row"><dt>当前状态</dt><dd><StatusTag tone={detail.decision.status_tone}>{detail.decision.status}</StatusTag></dd></div>
               <DetailRow label="当前处理人" value={detail.decision.handler} />
-              <DetailRow label="处理时间" value={formatDateTime(detail.decision.handled_at, true)} />
+              <DetailRow label={detail.decision.handled_at_label ?? "处理时间"} value={formatDateTime(detail.decision.handled_at, true)} />
+              <DetailRow label="物流最后查询" value={formatDateTime(detail.logistics.checked_at, true)} />
               <DetailRow label="备注" value={detail.decision.note} />
             </dl>
           </section>

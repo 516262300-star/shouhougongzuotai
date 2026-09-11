@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import AfterSalesItem, AfterSalesOrder, Shop
@@ -254,6 +254,7 @@ def _orders(rows: Iterable[AttributionFact]) -> dict[str, AttributionFact]:
 
 
 def _financial_values(rows: Iterable[AttributionFact], period: PeriodRange) -> dict[str, Any]:
+    """Aggregate one application-date cohort and its eventual refund outcome."""
     orders = _orders(rows)
     application_only = Decimal("0")
     application_return = Decimal("0")
@@ -264,16 +265,16 @@ def _financial_values(rows: Iterable[AttributionFact], period: PeriodRange) -> d
     for row in orders.values():
         if row.after_sales_type not in _REFUND_TYPES:
             continue
-        if _in_period(row.occurred_at, period):
-            application_orders += 1
-            if row.after_sales_type == "ONLY_REFUND":
-                application_only += row.refund_amount
-            else:
-                application_return += row.refund_amount
+        if not _in_period(row.occurred_at, period):
+            continue
+        application_orders += 1
+        if row.after_sales_type == "ONLY_REFUND":
+            application_only += row.refund_amount
+        else:
+            application_return += row.refund_amount
         if (
             row.refund_financial_status == SUCCESS
             and row.actual_refund_amount is not None
-            and _in_period(row.refund_completed_at, period)
         ):
             successful_orders += 1
             if row.after_sales_type == "ONLY_REFUND":
@@ -499,7 +500,10 @@ def _coverage_payload(
         )
     elif application_orders:
         notes.append("当前周期退款申请的成功状态已全部识别。")
-    notes.append("平台未单独提供到账时刻时，以售后最后更新时间作为退款成功时间。")
+    notes.append(
+        "实际退款成功金额按申请日期归组；平台未单独提供成功时刻时，"
+        "以售后最后更新时间辅助判定成功状态。"
+    )
     return {
         "first_application_at": _iso_datetime(first_application),
         "last_application_at": _iso_datetime(last_application),
@@ -770,19 +774,8 @@ class RefundAttributionService:
                 AfterSalesItem.after_sales_sn == AfterSalesOrder.after_sales_sn,
             )
             .where(
-                or_(
-                    and_(
-                        occurred_at >= datetime.combine(query_start, time.min),
-                        occurred_at
-                        < datetime.combine(query_end + timedelta(days=1), time.min),
-                    ),
-                    and_(
-                        AfterSalesOrder.refund_completed_at
-                        >= datetime.combine(query_start, time.min),
-                        AfterSalesOrder.refund_completed_at
-                        < datetime.combine(query_end + timedelta(days=1), time.min),
-                    ),
-                )
+                occurred_at >= datetime.combine(query_start, time.min),
+                occurred_at < datetime.combine(query_end + timedelta(days=1), time.min),
             )
             .order_by(occurred_at.desc(), AfterSalesOrder.id.desc())
         )
@@ -847,8 +840,8 @@ class RefundAttributionService:
                 ],
                 "last_synced_at": self._last_synced_at(),
                 "date_basis": (
-                    "申请金额按平台申请时间统计；实际退款成功金额按退款成功时间统计。"
-                    "历史缺少明确成功时间时，以平台最后更新时间回填。"
+                    "申请金额和实际退款成功金额均按平台申请时间归组；"
+                    "实际退款金额仅计入最终成功的同批申请。"
                 ),
             }
         )
