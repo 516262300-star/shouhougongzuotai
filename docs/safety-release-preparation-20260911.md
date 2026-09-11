@@ -44,7 +44,7 @@
 
 ## 验证记录与复现
 
-本轮工作区针对性测试127项、全量1067项全部通过，0失败、0错误、0跳过；修改的Python文件Ruff通过。包含工作区既有未提交改动的结果仅作为工作区验证，独立候选结果另行记录。测试使用模拟资金接口，没有借测试执行真实退款。
+本轮工作区针对性测试127项、全量1067项全部通过，0失败、0错误、0跳过；修改的Python文件Ruff通过。独立提交快照 `0b5fe13` 的1064项测试也全部通过，0失败、0错误、0跳过，已验证导入路径来自候选副本。工作区多出的3项来自既有未提交测试，不混入候选。候选源码位于 `.runtime/releases/safety-20260911`；本节后续说明补充不改变该已测试代码提交。测试使用模拟资金接口，没有借测试执行真实退款。
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_auto_uncollected.py tests/test_pdd_history.py tests/test_audit_safety_regressions.py -q
