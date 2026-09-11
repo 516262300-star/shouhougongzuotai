@@ -107,7 +107,7 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
     }
     assert tmall_shops["tmall-shop-01"]["capabilities"]["module1"]["state"] == "unsupported"
     assert tmall_shops["tmall-shop-02"]["capabilities"]["refund_permission"]["state"] == "disabled"
-    assert tmall_shops["tmall-shop-02"]["capabilities"]["module3"]["state"] == "unsupported"
+    assert tmall_shops["tmall-shop-02"]["capabilities"]["module3"]["state"] == "disabled"
     assert platforms["TAOBAO"]["shops"][0]["capabilities"]["module1"]["state"] == "unsupported"
     assert platforms["DOUYIN"]["shops"][0]["capabilities"]["sync"]["state"] == "disabled"
 

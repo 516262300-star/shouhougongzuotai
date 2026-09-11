@@ -302,7 +302,20 @@ def _shop_capabilities(
         module1 = _unsupported("整包裹关联尚未适配，自动退款已失败关闭，须人工核验")
         module2 = _unsupported("整包裹实收分配尚未适配，自动退款已失败关闭，须人工核验")
         module1_erp = _unsupported("逐单ERP资金闭环目前仅适配拼多多")
-        module3 = _unsupported("ERP自动补单目前仅适配拼多多")
+        module3 = _requirements(
+            (
+                (sync_enabled, "售后同步未开启"),
+                (tmall_modules_enabled, "天猫模块接入开关未开启"),
+                (configured.shop_number in range(1, 6), "该店暂未纳入天猫ERP补单范围"),
+                (settings.tmall_module3_erp_refund_enabled, "天猫模块3已适配，尚未验收启用"),
+                (settings.module3_worker_enabled, "模块3后台运行未开启"),
+                (settings.module3_erp_refund_execution_enabled, "模块3ERP补单总开关未开启"),
+                (settings.erp_web_lookup_enabled, "ERP只读核验未配置"),
+                (bool(settings.erp_web_username and settings.erp_web_password), "ERP凭据缺失"),
+                (settings.erp_write_enabled, "ERP写总开关未开启"),
+            ),
+            "仅独立未发货、单子单全额退款；原收款和SKU核对后单次ERP补单，回查平账",
+        )
     return {
         "sync": sync,
         "attribution": attribution,

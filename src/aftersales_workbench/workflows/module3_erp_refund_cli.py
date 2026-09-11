@@ -17,6 +17,8 @@ def _parser() -> argparse.ArgumentParser:
         description="核对或执行模块3的 ERP 未发货补开退款单。"
     )
     parser.add_argument("--platform-order-sn", help="只处理指定平台订单号")
+    parser.add_argument("--platform", choices=("PDD", "TMALL"), default="PDD",
+                        help="平台隔离；天猫使用独立只读核验及补单适配")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--details", action="store_true", help="输出逐单核对结果")
     parser.add_argument(
@@ -42,7 +44,13 @@ def main(argv: list[str] | None = None) -> int:
     client = build_erp_unshipped_refund_client(settings)
     try:
         with SessionLocal() as session:
-            result = Module3ErpRefundService(session, client).run(
+            if args.platform == "TMALL":
+                from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
+
+                service = TmallModule3Service(session, client, settings)
+            else:
+                service = Module3ErpRefundService(session, client)
+            result = service.run(
                 limit=args.limit,
                 platform_order_sn=args.platform_order_sn,
                 dry_run=not args.apply,

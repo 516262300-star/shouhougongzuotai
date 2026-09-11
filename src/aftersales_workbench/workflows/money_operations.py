@@ -28,8 +28,9 @@ def operation_key(platform, shop_id, after_sales_sn, operation_type):
     return sha256(identity.encode("utf-8")).hexdigest()
 
 
-def run_money_write(session, order, *, operation_type, task_id, write):
+def run_money_write(session, order, *, operation_type, task_id, write, erp_adapter=None):
     """write必须已经通过业务校验；该方法不自动重试，不删除账本。"""
+    proof = None
     shop = session.get(Shop, order.shop_id)
     if shop is None or not shop.is_active:
         raise MoneyOperationBlocked("资金操作店铺不存在或已停用")
@@ -37,7 +38,26 @@ def run_money_write(session, order, *, operation_type, task_id, write):
     if operation_type not in {"PLATFORM_REFUND", "ERP_REFUND"}:
         raise MoneyOperationBlocked("未适配的资金操作类型")
     if operation_type == "ERP_REFUND" and platform != "PDD":
-        raise MoneyOperationBlocked("该平台未适配ERP资金操作")
+        if platform != "TMALL" or erp_adapter != "tmall_module3_unshipped_v1":
+            raise MoneyOperationBlocked("该平台未适配ERP资金操作")
+        from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
+        from aftersales_workbench.workflows.tmall_module3 import module3_state
+
+        task = session.get(AftersalesActionTask, task_id)
+        proof = (task.payload or {}).get("tmall_module3_evidence", {}) if task else {}
+        try:
+            age = (datetime.now(UTC) - datetime.fromisoformat(proof["started_at"])).total_seconds()
+        except (KeyError, ValueError, TypeError):
+            age = -1
+        if (not task or task.action_type != A.ERP_CHECK_FULFILLMENT
+                or task.action_status != T.PENDING or (task.attempts or 0) > 0
+                or task.after_sales_sn != order.after_sales_sn
+                or proof.get("scope") != erp_adapter
+                or proof.get("snapshot") != refund_snapshot(order)
+                or proof.get("state") != module3_state(order)
+                or not proof.get("erp_record_id") or not proof.get("erp_order_sn")
+                or not 0 <= age <= 90):
+            raise MoneyOperationBlocked("缺少当前天猫模块3独立核验证据，禁止ERP资金写入")
     allowed = (
         {f"pdd-shop-{n:02d}" for n in range(1, 8)}
         if platform == "PDD"
@@ -89,6 +109,8 @@ def run_money_write(session, order, *, operation_type, task_id, write):
             "platform_order_sn": order.platform_order_sn,
             "refund_amount": str(order.refund_amount),
             "merchant_receivable_amount": str(order.merchant_receivable_amount),
+            "erp_adapter": erp_adapter,
+            "erp_evidence": proof if erp_adapter == "tmall_module3_unshipped_v1" else None,
             "items": [
                 {"sku": i.sku_code, "color": i.color, "quantity": i.applied_quantity}
                 for i in order.items

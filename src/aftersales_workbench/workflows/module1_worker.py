@@ -685,6 +685,17 @@ class Module1WorkerRuntime:
                     dry_run=False,
                     refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
                 )
+                if self.settings.tmall_module3_erp_refund_enabled:
+                    from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
+
+                    tmall_run = TmallModule3Service(session, client, self.settings).run(
+                        limit=self.settings.module3_worker_batch_limit,
+                        dry_run=False,
+                        refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
+                    )
+                    for field in ("scanned", "ready", "already_completed", "not_required",
+                                  "applied", "not_found", "blocked", "unavailable"):
+                        setattr(run, field, getattr(run, field) + getattr(tmall_run, field))
         finally:
             client.close()
         details = run.safe_dict()

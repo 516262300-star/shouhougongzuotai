@@ -155,6 +155,7 @@ class Settings(BaseSettings):
     # 模块 1/2/3 的天猫总开关及独立订单水位。
     tmall_module123_trial_enabled: bool = False
     tmall_single_parcel_refund_enabled: bool = False
+    tmall_module3_erp_refund_enabled: bool = False
     tmall_module123_min_order_id: int = Field(default=0, ge=0)
     module1_tmall_refund_execution_enabled: bool = False
     module2_tmall_refund_execution_enabled: bool = False
