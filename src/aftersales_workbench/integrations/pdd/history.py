@@ -85,7 +85,9 @@ class PddHistoryRepository:
             )
         except (ValueError, TypeError):
             return False
-        if codes != (2, 1, 10, 10):
+        # 列表与详情的类型编码不同，必须成对核实；补寄/维修完成不等于退款。
+        # 仅退款与退货退款均可保留为历史待核验，不代表仓库收货或 ERP 平账。
+        if codes not in {(2, 1, 10, 10), (3, 2, 10, 10)}:
             return False
         try:
             cents = Decimal(str(detail.get("refund_amount")))

@@ -35,9 +35,11 @@ def fixed_history_clock(monkeypatch):
     )
 
 
-@pytest.fixture
-def db():
-    yield from baseline.db.__wrapped__()
+@pytest.fixture(params=[(2, 1), (3, 2)], ids=["only-refund", "return-and-refund"])
+def db(request):
+    for session in baseline.db.__wrapped__():
+        session.info["history_type_codes"] = request.param
+        yield session
 
 
 class Client:
@@ -72,7 +74,11 @@ def setup(db):
     repo.record_issue(sid, "123", "order-1", "original 45001 evidence")
     db.commit()
     service = PddRefundSyncService(repo, Settings(_env_file=None), now=lambda: NOW)
-    return repo, sid, service, Client()
+    client = Client()
+    client.record["after_sales_type"], client.detail["after_sales_type"] = (
+        db.info["history_type_codes"]
+    )
+    return repo, sid, service, client
 
 
 def save(service, sid, client):
@@ -112,8 +118,8 @@ def test_history_retains_evidence_no_current_alert_no_actions_and_survives_resta
         ("detail", "recreated_at", "2026-09-10 10:00:00"),
         ("record", "after_sales_status", 2),
         ("detail", "after_sales_status", 3),
-        ("record", "after_sales_type", 3),
-        ("detail", "after_sales_type", 2),
+        ("record", "after_sales_type", 99),
+        ("detail", "after_sales_type", 99),
         ("detail", "order_sn", "wrong-order"),
         ("detail", "id", 456),
         ("detail", "refund_amount", 999),
@@ -229,3 +235,39 @@ def test_history_daily_due_boundary_uses_consistent_clock(db, monkeypatch, offse
     at = datetime.fromtimestamp(NOW, UTC).replace(tzinfo=None) + timedelta(days=1, seconds=offset)
     monkeypatch.setattr("aftersales_workbench.integrations.pdd.history.utcnow", lambda: at)
     assert repo.due_issues(sid) == ([("123", "order-1")] if expected_due else [])
+
+
+@pytest.mark.parametrize("codes", [(2, 2), (3, 1), (4, 3), (5, 4), (6, 5)])
+def test_mismatched_or_non_refund_type_pairs_are_not_hidden(db, codes):
+    repo, sid, svc, client = setup(db)
+    client.record["after_sales_type"], client.detail["after_sales_type"] = codes
+    assert save(svc, sid, client).records_quarantined == 1
+    assert repo.outstanding_issues(sid) == 1
+    assert not is_history(db.get(MarketplaceSyncIssue, (sid, "123")))
+
+
+@pytest.mark.parametrize("status", [2, 3, 11])
+def test_non_completed_status_pair_is_not_hidden(db, status):
+    repo, sid, svc, client = setup(db)
+    client.record["after_sales_status"] = client.detail["after_sales_status"] = status
+    assert save(svc, sid, client).records_quarantined == 1
+    assert repo.outstanding_issues(sid) == 1
+
+
+def test_year_old_return_refund_updated_today_stays_recheckable_not_permanently_dismissed(db):
+    repo, sid, svc, client = setup(db)
+    client.record.update(after_sales_type=3, created_time="2025-08-07 13:11:40",
+                         updated_time="2026-09-10 13:16:10")
+    client.detail.update(after_sales_type=2, recreated_at="2025-08-07 13:11:40",
+                         updated_time=NOW)
+    result = save(svc, sid, client)
+    row = db.get(MarketplaceSyncIssue, (sid, "123"))
+    assert result.records_terminal_history_skipped == 1
+    assert repo.outstanding_issues(sid) == 0
+    assert is_history(row) and not repo.is_issue_dismissed(sid, "123")
+    assert row.resolved_at is None
+    assert row.next_retry_at - row.dismissed_at == timedelta(hours=24)
+    assert db.scalar(select(func.count()).select_from(AfterSalesOrder)) == 0
+    assert db.scalar(select(func.count()).select_from(AftersalesActionTask)) == 0
+    assert save(svc, sid, client).records_terminal_history_skipped == 1
+    assert db.scalar(select(func.count()).select_from(MarketplaceSyncIssue)) == 1
