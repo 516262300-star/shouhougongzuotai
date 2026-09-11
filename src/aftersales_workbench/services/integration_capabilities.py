@@ -332,7 +332,7 @@ def _shop_capabilities(
         )
         if module1_erp["state"] == "enabled":
             module1_erp.update(state="warning", label="核账已开·认领补单未接入")
-            if settings.tmall_module1_return_claim_enabled:
+            if settings.tmall_module1_return_claim_enabled and configured.shop_number in range(1, 6):
                 module1_erp = _requirements(
                     (
                         (configured.shop_number in range(1, 6), "该店暂未纳入ERP自动认领补单范围"),
