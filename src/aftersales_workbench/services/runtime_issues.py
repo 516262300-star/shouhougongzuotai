@@ -26,6 +26,7 @@ from aftersales_workbench.db.models import (
     Shop,
     TmallSyncCursor,
 )
+from aftersales_workbench.services.runtime_issue_focus import select_focus
 from aftersales_workbench.services.runtime_monitor import _latest_json_line
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeLedger
 
@@ -145,6 +146,7 @@ class RuntimeIssueCollector:
                 "platform_order_sn": order.platform_order_sn if order else order_sn,
                 "shop_id": shop.shop_id if shop else shop_id,
                 "shop_name": shop.shop_name if shop else None,
+                "shop_code": shop.shop_code if shop else None,
                 "platform": str(shop.platform) if shop else None,
                 "sales_owner": order.erp_sales_owner if order else None,
                 "tracking_number": order.forward_tracking_number if order else None,
@@ -226,6 +228,9 @@ class RuntimeIssueCollector:
                     checked_at=checked,
                     next_check_at=next_check,
                     task_id=task.id,
+                    action_type=action,
+                    origin=payload.get("origin"),
+                    erp_refund_status=payload.get("erp_refund_status"),
                     target_group=target_group,
                     **identity(task.after_sales_sn),
                 )
@@ -363,6 +368,7 @@ class RuntimeIssueCollector:
                     )
                 )
         cycle = _latest_json_line(self.project_root / ".runtime" / "module1-worker.log") or {}
+        self.latest_cycle = cycle
         for key, stage in cycle.items():
             if not isinstance(stage, dict) or "status" not in stage:
                 continue
@@ -418,6 +424,8 @@ class RuntimeIssueService:
         keyword="",
         page=1,
         page_size=15,
+        stage_id=None,
+        cycle_finished_at=None,
     ):
         now = datetime.now(UTC).isoformat()
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
@@ -436,7 +444,8 @@ class RuntimeIssueService:
                 for key, payload in db.execute("SELECT key,payload FROM incidents")
             }
             if (
-                not last
+                stage_id
+                or not last
                 or (datetime.fromisoformat(now) - datetime.fromisoformat(last[0])).total_seconds()
                 >= self.refresh_seconds
             ):
@@ -485,6 +494,17 @@ class RuntimeIssueService:
                 checked_at = last[0]
             db.commit()
         all_items = list(saved.values())
+        focus = None
+        if stage_id:
+            focus = select_focus(
+                observations, getattr(self.collector, "latest_cycle", {}),
+                stage_id, cycle_finished_at,
+            )
+            focus["stage_error"] = safe_text(
+                (getattr(self.collector, "latest_cycle", {}).get(stage_id) or {}).get("error")
+            )
+            keys = set(focus["issue_keys"])
+            all_items = [item for item in all_items if item["key"] in keys]
         counts = {
             s: sum(i["state"] == s for i in all_items) for s in ("OPEN", "RESOLVED", "STOPPED")
         }
@@ -519,6 +539,7 @@ class RuntimeIssueService:
         items.sort(key=lambda i: (i.get("checked_at") or i["observed_at"], i["key"]), reverse=True)
         total = len(items)
         return {
+            "focus": focus,
             "checked_at": checked_at,
             "counts": counts,
             "category_counts": category_counts,

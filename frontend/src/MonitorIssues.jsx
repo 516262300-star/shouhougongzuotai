@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import { ArrowsClockwise, CaretDown, CaretUp, WarningCircle } from "@phosphor-icons/react";
 import "./monitor-issues.css";
-import { loadIssuesSnapshot } from "./monitor-issues-response.mjs";
+import { issuesRequestParams, loadIssuesSnapshot } from "./monitor-issues-response.mjs";
 
 const labels = { OPEN: "未解决", RESOLVED: "已恢复", STOPPED: "已停止（非成功）", ALL: "全部历史" };
 const platforms = { PDD: "拼多多", TMALL: "天猫", TAOBAO: "淘宝", "1688": "1688", JD: "京东", DOUYIN: "抖音" };
 const initial = { state: "OPEN", category: "", platform: "", shop_id: "", keyword: "" };
 const time = (value) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false, timeZone: "Asia/Shanghai" }) : "—";
 
-export function MonitorIssues({ onOpenOrder }) {
+export function MonitorIssues({ onOpenOrder, focus = null, onClearFocus }) {
   const [filters, setFilters] = useState(initial);
   const [draft, setDraft] = useState("");
   const [page, setPage] = useState(1);
@@ -21,16 +21,18 @@ export function MonitorIssues({ onOpenOrder }) {
   useEffect(() => {
     const controller = new AbortController();
     let inFlight = false;
+    let hasLoaded = false;
     const load = async () => {
       if (inFlight) return;
       inFlight = true;
       setLoading(true);
-      const params = new URLSearchParams({ page: String(page), page_size: "15" });
-      Object.entries(filters).forEach(([key, value]) => { if (value) params.set(key, value); });
+      const params = issuesRequestParams(filters, page, focus);
       try {
-        const result = await loadIssuesSnapshot(`/api/v1/monitor/issues?${params}`, { signal: controller.signal });
+        const result = await loadIssuesSnapshot(`/api/v1/monitor/issues?${params}`, { signal: controller.signal, expectedStageId: focus?.stageId });
         if (controller.signal.aborted) return;
         setData(result);
+        if (focus && !hasLoaded && result.items.length === 1) setExpanded(result.items[0].key);
+        hasLoaded = true;
         setError("");
       } catch (e) {
         if (!controller.signal.aborted && e.name !== "AbortError") setError(typeof e.message === "string" ? e.message : "异常明细暂时无法读取");
@@ -42,7 +44,7 @@ export function MonitorIssues({ onOpenOrder }) {
     load();
     const timer = window.setInterval(load, 15000);
     return () => { controller.abort(); window.clearInterval(timer); };
-  }, [filters, page, refresh]);
+  }, [filters, page, refresh, focus]);
 
   const change = (key, value) => {
     setFilters((current) => ({ ...current, [key]: value, ...(key === "platform" ? { shop_id: "" } : {}) }));
@@ -53,10 +55,11 @@ export function MonitorIssues({ onOpenOrder }) {
 
   return <section className="monitor-issues" aria-labelledby="monitor-issues-title">
     <header className="issues-heading">
-      <div><h2 id="monitor-issues-title">异常明细</h2><p>持续跟进未解决的问题，不随下一轮正常运行自动清零。刷新仅更新展示，不执行退款、补单或发消息。</p></div>
+      <div><h2 id="monitor-issues-title">{focus ? `${focus.label} · 当前告警明细` : "异常明细"}</h2><p>刷新仅更新展示，不执行退款、补单或发消息。{!focus && "未解决问题持续保留，不随下一轮正常运行自动清零。"}</p></div>
       <button type="button" className="button secondary" disabled={loading} onClick={() => setRefresh((v) => v + 1)}><ArrowsClockwise size={16} className={loading ? "spin" : ""} />刷新明细</button>
     </header>
-    <div className="issues-tabs" aria-label="异常处理状态">
+    {focus && <div className="issues-focus" role="status"><div><strong>已定位：{focus.label}</strong><p>{data?.focus?.message ?? "正在查找这条告警对应的具体异常…"}</p>{!data?.items?.length && data?.focus?.stage_error && <p>{data.focus.stage_error}</p>}{data?.focus?.cycle_changed && <small>运行周期已更新，下方为该阶段最新核验结果。</small>}</div><button type="button" className="button secondary" onClick={onClearFocus}>查看全部异常</button></div>}
+    {!focus && <><div className="issues-tabs" aria-label="异常处理状态">
       {Object.entries(labels).map(([key, label]) => <button type="button" key={key} aria-pressed={filters.state === key} className={filters.state === key ? "is-active" : ""} onClick={() => change("state", key)}>{label}{key !== "ALL" && <strong>{data?.counts?.[key] ?? "—"}</strong>}</button>)}
     </div>
     <form className="issues-filters" onSubmit={(event) => { event.preventDefault(); change("keyword", draft.trim()); }}>
@@ -66,13 +69,13 @@ export function MonitorIssues({ onOpenOrder }) {
       <label className="issues-search">搜索<input value={draft} maxLength={100} onChange={(e) => setDraft(e.target.value)} placeholder="订单号 / 运单 / 业务员 / 原因 / 任务号" /></label>
       <button type="submit" className="button primary">查询</button>
       <button type="button" className="button secondary" onClick={() => { setFilters(initial); setDraft(""); setPage(1); setExpanded(null); }}>重置</button>
-    </form>
+    </form></>}
     {error && <div className="issues-error" role="alert"><WarningCircle size={18} /><span>{error} {data ? "下方为上次成功读取的结果，不能当作最新状态。" : "未能读取，不代表没有异常。"}</span></div>}
     <div className="issues-table-wrap" aria-busy={loading}>
       <table className="issues-table"><thead><tr><th>异常 / 状态</th><th>平台订单号 / 店铺</th><th>归属业务员</th><th>原因</th><th>最近核验</th><th>操作</th></tr></thead>
         <tbody>{(data?.items || []).map((item) => <IssueRows key={item.key} item={item} expanded={expanded === item.key} onExpand={() => setExpanded(expanded === item.key ? null : item.key)} onOpenOrder={onOpenOrder} />)}</tbody>
       </table>
-      {!data?.items?.length && <div className="issues-empty">{loading ? "正在读取异常明细…" : error ? "请恢复读取后再确认异常数量" : "当前筛选下没有异常记录"}</div>}
+      {!data?.items?.length && <div className="issues-empty">{loading ? "正在读取异常明细…" : error ? "请恢复读取后再确认异常数量" : focus ? data?.focus?.message : "当前筛选下没有异常记录"}</div>}
     </div>
     <footer className="issues-footer"><span>共 {data?.pagination?.total ?? "—"} 项 · 最近读取 {time(data?.checked_at)}</span><div><button type="button" className="button secondary" disabled={page <= 1 || loading} onClick={() => setPage(page - 1)}>上一页</button><span>{page} / {data?.pagination?.pages || 1}</span><button type="button" className="button secondary" disabled={loading || page >= (data?.pagination?.pages || 1)} onClick={() => setPage(page + 1)}>下一页</button></div></footer>
     <p className="issues-note">{data?.history_note || "历史从监控首次观察开始保留；同一订单可能存在不同异常，数量按异常项统计。"}</p>

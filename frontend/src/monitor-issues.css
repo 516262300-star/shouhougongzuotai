@@ -3,6 +3,10 @@
 .issues-heading h2 { margin: 0 0 8px; font-size: 20px; }
 .issues-heading p, .issues-note { color: #607086; font-size: 14px; line-height: 1.7; margin: 0; }
 .issues-heading .button { flex-shrink: 0; }
+.issues-focus { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; margin: 18px 0; padding: 16px; border: 1px solid #90bbf0; border-radius: 6px; background: #edf5ff; font-size: 14px; }
+.issues-focus strong { font-size: 16px; color: #1764cd; }
+.issues-focus p { margin: 8px 0 0; line-height: 1.7; }
+.issues-focus small { display: block; margin-top: 8px; color: #607086; }
 .issues-tabs { display: flex; gap: 10px; flex-wrap: wrap; margin: 20px 0; }
 .issues-tabs button { border: 1px solid #dce5ef; border-radius: 6px; padding: 10px 16px; background: #fff; color: #465773; font: inherit; font-size: 14px; cursor: pointer; }
 .issues-tabs button.is-active { background: #edf5ff; color: #1764cd; border-color: #90bbf0; }

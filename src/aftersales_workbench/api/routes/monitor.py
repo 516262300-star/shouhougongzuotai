@@ -12,6 +12,7 @@ from aftersales_workbench.services.desktop_notice_recovery import (
 from aftersales_workbench.services.integration_capabilities import (
     IntegrationCapabilityService,
 )
+from aftersales_workbench.services.runtime_issue_focus import STAGE_LABELS
 from aftersales_workbench.services.runtime_issues import RuntimeIssueCollector, RuntimeIssueService
 from aftersales_workbench.services.runtime_monitor import RuntimeMonitorService
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeSendError
@@ -38,6 +39,8 @@ def runtime_issues(
     keyword: Annotated[str, Query(max_length=100)] = "",
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=1, le=100)] = 15,
+    stage_id: Annotated[str | None, Query(pattern="^(" + "|".join(STAGE_LABELS) + ")$")] = None,
+    cycle_finished_at: Annotated[str | None, Query(max_length=50)] = None,
 ) -> dict[str, Any]:
     try:
         return service.list_issues(
@@ -48,6 +51,8 @@ def runtime_issues(
             keyword=keyword,
             page=page,
             page_size=page_size,
+            stage_id=stage_id,
+            cycle_finished_at=cycle_finished_at,
         )
     except Exception as exc:
         # 不向浏览器回显数据库连接串、凭据或原始 API 响应。

@@ -299,7 +299,7 @@ def test_issue_route_is_read_only_validated_and_sanitizes_failures(tmp_path):
         client = TestClient(app)
         assert client.get("/api/v1/monitor/issues").json()["counts"]["OPEN"] == 1
         assert client.post("/api/v1/monitor/issues").status_code == 405
-        for query in ("page=0", "page_size=101", "state=DELETE", "shop_id=-1", "category=ALL"):
+        for query in ("page=0", "page_size=101", "state=DELETE", "shop_id=-1", "category=ALL", "stage_id=unknown"):
             assert client.get(f"/api/v1/monitor/issues?{query}").status_code == 422
 
         class Broken:

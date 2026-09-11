@@ -1146,6 +1146,7 @@ function monitorStageSummary(stage) {
 }
 
 function MonitorWorkspace({ onOpenOrder }) {
+  const [issueFocus, setIssueFocus] = useState(null);
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1231,7 +1232,7 @@ function MonitorWorkspace({ onOpenOrder }) {
           </div>
           <button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />立即刷新</button>
         </section>
-        <MonitorIssues onOpenOrder={onOpenOrder} />
+        <MonitorIssues key={issueFocus?.selectionId ?? "all"} focus={issueFocus} onClearFocus={() => setIssueFocus(null)} onOpenOrder={onOpenOrder} />
         <section className="monitor-metrics">
           <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
           <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : `本轮完成；未解决异常请看上方明细`}</small></article>
@@ -1246,7 +1247,7 @@ function MonitorWorkspace({ onOpenOrder }) {
                 {module.stages.map((stage) => (
                   <div className="monitor-stage" key={stage.id}>
                     <span className={`monitor-stage-dot stage-${stage.status}`} />
-                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small>{stage.error && <a href="#monitor-issues-title">查看异常明细及处理建议</a>}</div>
+                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small>{stage.error && <a href="#monitor-issues-title" onClick={() => setIssueFocus({ stageId: stage.id, label: MONITOR_STAGE_LABELS[stage.id] ?? stage.id, cycleFinishedAt: worker.last_cycle_finished_at, selectionId: `${stage.id}:${Date.now()}` })}>查看本项异常及处理建议</a>}</div>
                     <StatusTag tone={monitorTone(stage.status)}>{monitorStageStatus(stage.status)}</StatusTag>
                   </div>
                 ))}
