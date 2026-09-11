@@ -113,7 +113,7 @@ class _INPUT(ctypes.Structure):
 
 
 class WindowsWeComGateway:
-    """只用键盘控制当前登录的企业微信，并以画面变化做失败关闭校验。"""
+    """键盘发送，结合本地文字识别、输入框转换及气泡状态核验结果。"""
 
     _SECURITY_TITLE = re.compile(r"安全验证|扫码验证|身份验证|重新登录|登录验证")
     # 企业微信左侧会话列表和右侧成员栏在输入时通常完全不变。若把它们
@@ -204,6 +204,14 @@ class WindowsWeComGateway:
         self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._random = random.SystemRandom()
         self._target_hwnd: int | None = None
+        from aftersales_workbench.workflows.wecom_receipt import WeComReceiptReader
+
+        try:
+            self.receipt_reader = WeComReceiptReader()
+        except Exception as exc:
+            raise DesktopBeforePasteError(
+                "本地消息核验组件不可用，请检查桌面识别依赖和 Windows 中文 OCR"
+            ) from exc
 
     def send(self, plan: DesktopNoticePlan, hooks: DesktopSendHooks) -> None:
         previous_hwnd = int(self.user32.GetForegroundWindow())
@@ -240,6 +248,13 @@ class WindowsWeComGateway:
             self._raise_if_security_window(process_id)
             self._raise_if_escape()
 
+            prepared = self._read_receipt(hwnd, plan)
+            if not prepared.group_matches:
+                raise DesktopBeforePasteError("群聊标题未匹配目标完整群名，禁止输入消息")
+            if not prepared.input_empty:
+                raise DesktopBeforePasteError("目标群输入框已有草稿，禁止追加或发送")
+            if prepared.matching_bubbles:
+                raise DesktopBeforePasteError("目标群已存在相同消息，须核对历史发送，禁止重复输入")
             before_input = self._snapshot(hwnd, region=self._INPUT_CHANGE_REGION)
             hooks.paste_started()
             input_started = True
@@ -259,24 +274,17 @@ class WindowsWeComGateway:
             self._raise_if_security_window(process_id, ambiguous=True)
             self._raise_if_escape(ambiguous=True)
 
-            before_send = self._snapshot(
-                hwnd, region=self._SEND_CHANGE_REGION, ambiguous=True
-            )
+            drafted = self._read_receipt(hwnd, plan, ambiguous=True)
+            if not drafted.group_matches or not drafted.draft_matches:
+                raise DesktopAmbiguousSendError("目标群或完整草稿未通过文字核验，尚未按发送键")
+            if drafted.matching_bubbles:
+                raise DesktopAmbiguousSendError("发送前出现相同历史消息，须核验，尚未按发送键")
             hooks.send_pressed()
             self._tap(VK_RETURN, ambiguous=True)
             self._sleep_range(2200, 3100, ambiguous=True)
-            self._wait_for_change(
-                hwnd,
-                before_send,
-                region=self._SEND_CHANGE_REGION,
-                timeout_ms=1000,
-                threshold=0.001,
-                error="按过发送键但未能确认聊天区域变化",
-                ambiguous=True,
-            )
-            # 像素变化可能来自其他消息或发送失败提示，不构成消息级回执。
-            # 保留SendPressed账本；人工核验群内消息后再确认，不自动重发。
-            raise DesktopAmbiguousSendError("已按发送键但缺少消息级成功回执，须人工核验目标群消息")
+            self._wait_for_receipt(hwnd, plan)
+            hooks.sent()
+            completed = True
         finally:
             self._target_hwnd = None
             # 只有确认发送成功或尚未开始输入时才恢复原窗口。结果不明时保留
@@ -530,6 +538,51 @@ class WindowsWeComGateway:
                 raise DesktopAmbiguousSendError(error)
             raise DesktopBeforePasteError(error)
 
+    def _read_receipt(self, hwnd: int, plan: DesktopNoticePlan, *, ambiguous: bool = False):
+        error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
+        self._raise_if_escape(ambiguous=ambiguous)
+        snapshot = self._full_snapshot(hwnd, ambiguous=ambiguous)
+        try:
+            result = self.receipt_reader.inspect(snapshot, plan.target_group, plan.message)
+        except Exception as exc:
+            raise error_type("无法识别企微群名或消息界面，未确认发送成功") from exc
+        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        self._raise_if_escape(ambiguous=ambiguous)
+        return result
+
+    def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan) -> None:
+        deadline = time.monotonic() + 12.0
+        stable_since: float | None = None
+        confirmations = 0
+        while time.monotonic() < deadline:
+            observation = self._read_receipt(hwnd, plan, ambiguous=True)
+            if observation.sent_visible:
+                confirmations += 1
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif confirmations >= 3 and time.monotonic() - stable_since >= 2.0:
+                    return
+            else:
+                stable_since = None
+                confirmations = 0
+            self._sleep_range(350, 500, ambiguous=True)
+        raise DesktopAmbiguousSendError(
+            "已按发送键，但目标群完整消息、空输入框或发送状态未通过连续核验；"
+            "请核对群内消息，禁止直接重发"
+        )
+
+    def _full_snapshot(self, hwnd: int, *, ambiguous: bool = False) -> Image:
+        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        rect = wintypes.RECT()
+        if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
+            raise error_type("无法读取企业微信窗口区域")
+        image = self.ImageGrab.grab(
+            bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True,
+        ).convert("RGB")
+        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        return image
+
     def _snapshot(
         self,
         hwnd: int,
@@ -537,18 +590,7 @@ class WindowsWeComGateway:
         region: tuple[float, float, float, float] | None = None,
         ambiguous: bool = False,
     ) -> Image:
-        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
-        rect = wintypes.RECT()
-        if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            if ambiguous:
-                raise DesktopAmbiguousSendError("无法读取企业微信窗口区域")
-            raise DesktopBeforePasteError("无法读取企业微信窗口区域")
-        image = self.ImageGrab.grab(
-            bbox=(rect.left, rect.top, rect.right, rect.bottom),
-            all_screens=True,
-        ).convert("L")
-        # ImageGrab 截取的是屏幕，窗口被遮挡后的变化不能证明消息已输入或发出。
-        self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        image = self._full_snapshot(hwnd, ambiguous=ambiguous).convert("L")
         if region is not None:
             left, top, right, bottom = region
             image = image.crop(

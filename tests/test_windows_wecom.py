@@ -96,7 +96,8 @@ def test_escape_state_ignores_stale_pressed_since_last_query_bit() -> None:
     assert _is_key_currently_down(-0x8000) is True
 
 
-def test_visual_change_without_message_receipt_remains_unknown(monkeypatch) -> None:
+@pytest.mark.parametrize("receipt_ok", [False, True])
+def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok) -> None:
     """屏幕变化不能代替消息成功回执。"""
 
     gateway = object.__new__(WindowsWeComGateway)
@@ -125,13 +126,26 @@ def test_visual_change_without_message_receipt_remains_unknown(monkeypatch) -> N
     monkeypatch.setattr(gateway, "_type_unicode", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_type_multiline_message", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_restore_previous_window", lambda *args: None)
+    monkeypatch.setattr(gateway, "_read_receipt", lambda *args, **kwargs: SimpleNamespace(
+        group_matches=True, input_empty=True, draft_matches=True, matching_bubbles=0,
+    ))
+
+    def receipt(*args):
+        if not receipt_ok:
+            raise DesktopAmbiguousSendError("未通过消息核验")
+
+    monkeypatch.setattr(gateway, "_wait_for_receipt", receipt)
 
     hooks = _HookRecorder()
-    with pytest.raises(DesktopAmbiguousSendError, match="消息级成功回执"):
+    if receipt_ok:
         gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
+        assert hooks.events == ["paste_started", "send_pressed", "sent"]
+    else:
+        with pytest.raises(DesktopAmbiguousSendError, match="消息核验"):
+            gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
+        assert hooks.events == ["paste_started", "send_pressed"]
 
-    assert hooks.events == ["paste_started", "send_pressed"]
-    assert visual_checks == 3
+    assert visual_checks == 2
     assert foreground_checks == 2
 
 

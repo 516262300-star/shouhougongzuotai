@@ -45,6 +45,16 @@ aftersales-sync-erp-scrap = "aftersales_workbench.integrations.erp.scrap_cli:mai
 aftersales-execute-module1-erp-refunds = "aftersales_workbench.workflows.module1_erp_refund_cli:main"
 
 [project.optional-dependencies]
+desktop = [
+  "pillow>=12.0,<13",
+  "rapidocr-onnxruntime==1.4.4",
+  "winrt-Windows.Foundation==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Foundation.Collections==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Globalization==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Graphics.Imaging==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Media.Ocr==3.2.1; sys_platform == 'win32'",
+  "winrt-Windows.Storage.Streams==3.2.1; sys_platform == 'win32'",
+]
 dev = [
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
