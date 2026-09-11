@@ -50,6 +50,11 @@ def refund_display(
             "NOT_APPLICABLE", "不涉及退款", "neutral",
             "补寄/维修仅记录；平台售后完成和接口金额不代表实际退款。",
         )
+    elif status == "NOT_APPLICABLE":
+        status, label, tone, reason = (
+            "NOT_APPLICABLE", "不涉及退款", "neutral",
+            "平台明确的零金额非资金售后；流程完成不代表资金退款或ERP平账。",
+        )
     elif confirmed_refund(order, platform):
         status, label, tone, reason = (
             "SUCCESS", "平台已退款", "success",

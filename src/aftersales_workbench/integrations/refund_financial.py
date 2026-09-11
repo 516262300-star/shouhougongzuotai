@@ -7,6 +7,7 @@ from decimal import Decimal
 from aftersales_workbench.db.models import (
     RECORD_ONLY_AFTERSALES_TYPES,
     AfterSalesOrder,
+    AfterSalesType,
     Platform,
 )
 
@@ -94,8 +95,13 @@ def apply_refund_financial_state(
     platform: Platform | str,
 ) -> None:
     """同步平台状态；一旦记录为成功，不被后续缺字段的增量响应清空。"""
-    if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
-        # 补寄/维修结束不是资金退款；接口金额仅保留作原始记录。
+    zero_1688_return = (
+        str(platform) == Platform.ALIBABA_1688.value
+        and order.after_sales_type == AfterSalesType.RETURN_AND_REFUND
+        and order.refund_amount == Decimal("0")
+    )
+    if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES or zero_1688_return:
+        # 补寄/维修、经1688适配器确认的0元退货结束都不是资金退款。
         order.refund_financial_status = NOT_APPLICABLE
         order.actual_refund_amount = None
         order.refund_completed_at = None

@@ -9,6 +9,7 @@ from aftersales_workbench.db.models import (
     AfterSalesItem,
     AfterSalesOrder,
     ItemStatus,
+    Platform,
     PlatformSyncCursor,
     Shop,
     WorkflowStatus,
@@ -98,6 +99,13 @@ class SqlAlchemyMarketplaceSyncRepository:
                 raise ValueError(
                     f"售后单号 {refund.after_sales_sn} 已属于其他平台或店铺，拒绝覆盖"
                 )
+            if (
+                config.platform == Platform.ALIBABA_1688
+                and refund.refund_amount == 0
+                and (order.refund_financial_status == "SUCCESS"
+                     or (order.actual_refund_amount or 0) > 0)
+            ):
+                raise ValueError("1688零金额售后与已有资金事实冲突，禁止覆盖已退款记录")
             order.shop_id = shop_id
             order.platform_order_sn = refund.platform_order_sn
             order.after_sales_type = refund.after_sales_type
