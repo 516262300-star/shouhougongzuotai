@@ -37,7 +37,11 @@ class DesktopBeforePasteError(DesktopNoticeSendError):
 
 
 class DesktopForegroundUnavailableError(DesktopBeforePasteError):
-    """主窗口激活超时，尚未操作搜索或消息输入，可延迟自动重试。"""
+    """输入前无法保持目标窗口前台，可延迟自动重试。"""
+
+
+class DesktopSearchUnavailableError(DesktopBeforePasteError):
+    """未确认搜索框获得焦点，尚未输入任何文字，可延迟自动重试。"""
 
 
 class DesktopAmbiguousSendError(DesktopNoticeSendError):
@@ -309,7 +313,8 @@ def desktop_blocking_message(entry: DesktopLedgerEntry) -> str:
     if entry.state is DesktopLedgerState.PAUSED_BEFORE_PASTE:
         if entry.retry_after:
             return (
-                f"任务 {entry.task_id} 企业微信前台激活失败，尚未输入消息；"
+                f"任务 {entry.task_id} 发送前暂时失败：{entry.error or '企微窗口未就绪'}；"
+                "尚未输入消息，"
                 "等待至少60秒后由后台自动重试，请保持企微登录且桌面未锁屏"
             )
         return (
@@ -526,7 +531,9 @@ class DesktopNoticeSendService:
                         error=str(exc),
                         retry_after=(
                             (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
-                            if isinstance(exc, DesktopForegroundUnavailableError)
+                            if isinstance(exc, (
+                                DesktopForegroundUnavailableError, DesktopSearchUnavailableError,
+                            ))
                             else None
                         ),
                     )

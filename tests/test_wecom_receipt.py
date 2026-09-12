@@ -180,8 +180,8 @@ def test_bad_group_existing_draft_or_wrong_typed_text_never_press_send(
     gateway = object.__new__(WindowsWeComGateway)
     gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
     for name in ['_raise_if_security_window', '_raise_if_escape', '_hotkey', '_tap',
-                 '_sleep_range', '_snapshot', '_wait_for_change', '_type_unicode',
-                 '_type_multiline_message', '_restore_previous_window']:
+                 '_sleep_range', '_snapshot', '_open_group_search', '_wait_for_change',
+                 '_type_unicode', '_type_multiline_message', '_restore_previous_window']:
         monkeypatch.setattr(gateway, name, lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, '_activate_wecom_foreground', lambda: (11, 101))
     monkeypatch.setattr(gateway, '_require_wecom_foreground', lambda **kwargs: (11, 101))

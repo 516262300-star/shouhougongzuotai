@@ -15,8 +15,10 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopAmbiguousSendError,
     DesktopBeforePasteError,
     DesktopForegroundUnavailableError,
+    DesktopSearchUnavailableError,
     DesktopSendHooks,
 )
+from aftersales_workbench.workflows.wecom_search import search_field_focused
 
 if TYPE_CHECKING:
     from PIL.Image import Image
@@ -218,7 +220,7 @@ class WindowsWeComGateway:
             ) from exc
 
     def send(self, plan: DesktopNoticePlan, hooks: DesktopSendHooks) -> None:
-        previous_hwnd = int(self.user32.GetForegroundWindow())
+        previous_hwnd = int(self.user32.GetForegroundWindow() or 0)
         self._restore_hwnd = previous_hwnd
         self._target_hwnd = None
         self._target_process_id = None
@@ -234,15 +236,7 @@ class WindowsWeComGateway:
             self._sleep_range(120, 260)
             self._sleep_range(320, 620)
 
-            before_search = self._snapshot(hwnd)
-            self._hotkey(VK_CONTROL, VK_F)
-            self._wait_for_change(
-                hwnd,
-                before_search,
-                timeout_ms=2200,
-                threshold=0.002,
-                error="未检测到企业微信搜索区域变化",
-            )
+            self._open_group_search(hwnd, process_id)
 
             self._hotkey(VK_CONTROL, VK_A)
             self._tap(VK_BACK)
@@ -297,6 +291,26 @@ class WindowsWeComGateway:
             finally:
                 self._target_hwnd = None
                 self._target_process_id = None
+
+    def _open_group_search(self, hwnd: int, process_id: int) -> None:
+        # 搜索框已获得焦点时，Ctrl+F 不产生新画面变化，但可以直接继续搜索。
+        # 两次有限尝试均只发送搜索快捷键；失败前不输入群名或聊天消息。
+        for _attempt in range(2):
+            self._raise_if_escape()
+            self._raise_if_security_window(process_id)
+            self._hotkey(VK_CONTROL, VK_F)
+            deadline = time.monotonic() + 2.2
+            while time.monotonic() < deadline:
+                self._raise_if_escape()
+                self._raise_if_security_window(process_id)
+                snapshot = self._full_snapshot(hwnd)
+                focused = search_field_focused(snapshot)
+                self._require_target_foreground(hwnd=hwnd)
+                self._raise_if_security_window(process_id)
+                if focused:
+                    return
+                self._sleep_range(120, 180)
+        raise DesktopSearchUnavailableError("未确认企业微信搜索框获得焦点，尚未输入群名或消息")
 
     def _activate_wecom_foreground(self) -> tuple[int, int]:
         candidate = _select_wecom_window(self._visible_wecom_windows())
@@ -375,7 +389,7 @@ class WindowsWeComGateway:
     def _focus_window(self, hwnd: int) -> None:
         if self.user32.IsIconic(hwnd):
             self.user32.ShowWindow(hwnd, SW_RESTORE)
-        foreground = int(self.user32.GetForegroundWindow())
+        foreground = int(self.user32.GetForegroundWindow() or 0)
         current_thread = int(self.kernel32.GetCurrentThreadId())
         foreground_thread = int(
             self.user32.GetWindowThreadProcessId(foreground, None)
@@ -402,7 +416,7 @@ class WindowsWeComGateway:
             if process_id is not None:
                 self._raise_if_security_window(process_id, ambiguous=True)
             # 用户已转到其他页面时不再抢回；只有仍占用企微时才归还焦点。
-            if int(self.user32.GetForegroundWindow()) != self._target_hwnd:
+            if int(self.user32.GetForegroundWindow() or 0) != self._target_hwnd:
                 return
             self._restore_previous_window(self._restore_hwnd)
         except Exception:
@@ -507,7 +521,7 @@ class WindowsWeComGateway:
             raise DesktopForegroundUnavailableError(error)
 
     def _require_wecom_foreground(self, *, ambiguous: bool = False) -> tuple[int, int]:
-        hwnd = int(self.user32.GetForegroundWindow())
+        hwnd = int(self.user32.GetForegroundWindow() or 0)
         process_id = wintypes.DWORD()
         self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process_id))
         process_name = Path(self._process_path(process_id.value)).name.lower()
@@ -593,7 +607,7 @@ class WindowsWeComGateway:
         if process_id.value != self._target_process_id:
             raise DesktopAmbiguousSendError("原企业微信进程已变化，消息发送结果待核验")
         self._raise_if_security_window(process_id.value, ambiguous=True)
-        current = int(self.user32.GetForegroundWindow())
+        current = int(self.user32.GetForegroundWindow() or 0)
         # 若用户已切到有标题的其他页面，复核结束后回到那个页面；桌面临时
         # 抢焦点但没有标题时，继续恢复最初记录的工作窗口。
         if current != hwnd and self.user32.IsWindow(current):

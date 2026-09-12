@@ -97,11 +97,12 @@ def test_escape_state_ignores_stale_pressed_since_last_query_bit() -> None:
 
 
 @pytest.mark.parametrize("receipt_ok", [False, True])
-def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok) -> None:
+@pytest.mark.parametrize("previous_window", [None, 99])
+def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok, previous_window) -> None:
     """屏幕变化不能代替消息成功回执。"""
 
     gateway = object.__new__(WindowsWeComGateway)
-    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
+    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: previous_window)
     foreground_checks = 0
     visual_checks = 0
 
@@ -122,6 +123,7 @@ def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok) -> None
     monkeypatch.setattr(gateway, "_tap", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_sleep_range", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_snapshot", lambda *args, **kwargs: object())
+    monkeypatch.setattr(gateway, "_open_group_search", lambda *args: None)
     monkeypatch.setattr(gateway, "_wait_for_change", wait_for_change)
     monkeypatch.setattr(gateway, "_type_unicode", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_type_multiline_message", lambda *args, **kwargs: None)
@@ -145,7 +147,7 @@ def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok) -> None
             gateway.send(SimpleNamespace(target_group="测试群", message="测试消息"), hooks)
         assert hooks.events == ["paste_started", "send_pressed"]
 
-    assert visual_checks == 2
+    assert visual_checks == 1
     assert foreground_checks == 2
 
 

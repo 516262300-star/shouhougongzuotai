@@ -14,7 +14,8 @@ def sending(monkeypatch):
     clock = [0.0]
     gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: foreground[0])
     monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(gateway, "_sleep_range", lambda *args, **kw: clock.__setitem__(0, clock[0] + .5))
+    monkeypatch.setattr(gateway, "_sleep_range",
+                        lambda *args, **kw: clock.__setitem__(0, clock[0] + .5))
 
     def activate():
         foreground[0] = 11
@@ -23,6 +24,7 @@ def sending(monkeypatch):
     monkeypatch.setattr(gateway, "_activate_wecom_foreground", activate)
     monkeypatch.setattr(gateway, "_require_wecom_foreground", lambda **kw: (11, 101))
     for name in ("_raise_if_security_window", "_raise_if_escape", "_hotkey", "_snapshot",
+                 "_open_group_search",
                  "_wait_for_change", "_type_unicode", "_type_multiline_message"):
         monkeypatch.setattr(gateway, name, lambda *args, **kw: None)
     monkeypatch.setattr(gateway, "_tap", lambda key, **kw: keys.append((key, kw)))
@@ -132,7 +134,8 @@ def test_escape_or_security_freezes_ui_including_finally(sending, monkeypatch, r
 def test_user_already_on_another_page_is_not_forced_back(sending, monkeypatch):
     case = sending
     monkeypatch.setattr(case.gateway, "_read_receipt", lambda *a, **kw: case.prepared)
-    monkeypatch.setattr(case.gateway, "_wait_for_receipt", lambda *a: case.foreground.__setitem__(0, 22))
+    monkeypatch.setattr(case.gateway, "_wait_for_receipt",
+                        lambda *a: case.foreground.__setitem__(0, 22))
     case.gateway.send(case.plan, case.hooks)
     assert case.events[-1] == "sent" and case.restored == []
 
@@ -141,7 +144,9 @@ def test_user_already_on_another_page_is_not_forced_back(sending, monkeypatch):
     (101, False, False, True), (102, False, False, False),
     (101, True, False, False), (101, False, True, False),
 ])
-def test_recovery_checks_original_process_and_safety_before_focus(monkeypatch, pid, security, escaped, allowed):
+def test_recovery_checks_original_process_and_safety_before_focus(
+    monkeypatch, pid, security, escaped, allowed,
+):
     gateway = object.__new__(module.WindowsWeComGateway)
     gateway._target_hwnd, gateway._target_process_id, gateway._restore_hwnd = 11, 101, 99
     gateway._ui_suspended = False
@@ -151,7 +156,8 @@ def test_recovery_checks_original_process_and_safety_before_focus(monkeypatch, p
         pointer._obj.value = pid
 
     gateway.user32 = SimpleNamespace(IsWindow=lambda h: True, GetWindowThreadProcessId=process,
-                                    GetForegroundWindow=lambda: 22, GetWindowTextLengthW=lambda h: 10)
+                                    GetForegroundWindow=lambda: 22,
+                                    GetWindowTextLengthW=lambda h: 10)
 
     def safety(*args, **kwargs):
         if security or escaped:

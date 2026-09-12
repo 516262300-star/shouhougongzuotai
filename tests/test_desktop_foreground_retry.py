@@ -39,9 +39,11 @@ def setup_sender(tmp_path, monkeypatch, failure, after_paste=False):
     return session, ledger, service, plan
 
 
-def test_activation_failure_retries_only_after_cooldown(tmp_path, monkeypatch):
+@pytest.mark.parametrize('error_type', [sender.DesktopForegroundUnavailableError,
+                                       sender.DesktopSearchUnavailableError])
+def test_activation_failure_retries_only_after_cooldown(tmp_path, monkeypatch, error_type):
     session, ledger, service, plan = setup_sender(
-        tmp_path, monkeypatch, sender.DesktopForegroundUnavailableError('激活失败'),
+        tmp_path, monkeypatch, error_type('未就绪'),
     )
     result = service.run([plan])
     entry = ledger.latest(61)
@@ -76,9 +78,11 @@ def test_other_failures_never_get_automatic_retry(tmp_path, monkeypatch, failure
     ) == 0
 
 
-def test_foreground_error_after_paste_cannot_be_downgraded(tmp_path, monkeypatch):
+@pytest.mark.parametrize('error_type', [sender.DesktopForegroundUnavailableError,
+                                       sender.DesktopSearchUnavailableError])
+def test_foreground_error_after_paste_cannot_be_downgraded(tmp_path, monkeypatch, error_type):
     session, ledger, service, plan = setup_sender(
-        tmp_path, monkeypatch, sender.DesktopForegroundUnavailableError('失焦'), True,
+        tmp_path, monkeypatch, error_type('未就绪'), True,
     )
     service.run([plan])
     assert ledger.latest(61).state is sender.DesktopLedgerState.PASTE_STARTED
@@ -146,9 +150,10 @@ def test_same_process_window_change_only_retries_before_input(monkeypatch, ambig
 
 
 @pytest.mark.parametrize('ambiguous', [False, True])
-def test_other_app_focus_only_retries_before_input(monkeypatch, ambiguous):
+@pytest.mark.parametrize('foreground', [None, 12])
+def test_other_app_focus_only_retries_before_input(monkeypatch, ambiguous, foreground):
     gateway = object.__new__(windows.WindowsWeComGateway)
-    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 12,
+    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: foreground,
                                     GetWindowThreadProcessId=lambda *args: None)
     gateway.process_name = 'wxwork.exe'
     monkeypatch.setattr(gateway, '_process_path', lambda pid: 'other.exe')

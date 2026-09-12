@@ -1,0 +1,129 @@
+--- a/src/aftersales_workbench/workflows/windows_wecom.py
++++ b/src/aftersales_workbench/workflows/windows_wecom.py
+@@ -17 +17,2 @@
+-    DesktopForegroundUnavailableError,
++    DesktopForegroundUnavailableError,
++    DesktopSearchUnavailableError,
+@@ -19 +20,2 @@
+-)
++)
++from aftersales_workbench.workflows.wecom_search import search_field_focused
+@@ -221 +223 @@
+-        previous_hwnd = int(self.user32.GetForegroundWindow())
++        previous_hwnd = int(self.user32.GetForegroundWindow() or 0)
+@@ -237,9 +239 @@
+-            before_search = self._snapshot(hwnd)
+-            self._hotkey(VK_CONTROL, VK_F)
+-            self._wait_for_change(
+-                hwnd,
+-                before_search,
+-                timeout_ms=2200,
+-                threshold=0.002,
+-                error="未检测到企业微信搜索区域变化",
+-            )
++            self._open_group_search(hwnd, process_id)
+@@ -300,0 +295,20 @@
++    def _open_group_search(self, hwnd: int, process_id: int) -> None:
++        # 搜索框已获得焦点时，Ctrl+F 不产生新画面变化，但可以直接继续搜索。
++        # 两次有限尝试均只发送搜索快捷键；失败前不输入群名或聊天消息。
++        for _attempt in range(2):
++            self._raise_if_escape()
++            self._raise_if_security_window(process_id)
++            self._hotkey(VK_CONTROL, VK_F)
++            deadline = time.monotonic() + 2.2
++            while time.monotonic() < deadline:
++                self._raise_if_escape()
++                self._raise_if_security_window(process_id)
++                snapshot = self._full_snapshot(hwnd)
++                focused = search_field_focused(snapshot)
++                self._require_target_foreground(hwnd=hwnd)
++                self._raise_if_security_window(process_id)
++                if focused:
++                    return
++                self._sleep_range(120, 180)
++        raise DesktopSearchUnavailableError("未确认企业微信搜索框获得焦点，尚未输入群名或消息")
++
+@@ -378 +392 @@
+-        foreground = int(self.user32.GetForegroundWindow())
++        foreground = int(self.user32.GetForegroundWindow() or 0)
+@@ -405 +419 @@
+-            if int(self.user32.GetForegroundWindow()) != self._target_hwnd:
++            if int(self.user32.GetForegroundWindow() or 0) != self._target_hwnd:
+@@ -510 +524 @@
+-        hwnd = int(self.user32.GetForegroundWindow())
++        hwnd = int(self.user32.GetForegroundWindow() or 0)
+@@ -596 +610 @@
+-        current = int(self.user32.GetForegroundWindow())
++        current = int(self.user32.GetForegroundWindow() or 0)
+--- a/src/aftersales_workbench/workflows/desktop_sender.py
++++ b/src/aftersales_workbench/workflows/desktop_sender.py
+@@ -39,2 +39,6 @@
+-class DesktopForegroundUnavailableError(DesktopBeforePasteError):
+-    """主窗口激活超时，尚未操作搜索或消息输入，可延迟自动重试。"""
++class DesktopForegroundUnavailableError(DesktopBeforePasteError):
++    """输入前无法保持目标窗口前台，可延迟自动重试。"""
++
++
++class DesktopSearchUnavailableError(DesktopBeforePasteError):
++    """未确认搜索框获得焦点，尚未输入任何文字，可延迟自动重试。"""
+@@ -312 +316,2 @@
+-                f"任务 {entry.task_id} 企业微信前台激活失败，尚未输入消息；"
++                f"任务 {entry.task_id} 发送前暂时失败：{entry.error or '企微窗口未就绪'}；"
++                "尚未输入消息，"
+@@ -529 +534,3 @@
+-                            if isinstance(exc, DesktopForegroundUnavailableError)
++                            if isinstance(exc, (
++                                DesktopForegroundUnavailableError, DesktopSearchUnavailableError,
++                            ))
+--- /dev/null
++++ b/src/aftersales_workbench/workflows/wecom_search.py
+@@ -0,0 +1,49 @@
++"""识别企微左上方搜索框的蓝色焦点边框，不依赖整窗变化量。"""
++from __future__ import annotations
++
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:
++    from PIL.Image import Image
++
++
++def search_field_focused(image: Image) -> bool:
++    rgb = image.convert("RGB")
++    if rgb.width < 800 or rgb.height < 550:
++        return False
++    w, h = rgb.size
++    pixels = rgb.load()
++    x0, x1 = int(w * .035), int(w * .30)
++    y0, y1 = int(h * .01), int(h * .13)
++    blue = set()
++    for y in range(y0, y1):
++        for x in range(x0, x1):
++            r, g, b = pixels[x, y]
++            if r <= 150 and 70 <= g <= 210 and b >= 135 and b - r >= 55 and b - g >= 20:
++                blue.add((x, y))
++
++    # 两条长水平边加左右竖边才是焦点框；蓝色文字、列表高亮不算。
++    edges = []
++    for y in range(y0, y1):
++        xs = [x for x in range(x0, x1) if (x, y) in blue]
++        if not xs:
++            continue
++        left, right = xs[0], xs[-1]
++        if w * .08 <= right - left <= w * .26 and len(xs) >= (right - left) * .85:
++            edges.append((left, right, y))
++    for left, right, top in edges:
++        for other_left, other_right, bottom in edges:
++            if not h * .025 <= bottom - top <= h * .08:
++                continue
++            tolerance = max(4, round(w / 350))
++            if abs(left - other_left) > tolerance or abs(right - other_right) > tolerance:
++                continue
++            # 圆角使竖边比水平边的端点向外伸出少量像素。
++            margin = max(5, round((bottom - top) * .25))
++            radius = max(14, round(w * .01))
++            sides = [sum(any((x, y) in blue for x in range(edge - radius, edge + radius + 1))
++                         for y in range(top + margin, bottom - margin))
++                     for edge in (left, right)]
++            if min(sides) >= (bottom - top - 2 * margin) * .8:
++                return True
++    return False
