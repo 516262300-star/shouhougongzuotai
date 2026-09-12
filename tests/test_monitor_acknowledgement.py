@@ -76,26 +76,6 @@ def test_ack_route_local_origin_and_validation(tmp_path):
         app.dependency_overrides.clear()
 
 
-def test_only_fully_located_acknowledged_warning_changes_stage_label():
-    import copy
-    from types import SimpleNamespace
-
-    from aftersales_workbench.api.routes.monitor import runtime_status
-
-    source = {"modules": [{"stages": [{"id": "sync", "status": "warning", "error": "1笔异常"}]}]}
-    monitor = SimpleNamespace(get_status=lambda: copy.deepcopy(source))
-    for opened, missing, expected in ((0, 0, "acknowledged"), (1, 0, "warning"), (0, 1, "warning")):
-        issues = SimpleNamespace(
-            list_issues=lambda opened=opened, missing=missing, **kw: {
-                "counts": {"OPEN": opened, "ACKNOWLEDGED": 1},
-                "focus": {"issue_keys": ["sync:1:refund"], "unlocated_count": missing},
-            }
-        )
-        result = runtime_status(monitor, issues)
-        assert result["modules"][0]["stages"][0]["status"] == expected
-    assert source["modules"][0]["stages"][0]["error"] == "1笔异常"
-
-
 def test_ack_does_not_dismiss_sync_or_prevent_retry(tmp_path):
     from datetime import datetime, timedelta
 

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from aftersales_workbench.api.routes.monitor import (
     get_desktop_recovery_service,
+    get_issue_service,
     get_monitor_service,
 )
 from aftersales_workbench.main import app
@@ -68,6 +69,30 @@ def test_retry_desktop_notification_uses_recovery_service() -> None:
     assert response.status_code == 202
     assert response.json()["task_id"] == 823
     assert response.json()["state"] == "Ready"
+
+
+def test_runtime_status_does_not_initialize_or_collect_issue_history() -> None:
+    from types import SimpleNamespace
+
+    snapshot = FakeMonitorService().get_status()
+    snapshot["modules"] = [{"stages": [
+        {"id": "sync", "status": "warning", "shops_failed": 0, "error": "一笔隔离待重查"},
+        {"id": "tmall_sync", "status": "failed", "error": "整店接口失败"},
+    ]}]
+
+    def unavailable_issues():
+        raise AssertionError("运行监控不得初始化异常服务或等待异常日志锁")
+
+    app.dependency_overrides[get_monitor_service] = lambda: SimpleNamespace(
+        get_status=lambda: snapshot
+    )
+    app.dependency_overrides[get_issue_service] = unavailable_issues
+    try:
+        response = TestClient(app).get("/api/v1/monitor/status")
+    finally:
+        app.dependency_overrides.clear()
+    assert response.status_code == 200
+    assert response.json() == snapshot
 
 
 def test_latest_json_line_skips_non_json_and_reads_latest_cycle(tmp_path: Path) -> None:

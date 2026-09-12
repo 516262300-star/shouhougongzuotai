@@ -123,31 +123,10 @@ def get_capability_service(
 @router.get("/status")
 def runtime_status(
     service: Annotated[RuntimeMonitorService, Depends(get_monitor_service)],
-    issues: Annotated[RuntimeIssueService, Depends(get_issue_service)],
 ) -> dict[str, Any]:
-    result = service.get_status()
-    for module in result.get("modules", []):
-        for stage in module.get("stages", []):
-            if (
-                stage.get("id") not in {"sync", "tmall_sync", "marketplace_sync"}
-                or stage.get("status") != "warning"
-            ):
-                continue
-            try:
-                snapshot = issues.list_issues(state="ALL", stage_id=stage["id"])
-                focus = snapshot.get("focus") or {}
-                if (
-                    snapshot["counts"].get("ACKNOWLEDGED", 0)
-                    and not snapshot["counts"]["OPEN"]
-                    and not focus.get("unlocated_count")
-                    and focus.get("issue_keys")
-                ):
-                    stage["source_error"] = stage.get("error")
-                    stage["error"] = "已知悉，转人工跟进；异常单继续隔离重查，其他订单正常同步"
-                    stage["status"] = "acknowledged"
-            except Exception:
-                pass  # 明细读取失败时保留原告警，绝不按零异常处理。
-    return result
+    # 运行监控只读取运行快照；订单异常及人工处置在独立异常页按需核查。
+    # 不在每次15秒轮询中扫描全部业务来源或争抢异常日志的SQLite写锁。
+    return service.get_status()
 
 
 @router.get("/capabilities")
