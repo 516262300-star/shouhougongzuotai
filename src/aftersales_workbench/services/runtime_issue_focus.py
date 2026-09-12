@@ -1,5 +1,6 @@
 """将运行阶段告警限定到本次读取的真实来源，不用历史大类匹配冒充定位。"""
 
+import json
 import re
 from datetime import UTC, datetime
 
@@ -12,7 +13,7 @@ STAGE_LABELS = {
     "notification": "企业微信发送",
     "logistics_gate": "物流闸门",
     "module1_erp_refunds": "拦截退回 ERP 补单",
-    "pdd_refund": "拼多多拦截退款",
+    "pdd_refund": "平台退款执行",
     "tmall_refund": "天猫拦截退款",
     "module2_erp_intake": "退货验收核对",
     "module2_refund_tasks": "生成退货退款任务",
@@ -59,7 +60,10 @@ def source_matches(row, stage_id):
                 "平台订单号或发货运单号为空，无法核对 ERP 退货单",
             }
         )
-    if stage_id in {"pdd_refund", "tmall_refund", "module2_pdd_refunds", "module2_tmall_refunds"}:
+    if stage_id == "pdd_refund":
+        # 此执行阶段同时消费模块1和模块3的 PDD_AGREE_REFUND。
+        return row.get("platform") == "PDD" and action == "PDD_AGREE_REFUND"
+    if stage_id in {"tmall_refund", "module2_pdd_refunds", "module2_tmall_refunds"}:
         platform = "TMALL" if "tmall" in stage_id else "PDD"
         module = "module2" if stage_id.startswith("module2") else "module1"
         return (origin == module and row.get("platform") == platform
@@ -78,8 +82,21 @@ def select_focus(rows, cycle, stage_id, requested_cycle=None):
     blocking_task = (re.search(r"任务\s*(\d+)", stage.get("error") or "")
                      if stage_id == "notification" else None)
     candidates = []
+    explicit_ids = stage.get("failed_task_ids")
+    exact = isinstance(explicit_ids, list)
+    valid_ids = (exact and len(explicit_ids) <= 500
+                 and all(type(i) is int and i > 0 for i in explicit_ids)
+                 and len(set(explicit_ids)) == len(explicit_ids)
+                 and stage.get("failed") == len(explicit_ids))
     if active:
         for row in rows:
+            if exact:
+                # 可靠本轮任务身份优先；后来已恢复/停止也仍可追溯本次失败。
+                if (valid_ids and row.get("task_id") in explicit_ids
+                        and row["key"] == f"task:{row.get('task_id')}"
+                        and source_matches(row, stage_id)):
+                    candidates.append(row["key"])
+                continue
             if row["state"] != "OPEN" or not source_matches(row, stage_id):
                 continue
             if stage_id == "sync":
@@ -91,10 +108,12 @@ def select_focus(rows, cycle, stage_id, requested_cycle=None):
             # 同步隔离/店铺失败及告警明确指名的未核验发送任务持续阻塞。
             if stage_id not in {"sync", "tmall_sync", "marketplace_sync"} and not blocking_task:
                 checked = timestamp(row.get("checked_at"))
-                if not (start and end and checked and start.replace(microsecond=0) <= checked <= end):
+                if not (start and end and checked
+                        and start.replace(microsecond=0) <= checked <= end):
                     continue
                 if stage_id in {"notification_preflight", "logistics_gate"}:
-                    other = "logistics_gate" if stage_id == "notification_preflight" else "notification_preflight"
+                    other = ("logistics_gate" if stage_id == "notification_preflight"
+                             else "notification_preflight")
                     if (cycle.get(other) or {}).get("error"):
                         continue  # 两次查询都有错但未记录各自单号，无法唯一归属。
             candidates.append(row["key"])
@@ -122,8 +141,11 @@ def select_focus(rows, cycle, stage_id, requested_cycle=None):
         "issue_keys": candidates,
         "unlocated_count": missing,
         "message": (
-            f"已定位 {len(candidates)} 项，另有 {missing} 项缺少可核实来源，需维护人员核对本轮日志。"
+            f"已定位 {len(candidates)} 项，另有 {missing} 项缺少可核实来源，"
+            "需维护人员核对本轮日志。"
             if candidates and missing else
+            "展示所选运行周期实际失败的任务及其最新状态；已恢复项保留本次失败来源。"
+            if candidates and exact else
             "仅展示这条告警对应的当前异常，不包含其他阶段或历史异常。"
             if candidates else
             "当前阶段已不再报告这条告警；历史记录仍保留在全部异常中，不代表整笔售后已闭环。"
@@ -131,3 +153,22 @@ def select_focus(rows, cycle, stage_id, requested_cycle=None):
             "这条告警暂无可核实的订单级来源；请维护人员核对本轮日志，不展示无关历史订单。"
         ),
     }
+
+
+def load_focus_cycle(path, requested_cycle, latest):
+    """保留点击时的周期；只从现存本机日志读取，不把新周期冒充所选周期。"""
+    wanted = timestamp(requested_cycle)
+    if not wanted or wanted == timestamp(latest.get("finished_at")) or not path.exists():
+        return latest
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        stream.seek(max(0, stream.tell() - 2_000_000))
+        lines = stream.read().splitlines()
+    for line in reversed(lines):
+        try:
+            cycle = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(cycle, dict) and timestamp(cycle.get("finished_at")) == wanted:
+            return cycle
+    return latest

@@ -27,7 +27,7 @@ from aftersales_workbench.db.models import (
     Shop,
     TmallSyncCursor,
 )
-from aftersales_workbench.services.runtime_issue_focus import select_focus
+from aftersales_workbench.services.runtime_issue_focus import load_focus_cycle, select_focus
 from aftersales_workbench.services.runtime_monitor import _latest_json_line
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeLedger
 
@@ -571,17 +571,29 @@ class RuntimeIssueService:
         all_items = list(saved.values())
         focus = None
         if stage_id:
+            selected_cycle = getattr(self.collector, "latest_cycle", {})
+            project_root = getattr(self.collector, "project_root", None)
+            if project_root and cycle_finished_at:
+                selected_cycle = load_focus_cycle(
+                    Path(project_root) / ".runtime" / "module1-worker.log",
+                    cycle_finished_at, selected_cycle,
+                )
             focus = select_focus(
                 observations,
-                getattr(self.collector, "latest_cycle", {}),
+                selected_cycle,
                 stage_id,
                 cycle_finished_at,
             )
             focus["stage_error"] = safe_text(
-                (getattr(self.collector, "latest_cycle", {}).get(stage_id) or {}).get("error")
+                (selected_cycle.get(stage_id) or {}).get("error")
             )
             keys = set(focus["issue_keys"])
             all_items = [item for item in all_items if item["key"] in keys]
+            known = {item["key"] for item in all_items}
+            for row in observations:
+                if row["key"] in keys and row["key"] not in known:
+                    all_items.append({**row, "events": [], "first_seen_at": now,
+                                      "observed_at": now, "can_acknowledge": False})
             acknowledged = sum(item["state"] == "ACKNOWLEDGED" for item in all_items)
             focus["acknowledged_count"] = acknowledged
             if acknowledged:

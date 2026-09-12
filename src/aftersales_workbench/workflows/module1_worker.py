@@ -425,6 +425,8 @@ class Module1WorkerCycleResult:
             return {"status": "missing"}
         result = {"status": stage.status, "error": stage.error}
         result.update({key: stage.details.get(key) for key in keys})
+        if "failed_task_ids" in stage.details:
+            result["failed_task_ids"] = list(stage.details["failed_task_ids"])
         return result
 
 

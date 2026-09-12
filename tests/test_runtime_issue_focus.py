@@ -146,3 +146,66 @@ def test_intake_waiting_and_item_mismatch_are_not_query_failure_alert():
     result = select_focus(rows, cycle("module2_erp_intake", unavailable=1), "module2_erp_intake")
     assert result["issue_keys"] == ["poll:module2_erp:2"]
     assert result["unlocated_count"] == 0
+
+
+def test_refund_focus_uses_actual_failed_ids_not_old_task_recheck_time():
+    rows = [observation(f"task:{i}", "REFUND", "failure", active=True,
+        task_id=i, platform="PDD", action_type="PDD_AGREE_REFUND", origin="module1",
+        checked_at="2026-09-11T03:00:30Z") for i in (10, 11)]
+    selected = cycle("pdd_refund", failed=1, failed_task_ids=[11])
+    result = select_focus(rows, selected, "pdd_refund")
+    assert result["issue_keys"] == ["task:11"] and result["unlocated_count"] == 0
+
+
+def test_exact_failure_retains_recovered_task_and_module3_origin():
+    row = observation("task:11", "REFUND", "平台回查已成功", recovered=True,
+        task_id=11, platform="PDD", action_type="PDD_AGREE_REFUND", origin="module3",
+        checked_at="2026-09-11T04:00:00Z")
+    selected = cycle("pdd_refund", failed=1, failed_task_ids=[11])
+    assert select_focus([row], selected, "pdd_refund")["issue_keys"] == ["task:11"]
+    wrong_action = {**row, "action_type": "PDD_AGREE_RETURN_REFUND", "origin": "module2"}
+    assert select_focus([wrong_action], selected, "pdd_refund")["issue_keys"] == []
+
+
+def test_invalid_failure_identity_does_not_fall_back_to_timestamp_guessing():
+    row = observation("task:11", "REFUND", "failure", active=True, task_id=11,
+        platform="PDD", action_type="PDD_AGREE_REFUND", origin="module1",
+        checked_at="2026-09-11T03:00:30Z")
+    for ids in ([11, 11], [True], ["11"], [], [11, 12]):
+        selected = cycle("pdd_refund", failed=1, failed_task_ids=ids)
+        assert select_focus([row], selected, "pdd_refund")["issue_keys"] == []
+
+
+def test_selected_cycle_survives_next_cycle_and_first_observation_after_recovery(tmp_path):
+    import json
+    old = cycle("pdd_refund", failed=1, failed_task_ids=[11])
+    latest = {**cycle("pdd_refund", status="completed", error=None, failed=0),
+              "finished_at": "2026-09-11T04:00:00Z"}
+    root = tmp_path / "project"
+    (root / ".runtime").mkdir(parents=True)
+    (root / ".runtime/module1-worker.log").write_text(
+        json.dumps(old) + "\n" + json.dumps(latest) + "\n", encoding="utf-8")
+    row = observation("task:11", "REFUND", "已回查成功", recovered=True, task_id=11,
+        platform="PDD", action_type="PDD_AGREE_REFUND", origin="module1")
+    service = journal(tmp_path, [row])
+    service.collector.latest_cycle = latest
+    service.collector.project_root = root
+    result = service.list_issues(state="ALL", stage_id="pdd_refund",
+                                 cycle_finished_at=old["finished_at"])
+    assert [r["key"] for r in result["items"]] == ["task:11"]
+    assert result["items"][0]["state"] == "RESOLVED"
+    assert result["focus"]["cycle_finished_at"] == old["finished_at"]
+    assert not result["focus"]["cycle_changed"]
+    assert service.list_issues()["items"] == []
+
+
+def test_worker_summary_preserves_executor_failure_identity():
+    from aftersales_workbench.workflows.actions import ExternalActionRunResult
+    from aftersales_workbench.workflows.module1_worker import (
+        Module1WorkerCycleResult,
+        WorkerStageResult,
+    )
+    result = ExternalActionRunResult(dry_run=False, failed=1, failed_task_ids=[11])
+    stage = WorkerStageResult(status="failed", details=result.safe_dict(), error="失败1笔")
+    summary = Module1WorkerCycleResult._stage_counts(stage, ("failed",))
+    assert summary["failed_task_ids"] == [11] and summary["failed"] == 1

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -112,6 +112,7 @@ class ExternalActionRunResult:
     erp_todos: int = 0
     succeeded: int = 0
     failed: int = 0
+    failed_task_ids: list[int] = field(default_factory=list)
     skipped: int = 0
     preflight_blocked: int = 0
 
@@ -863,6 +864,7 @@ class ExternalActionExecutor:
                             continue
                     ActionCoordinator(self.session).record_external_failure(task.id, str(exc))
                     result.failed += 1
+                    result.failed_task_ids.append(task.id)
             return result
         finally:
             qywx_client.close()
