@@ -8,6 +8,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopBeforePasteError,
 )
 from aftersales_workbench.workflows.wecom_receipt import (
+    LocalReceiptOcr,
     ReceiptObservation,
     WeComReceiptReader,
     group_key,
@@ -17,6 +18,31 @@ from aftersales_workbench.workflows.windows_wecom import WindowsWeComGateway
 
 GROUP = '测试-快递群'
 MESSAGE = '【售后快递拦截】\n发货运单号：JT12345678\n处理要求：请拦截退回。'
+
+
+@pytest.mark.parametrize('text,confidence,expected,fallback_calls', [
+    (GROUP, .99, GROUP, 0),
+    ('其他快递群', .99, '其他快递群', 0),
+    (GROUP, .94, 'Windows结果', 1),
+])
+def test_title_uses_confident_full_text_without_selecting_target(
+    text, confidence, expected, fallback_calls,
+):
+    reader = LocalReceiptOcr.__new__(LocalReceiptOcr)
+    reader.engine = lambda *_args, **_kwargs: ([[None, text, confidence]], None)
+    calls = []
+    reader.title_reader = SimpleNamespace(
+        read=lambda image: calls.append(image) or 'Windows结果',
+    )
+    assert reader.read_title(Image.new('RGB', (200, 35), 'white')) == expected
+    assert len(calls) == fallback_calls
+
+
+def test_confident_wrong_title_does_not_fall_back_to_matching_windows_title():
+    reader = LocalReceiptOcr.__new__(LocalReceiptOcr)
+    reader.engine = lambda *_args, **_kwargs: ([[None, '其他快递群', .99]], None)
+    reader.title_reader = SimpleNamespace(read=lambda _image: GROUP)
+    assert not WeComReceiptReader(reader).inspect(scene(), GROUP, MESSAGE).group_matches
 
 
 def scene(*, bubble=True, draft=False, mark=False, incoming=False):

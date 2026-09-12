@@ -65,7 +65,11 @@ class LocalReceiptOcr:
         )
 
     def read_title(self, image: Image) -> str:
-        return self.title_reader.read(image)
+        # 部分机器的 Windows OCR 会在紧凑粗体群名两端凭空加标点。
+        # 优先使用同一完整标题裁剪的高置信度识别；无法识别时才回退。
+        # 不按目标群名挑选结果，也不删除额外文字来凑出白名单。
+        recognized = self.read(image)
+        return recognized if recognized else self.title_reader.read(image)
 
     def read(self, image: Image) -> str:
         import numpy as np
