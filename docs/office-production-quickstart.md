@@ -27,6 +27,8 @@ SSH 和 MySQL 是自动启动的 Windows 服务；网页与业务后台由 `Leed
 
 MySQL 数据位于 `D:\LDSAftersales\mysql-data`；发送账本和监控状态位于 `D:\LDSAftersales\app\.runtime`。数据库只监听运行机本地，不通过网络共享 MySQL 数据文件。
 
-本次迁移在两台电脑均保留最终快照，运行机副本位于 `D:\LDSAftersales\backups\final`，包含业务数据库、发送账本、监控状态、发布指针、环境配置及核验清单。快照包含敏感资料，不能提交 GitHub或放进普通代码包。日常异机自动备份尚未配置。
+本次迁移在两台电脑均保留最终快照，运行机副本位于 `D:\LDSAftersales\backups\final`，包含业务数据库、发送账本、监控状态、发布指针、环境配置及核验清单。快照包含敏感资料，不能提交 GitHub或放进普通代码包。
+
+2026-09-12 已配置运行机每天 04:30 备份到 `D:\LDSAftersales\backups\daily`，开发机登录及每两小时通过受限 SSH 拉取最新成功副本到项目 `.runtime/office-deployment/backups`。开发机离线时运行机仍备份，异机副本等重新联网后更新。已完成首份备份、两机校验及 21 张表的隔离恢复；详见[备份与验收说明](office-backup-and-acceptance-20260912.md)。
 
 维护者可使用 `scripts/office_state_snapshot.py` 创建新的受保护快照；跨数据库和账本一致性要求先停写。迁移时已核对 21 张表数量、schema 和文件哈希，保留全部已发送、未知资金结果及防重记录，未用真实退款或发群消息做测试。

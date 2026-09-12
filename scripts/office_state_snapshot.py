@@ -29,7 +29,7 @@ def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
     defaults.write_text('[client]\n' + '\n'.join(f'{k}={option(str(v))}' for k, v in {'user': url.username, 'password': url.password or '', 'host': url.host, 'port': url.port or 3306}.items()), encoding='utf-8')
     try:
         with (output / 'database.sql').open('wb') as stream, (output / 'dump-error.log').open('wb') as errors:
-            result = subprocess.run([str(mysqldump), f'--defaults-extra-file={defaults}', '--single-transaction', '--quick', '--hex-blob', '--no-tablespaces', '--set-gtid-purged=OFF', '--column-statistics=0', '--default-character-set=utf8mb4', '--databases', url.database], stdout=stream, stderr=errors, check=False)
+            result = subprocess.run([str(mysqldump), f'--defaults-extra-file={defaults}', '--single-transaction', '--quick', '--hex-blob', '--no-tablespaces', '--set-gtid-purged=OFF', '--column-statistics=0', '--default-character-set=utf8mb4', '--databases', url.database], stdout=stream, stderr=errors, check=False, timeout=180)
         if result.returncode:
             raise RuntimeError('Database backup failed; inspect protected dump-error.log')
     finally:
