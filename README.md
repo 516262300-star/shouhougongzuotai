@@ -99,6 +99,7 @@ alembic downgrade -1
 | `MODULE2_WORKER_ENABLED` | 将模块 2 验货通过后的退款任务接入常驻后台周期 | `false` |
 | `MODULE2_PDD_REFUND_EXECUTION_ENABLED` | 模块 2 平台退款功能开关；还需 `PDD_WRITE_ENABLED=true` | `false` |
 | `MODULE2_REFUND_MIN_RETURN_ID` | 模块 2 自动退款上线水位，只处理不小于该收货记录 ID 的验货通过记录 | `0` |
+| `MODULE2_TODO_MIN_RETURN_ID` | 模块2人工待办起点；旧收货记录不补发，与退款水位独立，详见[修复与发布说明](docs/module2-todo-forward-only-20260912.md) | `0` |
 | `MODULE2_ERP_INTAKE_MIN_ORDER_ID` | ERP退货单自动接入水位，只处理不小于该本地售后订单 ID 的记录 | `0` |
 | `MODULE3_ERP_REFUND_EXECUTION_ENABLED` | 模块 3 未发货补开 ERP 退款单功能开关；还需 `ERP_WRITE_ENABLED=true` | `false` |
 | `MODULE3_WORKER_ENABLED` | 将模块 3 接入现有常驻后台周期 | `false` |

@@ -625,6 +625,7 @@ class Module1WorkerRuntime:
         with SessionLocal() as session:
             run = Module2ExceptionTodoService(session).run(
                 shop_codes=self.shop_codes,
+                min_return_id=self.settings.module2_todo_min_return_id,
                 include_tmall=self._tmall_trial_active,
                 tmall_min_order_id=self.settings.tmall_module123_min_order_id,
                 limit=self.options.task_limit,

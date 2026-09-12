@@ -6,7 +6,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from aftersales_workbench.db.models import (
@@ -586,11 +586,28 @@ class Module2ExceptionTodoService:
         shop_codes: tuple[str, ...] | None = None,
         include_tmall: bool = False,
         tmall_min_order_id: int = 0,
+        min_return_id: int = 0,
         limit: int = 20,
         dry_run: bool = True,
     ) -> Module2ExceptionTodoRunResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
+        if min_return_id < 0:
+            raise ValueError("min_return_id 不能为负数")
+        # 与 _idempotency_key 的退款前/退款后身份一致；已发送、取消、失败均不复活。
+        # 当前查询限定 RETURN_AND_REFUND，不包含 platform_refund_completed 排除的只记录类型。
+        refunded = or_(
+            func.upper(func.coalesce(AfterSalesOrder.refund_financial_status, "")) == "SUCCESS",
+            AfterSalesOrder.platform_after_sales_status == 10,
+        )
+        task_key = (
+            literal("module2:") + AfterSalesOrder.after_sales_sn + literal(":")
+            + case((refunded, "ERP_CREATE_REFUND_APPEAL_TODO"),
+                   else_="ERP_CREATE_MANUAL_TODO")
+        )
+        task_exists = select(AftersalesActionTask.id).where(
+            AftersalesActionTask.idempotency_key == task_key,
+        ).exists()
         statement = (
             select(AfterSalesOrder, Shop.shop_name, WarehouseReturnRecord)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
@@ -613,6 +630,8 @@ class Module2ExceptionTodoService:
                 ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
                 AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_FAIL,
+                WarehouseReturnRecord.id >= min_return_id,
+                ~task_exists,
             )
             .order_by(WarehouseReturnRecord.id)
             .limit(limit)
