@@ -4,11 +4,15 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import func, select
 
-from aftersales_workbench.db.models import AftersalesActionTask, MoneyOperation
+from aftersales_workbench.db.models import (
+    AftersalesActionTask,
+    AfterSalesOrder,
+    MoneyOperation,
+    Shop,
+)
 from aftersales_workbench.workflows import pdd_reconciliation as module
 from aftersales_workbench.workflows.money_operations import operation_key, run_money_write
-from tests.test_pdd_refund_cases import db as base_db
-from tests.test_pdd_refund_cases import seed
+from tests.test_pdd_non_refund_sync import db as base_db
 from tests.test_pdd_sync import _shop
 
 
@@ -17,9 +21,56 @@ def db():
     yield from base_db.__wrapped__()
 
 
+class ReadClient:
+    def __init__(self):
+        self.details = {
+            "123": {
+                "id": 123,
+                "order_sn": "order-1",
+                "after_sales_status": 10,
+                "after_sales_type": 1,
+                "refund_amount": 100,
+            }
+        }
+        self.calls = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return None
+
+    def get_refund_information(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.details[str(kwargs["after_sales_id"])]
+
+    def agree_refund(self, **kwargs):
+        pytest.fail("只读核验不能退款")
+
+
 def setup(db, monkeypatch, task_state="SUCCEEDED", money_state="UNKNOWN"):
-    order, task, notice, client = seed(db)
-    task.action_status = task_state
+    db.add(Shop(shop_id=1, platform="PDD", shop_name="test", shop_code=_shop().shop_code))
+    order = AfterSalesOrder(
+        shop_id=1,
+        platform_order_sn="order-1",
+        after_sales_sn="123",
+        after_sales_type="ONLY_REFUND",
+        refund_amount=Decimal("1"),
+        order_shipping_status="IN_TRANSIT",
+        workflow_status="INTERCEPT_CONFIRMED",
+    )
+    task = AftersalesActionTask(
+        after_sales_sn="123",
+        action_type="PDD_AGREE_REFUND",
+        action_status=task_state,
+        idempotency_key="refund-test",
+        attempts=1,
+        payload={"origin": "module1"},
+        last_error="响应未知",
+    )
+    db.add_all([order, task])
+    db.flush()
+    client = ReadClient()
     if task_state == "SUCCEEDED":
         order.refund_financial_status = "SUCCESS"
         order.actual_refund_amount = Decimal("1")
@@ -127,8 +178,10 @@ def test_read_failure_does_not_confirm_or_retry_refund(db, monkeypatch):
 
 def test_task_failure_rolls_back_money_confirmation_in_same_transaction(db, monkeypatch):
     order, task, operation, client, service = setup(db, monkeypatch, "FAILED")
+
     def fail(*args):
         raise RuntimeError("local transition failed")
+
     service.apply_observation = fail
     assert service.run(dry_run=False, after_sales_sns=["123"])["unavailable"] == 1
     assert operation.state == "UNKNOWN" and task.action_status == "FAILED"
