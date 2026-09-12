@@ -117,6 +117,14 @@ def test_focus_component_remounts_and_retains_no_write_actions():
     source = (root / "frontend/src/App.jsx").read_text(encoding="utf-8")
     assert 'key={issueFocus?.selectionId ?? "all"}' in source
     assert "stageId: stage.id" in source
+    issues_page = source.split("function IssuesWorkspace", 1)[1].split("function MonitorWorkspace", 1)[0]
+    monitor_page = source.split("function MonitorWorkspace", 1)[1].split("function DetailRow", 1)[0]
+    assert "<MonitorIssues" in issues_page
+    assert "<MonitorIssues" not in monitor_page
+    assert 'id: "issues", label: "异常明细"' in source
+    assert "stageHasFailure(stage) &&" in monitor_page
+    assert "查看失败明细" in monitor_page
+    assert 'setActiveView("issues")' in source
     component = (root / "frontend/src/MonitorIssues.jsx").read_text(encoding="utf-8")
     assert "查看全部异常" in component and "expectedStageId: focus?.stageId" in component
     assert '/issues/acknowledge' in component

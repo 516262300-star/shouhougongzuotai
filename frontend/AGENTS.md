@@ -14,3 +14,5 @@ The "人工待办" navigation and the order summary's "待人工" metric must re
 Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts/prepare-sites-build.mjs`, and `tests/sites-worker.test.mjs` intact so the same local prototype can be handed to Sites. Before a Sites handoff, run `npm run build` and `npm run test:sites`; the build must leave `dist/client/index.html`, `dist/server/index.js`, and `dist/.openai/hosting.json`.
 
 人工待办页面保留“自动发布给业务员”实时开关；关闭仅停止 ERP 待办发布，不停止生成本地待办，也不影响其他自动化。开启前明确告知积压待发送数量，使用后端持久化状态、版本校验和操作记录，不用浏览器本地存储伪造开关；发送审计与原因详情必须保留。
+
+异常明细是独立主导航页面，承载订单异常、人工跟进和历史记录。运行监控只呈现模块实时运行状态与执行统计，模块下仅在阶段执行失败时显示失败原因和跳转入口；普通业务异常、隔离订单、人工跟进说明不嵌入运行监控，不能把订单异常等同于模块执行失败。

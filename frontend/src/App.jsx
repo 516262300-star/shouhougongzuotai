@@ -24,6 +24,7 @@ import {
 import { ScrapWorkspace } from "./ScrapWorkspace.jsx";
 import { ManualTodoPublishing } from "./ManualTodoPublishing.jsx";
 import { MonitorIssues } from "./MonitorIssues.jsx";
+import { runtimeStage, stageHasFailure } from "./monitor-stage-view.mjs";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
 const PLATFORM_OPTIONS = [
@@ -207,6 +208,7 @@ function Sidebar({ activeView, onNavigate }) {
     { id: "attribution", label: "售后归因", icon: ChartBar, enabled: true },
     { id: "scrap", label: "退货报废", icon: Trash, enabled: true },
     { id: "manual", label: "人工待办", icon: User, enabled: true },
+    { id: "issues", label: "异常明细", icon: WarningCircle, enabled: true },
     { id: "capabilities", label: "接入能力", icon: CheckCircle, enabled: true },
     { id: "monitor", label: "运行监控", icon: ChartBar, enabled: true },
   ];
@@ -1087,10 +1089,12 @@ const MONITOR_STAGE_LABELS = {
   logistics_gate: "退款物流闸门",
   module1_erp_refunds: "模块1 ERP退款闭环",
   pdd_refund: "平台退款执行",
+  tmall_refund: "天猫拦截退款",
   module2_erp_intake: "ERP退货单核对",
   module2_refund_tasks: "验货通过退款入队",
   module2_exception_todos: "验货异常人工待办",
   module2_pdd_refunds: "退货退款执行",
+  module2_tmall_refunds: "天猫退货退款",
   module3_tasks: "未发货退款识别",
   module3_erp_refunds: "模块3 ERP退款处理",
   module3_exception_todos: "异常人工待办",
@@ -1102,26 +1106,13 @@ const MONITOR_DETAIL_LABELS = {
   tasks_existing: "已有任务",
   notices_ready: "可发送",
   notices_cancelled: "已取消",
-  logistics_query_failed: "物流查询失败",
   succeeded: "成功",
-  failed: "失败",
-  blocked: "阻断",
   applied: "已执行",
   receipts_created: "登记收货",
   inspections_passed: "验货通过",
-  inspections_failed: "验货异常",
-  post_refund_waiting_tracking: "退款后待退货运单",
-  post_refund_waiting_receipt: "退款后待仓库收货",
   post_refund_verified: "退款后验收一致",
-  tmall_refunds_held: "天猫待人工退款",
-  unavailable: "核对失败",
-  ambiguous: "运单冲突",
-  skipped_missing_owner: "缺少负责人",
   records_created: "新增记录",
-  logistics_unavailable: "天猫物流接口失败",
-  logistics_ambiguous_or_missing: "天猫发货运单不唯一",
   shops_ok: "店铺正常",
-  shops_failed: "店铺失败",
 };
 
 const monitorTone = (status) => ({ healthy: "success", completed: "success", warning: "warning", starting: "info", skipped: "neutral", disabled: "neutral", stopped: "danger", failed: "danger", missing: "neutral" }[status] ?? "neutral");
@@ -1134,19 +1125,28 @@ const formatAge = (seconds) => {
 };
 
 function monitorStageSummary(stage) {
-  if (stage.error) return stage.error;
-  if (stage.reason) return stage.reason;
+  if (stageHasFailure(stage)) return stage.error || stage.reason || "本轮执行失败，请查看失败明细";
+  if (stage.status === "skipped") return stage.reason || "本轮跳过";
+  if (stage.status === "missing") return "等待首个运行周期";
   const entries = Object.entries(stage)
     .filter(([key, value]) => !["id", "status", "error", "reason"].includes(key) && value !== null && value !== undefined && MONITOR_DETAIL_LABELS[key]);
   const details = entries
     .filter(([, value]) => value !== 0 && value !== false)
     .slice(0, 6)
     .map(([key, value]) => `${MONITOR_DETAIL_LABELS[key]} ${value}`);
-  return details.join(" · ") || "本周期已完成";
+  return details.join(" · ") || (stage.status === "completed" ? "本周期已完成" : "等待运行状态更新");
 }
 
-function MonitorWorkspace({ onOpenOrder }) {
-  const [issueFocus, setIssueFocus] = useState(null);
+function IssuesWorkspace({ issueFocus, onClearFocus, onOpenOrder }) {
+  return <main className="workspace monitor-workspace">
+    <header className="topbar"><div className="page-title"><WarningCircle size={22} /><h1>异常明细</h1></div></header>
+    <div className="monitor-body">
+      <MonitorIssues key={issueFocus?.selectionId ?? "all"} focus={issueFocus} onClearFocus={onClearFocus} onOpenOrder={onOpenOrder} />
+    </div>
+  </main>;
+}
+
+function MonitorWorkspace({ onOpenIssues }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1232,10 +1232,9 @@ function MonitorWorkspace({ onOpenOrder }) {
           </div>
           <button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />立即刷新</button>
         </section>
-        <MonitorIssues key={issueFocus?.selectionId ?? "all"} focus={issueFocus} onClearFocus={() => setIssueFocus(null)} onOpenOrder={onOpenOrder} />
         <section className="monitor-metrics">
           <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
-          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : `本轮完成；未解决异常请看上方明细`}</small></article>
+          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : worker.last_cycle_finished_at ? "本轮执行完成" : "等待首个运行周期"}</small></article>
           <article><span>企微待发送</span><strong className={queue.pending ? "monitor-warn" : "monitor-good"}>{queue.pending ?? "—"}</strong><small>发送中 {queue.running ?? 0} · 已成功 {queue.succeeded ?? 0}</small></article>
           <article><span>发送失败</span><strong className={queue.failed ? "monitor-bad" : "monitor-good"}>{queue.failed ?? "—"}</strong><small>当前启用范围共 {queue.total ?? 0} 条任务</small></article>
         </section>
@@ -1244,10 +1243,10 @@ function MonitorWorkspace({ onOpenOrder }) {
             <article className="monitor-module-card" key={module.id}>
               <header><div><strong>{{ module1: "模块 1 · 已发货仅退款拦截", module2: "模块 2 · 退货验收退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "识别、企微拦截、物流闸门与退款闭环", module2: "ERP 实收核对一致后退款，明细不一致转人工", module3: "ERP 履约核验、退款补单与异常待办" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
               <div className="monitor-stage-list">
-                {module.stages.map((stage) => (
+                {module.stages.map(runtimeStage).map((stage) => (
                   <div className="monitor-stage" key={stage.id}>
                     <span className={`monitor-stage-dot stage-${stage.status}`} />
-                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small title={stage.error ?? ""}>{monitorStageSummary(stage)}</small>{stage.error && <a href="#monitor-issues-title" onClick={() => setIssueFocus({ stageId: stage.id, label: MONITOR_STAGE_LABELS[stage.id] ?? stage.id, cycleFinishedAt: worker.last_cycle_finished_at, selectionId: `${stage.id}:${Date.now()}` })}>查看本项异常及处理建议</a>}</div>
+                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small>{monitorStageSummary(stage)}</small>{stageHasFailure(stage) && <button type="button" className="issue-expand" onClick={() => onOpenIssues({ stageId: stage.id, label: MONITOR_STAGE_LABELS[stage.id] ?? stage.id, cycleFinishedAt: worker.last_cycle_finished_at, selectionId: `${stage.id}:${Date.now()}` })}>查看失败明细</button>}</div>
                     <StatusTag tone={monitorTone(stage.status)}>{monitorStageStatus(stage.status)}</StatusTag>
                   </div>
                 ))}
@@ -1600,6 +1599,7 @@ function WarehouseWorkspace() {
 
 export function App() {
   const [activeView, setActiveView] = useState("orders");
+  const [issueFocus, setIssueFocus] = useState(null);
   const [interceptDetailOpen, setInterceptDetailOpen] = useState(true);
   const [draftFilters, setDraftFilters] = useState(createInitialFilters);
   const [filters, setFilters] = useState(createInitialFilters);
@@ -1736,7 +1736,7 @@ export function App() {
 
   return (
     <div className={`app-shell ${detailVisible ? "" : "without-detail"} ${activeView === "scrap" ? "scrap-layout" : ""}`}>
-      <Sidebar activeView={activeView} onNavigate={setActiveView} />
+      <Sidebar activeView={activeView} onNavigate={(view) => { if (view === "issues") setIssueFocus(null); setActiveView(view); }} />
       {activeView === "orders" ? (
         <>
           <main className="workspace">
@@ -1770,7 +1770,9 @@ export function App() {
       ) : activeView === "capabilities" ? (
         <IntegrationWorkspace />
       ) : activeView === "monitor" ? (
-        <MonitorWorkspace onOpenOrder={openMonitoredOrder} />
+        <MonitorWorkspace onOpenIssues={(focus) => { setIssueFocus(focus); setActiveView("issues"); }} />
+      ) : activeView === "issues" ? (
+        <IssuesWorkspace issueFocus={issueFocus} onClearFocus={() => setIssueFocus(null)} onOpenOrder={openMonitoredOrder} />
       ) : (
         <WarehouseWorkspace />
       )}
