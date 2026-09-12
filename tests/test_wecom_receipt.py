@@ -103,6 +103,35 @@ def test_two_identical_bubbles_are_ambiguous():
     assert not result.sent_visible
 
 
+def test_long_draft_crossing_old_scanline_keeps_complete_panel_bounds():
+    image = scene(bubble=False, draft=True)
+    y = int(image.height * .90)
+    ImageDraw.Draw(image).rectangle((375, y - 8, 1170, y + 8), fill='black')
+    assert WeComReceiptReader._input_panel_bounds(image) == (360, 1201)
+    result = WeComReceiptReader(FakeOcr()).inspect(image, GROUP, MESSAGE)
+    assert result.group_matches and result.draft_matches
+    assert not result.input_empty and not result.sent_visible
+
+
+def test_single_white_scanline_is_not_sufficient_panel_evidence():
+    image = Image.new('RGB', (1400, 857), (246, 247, 251))
+    y = int(image.height * .86)
+    ImageDraw.Draw(image).line((360, y, 1200, y), fill='white')
+    with pytest.raises(ValueError, match='无法唯一定位'):
+        WeComReceiptReader._input_panel_bounds(image)
+
+
+def test_maximized_window_with_short_input_panel_keeps_full_draft():
+    image = Image.new('RGB', (1400, 857), (246, 247, 251))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((365, 34, 565, 52), fill='black')
+    draw.rectangle((360, 710, 1200, 837), fill='white')
+    draw.rectangle((375, 750, 900, 765), fill='black')
+    result = WeComReceiptReader(FakeOcr()).inspect(image, GROUP, MESSAGE)
+    assert result.group_matches and result.draft_matches
+    assert not result.input_empty and not result.sent_visible
+
+
 def test_waiting_spinner_is_not_success():
     image = scene()
     ImageDraw.Draw(image).arc((690, 430, 705, 445), 20, 280, fill=(180, 180, 180), width=2)

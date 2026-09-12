@@ -38,6 +38,7 @@ KEYEVENTF_KEYUP = 0x0002
 KEYEVENTF_UNICODE = 0x0004
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 SW_RESTORE = 9
+SW_MAXIMIZE = 3
 
 _ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
 
@@ -317,6 +318,9 @@ class WindowsWeComGateway:
         self._target_hwnd = candidate.hwnd
         self._target_process_id = candidate.process_id
         self._raise_if_security_window(candidate.process_id)
+        # 专用发送窗口展开后再搜索/核验，避免窄输入框自动滚动隐藏首行。
+        # 仍需完整草稿 OCR 通过；最大化本身不是允许发送的证据。
+        self.user32.ShowWindow(candidate.hwnd, SW_MAXIMIZE)
         deadline = time.monotonic() + 2.0
         stable_since: float | None = None
         while time.monotonic() < deadline:

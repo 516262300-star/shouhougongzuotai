@@ -190,6 +190,8 @@ def test_activation_rejects_other_wecom_window_and_waits_for_stability(monkeypat
     import aftersales_workbench.workflows.windows_wecom as module
 
     gateway = object.__new__(WindowsWeComGateway)
+    shown = []
+    gateway.user32 = SimpleNamespace(ShowWindow=lambda hwnd, mode: shown.append((hwnd, mode)))
     candidate = _WeComWindowCandidate(11, 101, "企业微信", 1_200_000)
     monkeypatch.setattr(gateway, "_visible_wecom_windows", lambda: [candidate])
     monkeypatch.setattr(gateway, "_raise_if_security_window", lambda *args: None)
@@ -206,5 +208,6 @@ def test_activation_rejects_other_wecom_window_and_waits_for_stability(monkeypat
 
     monkeypatch.setattr(gateway, "_require_wecom_foreground", foreground)
     assert gateway._activate_wecom_foreground() == (11, 101)
+    assert shown == [(11, module.SW_MAXIMIZE)]
     assert len(focused) == 2
     assert checks[-1] - checks[1] >= 0.3

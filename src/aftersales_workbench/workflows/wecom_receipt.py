@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -118,6 +119,27 @@ class WeComReceiptReader:
         self.ocr = ocr or _local_ocr()
 
     @staticmethod
+    def _input_panel_bounds(rgb: Image) -> tuple[int, int]:
+        w, h = rgb.size
+        pixels = rgb.load()
+        # 长草稿可能经过任意一条水平扫描线；用多个高度重复出现的
+        # 最宽完整面板边界定位，不能把某行文字之间的白缝当作边界。
+        counts: Counter[tuple[int, int]] = Counter()
+        for y in range(int(h * .86), int(h * .94), max(1, int(h * .003))):
+            white = [x for x in range(int(w * .2), int(w * .99))
+                     if min(pixels[x, y]) > 250]
+            counts.update((a, b) for a, b in _runs(white)
+                          if b - a > w * .4 and a < w * .4)
+        stable = [bounds for bounds, count in counts.items() if count >= 3]
+        if not stable:
+            raise ValueError("无法唯一定位企微输入面板")
+        widest = max(b - a for a, b in stable)
+        panels = [(a, b) for a, b in stable if b - a == widest]
+        if len(panels) != 1:
+            raise ValueError("无法唯一定位企微输入面板")
+        return panels[0]
+
+    @staticmethod
     def _title_image(image: Image, left: int, right: int) -> Image | None:
         from PIL import ImageOps
 
@@ -159,27 +181,24 @@ class WeComReceiptReader:
             w, h = rgb.size
         # 从底部输入面板定位聊天左右边界，兼容成员栏展开/收起。
         pixels = rgb.load()
-        white_x = [x for x in range(int(w * .2), int(w * .99))
-                   if min(pixels[x, int(h * .90)]) > 250]
-        panels = [(a, b) for a, b in _runs(white_x)
-                  if b - a > w * .4 and a < w * .4]
-        if len(panels) != 1:
-            raise ValueError("无法唯一定位企微输入面板")
-        left, right = panels[0]
+        left, right = self._input_panel_bounds(rgb)
         # 沿面板两侧留白找顶部；不能按整行白色比例判断，否则长草稿会
         # 把面板顶部误判到文字下面，继而把仍有草稿误认为空框。
         inset = max(3, int(w * .003))
-        rows = [y for y in range(int(h * .55), int(h * .90))
+        rows = [y for y in range(int(h * .55), int(h * .99))
                 if min(pixels[left + inset, y]) > 250
                 and min(pixels[right - inset, y]) > 250]
         runs = [r for r in _runs(rows) if r[1] >= int(h * .89)]
         if not runs:
             raise ValueError("无法定位企微输入框顶部")
-        panel_top = runs[-1][0]
-        if not .60 * h < panel_top < .82 * h:
+        panel_top, panel_bottom = runs[-1]
+        panel_height = panel_bottom - panel_top
+        if not (.60 * h < panel_top < .90 * h and .10 * h < panel_height < .40 * h):
             raise ValueError("企微聊天布局不受支持")
-        draft_box = (left + int(w * .007), panel_top + int(h * .05),
-                     right - int(w * .007), int(h * .93))
+        # 最大化后输入面板不会随整窗等比例增高；按实际面板高度避开
+        # 工具栏和发送按钮，不能按整窗高度裁掉草稿首行。
+        draft_box = (left + int(w * .007), panel_top + int(panel_height * .25),
+                     right - int(w * .007), panel_bottom - int(panel_height * .18))
         draft = rgb.crop(draft_box)
         dark = draft.convert("L").point(lambda v: 255 if v < 180 else 0)
         bbox = dark.getbbox()
