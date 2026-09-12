@@ -3,13 +3,14 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, exists, or_, select
 
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
     AfterSalesOrder,
     AutomationActionType,
     AutomationTaskStatus,
+    MoneyOperation,
     Platform,
     Shop,
     WorkflowStatus,
@@ -47,7 +48,20 @@ class PddFailedRefundReconciler:
             .where(
                 Shop.platform == Platform.PDD,
                 AftersalesActionTask.action_type == AutomationActionType.PDD_AGREE_REFUND,
-                AftersalesActionTask.action_status == AutomationTaskStatus.FAILED,
+                or_(
+                    AftersalesActionTask.action_status == AutomationTaskStatus.FAILED,
+                    and_(
+                        AftersalesActionTask.action_status == AutomationTaskStatus.SUCCEEDED,
+                        exists().where(
+                            MoneyOperation.task_id == AftersalesActionTask.id,
+                            MoneyOperation.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                            MoneyOperation.shop_id == AfterSalesOrder.shop_id,
+                            MoneyOperation.platform == "PDD",
+                            MoneyOperation.operation_type == "PLATFORM_REFUND",
+                            MoneyOperation.state.in_(("UNKNOWN", "REQUEST_STARTED")),
+                        ).correlate(AftersalesActionTask, AfterSalesOrder),
+                    ),
+                ),
             )
         )
         statement = due_first(
@@ -76,6 +90,7 @@ class PddFailedRefundReconciler:
         for task, order, shop_code in rows:
             reference = order.after_sales_sn
             try:
+                observed_status = task.action_status
                 observed_updated_at = order.updated_at
                 observed_payload = dict(task.payload or {})
                 with self.client_factory(shops[shop_code]) as client:
@@ -83,7 +98,8 @@ class PddFailedRefundReconciler:
                         order_sn=order.platform_order_sn,
                         after_sales_id=int(reference),
                     )
-                    case = observe_case(self.session, client, order, task, detail)
+                    case = (observe_case(self.session, client, order, task, detail)
+                            if observed_status == AutomationTaskStatus.FAILED else None)
                 if (
                     str(detail.get("id")) != reference
                     or detail.get("order_sn") != order.platform_order_sn
@@ -93,7 +109,11 @@ class PddFailedRefundReconciler:
                 amount = Decimal(str(detail["refund_amount"])) / 100
                 if not amount.is_finite() or amount < 0:
                     raise ValueError("平台返回的退款金额无效")
+                if observed_status == AutomationTaskStatus.SUCCEEDED and status != 10:
+                    raise ValueError("平台回查尚未确认成功，保留原资金记录等待核验")
                 if dry_run:
+                    if status == 10:
+                        self.confirm_money(task, order, amount, dry_run=True)
                     result["confirmed_success" if status == 10 else "manual_review"] += 1
                     continue
                 # 远端查询期间任务可能已被人工恢复；此处重新锁定核验，不覆盖并发操作。
@@ -105,16 +125,20 @@ class PddFailedRefundReconciler:
                     .execution_options(populate_existing=True)
                     .with_for_update()
                 )
-                if current is None or current.action_status != AutomationTaskStatus.FAILED:
+                if current is None or current.action_status != observed_status:
                     self.session.rollback()
                     continue
                 self.session.refresh(order)
-                if case and (
-                    order.updated_at != observed_updated_at or current.payload != observed_payload
-                ):
+                if (order.updated_at != observed_updated_at
+                        or current.payload != observed_payload):
                     self.session.rollback()
                     continue
-                if case:
+                if status == 10:
+                    self.confirm_money(current, order, amount, dry_run=False)
+                if observed_status == AutomationTaskStatus.SUCCEEDED:
+                    # 任务已成功时只补齐资金核验记录，不重复推进ERP工作流。
+                    pass
+                elif case:
                     apply_case(current, order, case)
                 else:
                     if (current.payload or {}).get("pdd_refund_case"):
@@ -140,6 +164,43 @@ class PddFailedRefundReconciler:
                     )
                     self.session.commit()
         return result
+
+    def confirm_money(self, task, order, amount, *, dry_run):
+        """仅在实时售后身份与成功状态已核对后，确认同一笔原始资金请求。"""
+        from aftersales_workbench.workflows.money_operations import operation_key
+
+        key = operation_key("PDD", order.shop_id, order.after_sales_sn, "PLATFORM_REFUND")
+        statement = select(MoneyOperation).where(MoneyOperation.operation_key == key)
+        if not dry_run:
+            statement = statement.execution_options(populate_existing=True).with_for_update()
+        operation = self.session.scalar(statement)
+        if operation is None or operation.state == "CONFIRMED":
+            return
+        snapshot = operation.snapshot or {}
+        try:
+            requested = Decimal(str(snapshot["refund_amount"]))
+        except (KeyError, ValueError, ArithmeticError) as exc:
+            raise ValueError("原资金请求缺少有效金额证据，保留待核验") from exc
+        if (operation.platform != "PDD" or operation.shop_id != order.shop_id
+                or operation.after_sales_sn != order.after_sales_sn
+                or operation.operation_type != "PLATFORM_REFUND"
+                or operation.task_id != task.id
+                or operation.state not in {"UNKNOWN", "REQUEST_STARTED", "ACKNOWLEDGED"}
+                or snapshot.get("platform_order_sn") != order.platform_order_sn
+                or not requested.is_finite() or requested <= 0 or requested != amount):
+            raise ValueError("平台成功事实与原资金请求身份或金额不一致，保留待核验")
+        if dry_run:
+            return
+        now = datetime.now(UTC)
+        operation.snapshot = {**snapshot, "readonly_confirmation": {
+            "source": "pdd.refund.information.get", "checked_at": now.isoformat(),
+            "platform_order_sn": order.platform_order_sn, "after_sales_sn": order.after_sales_sn,
+            "refund_status": 10, "refund_amount": str(amount),
+            "previous_state": operation.state, "previous_error": operation.last_error,
+        }}
+        operation.state = "CONFIRMED"
+        operation.last_error = None
+        operation.updated_at = now.replace(tzinfo=None)
 
     def apply_observation(self, task, order, status, amount):
         task.payload = {

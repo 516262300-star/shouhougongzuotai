@@ -293,7 +293,9 @@ class RuntimeIssueCollector:
                 observation(
                     f"money:{money.operation_key}",
                     "ERP" if money.operation_type == "ERP_REFUND" else "REFUND",
-                    money.last_error or "资金请求已发起，须核对实际结果；不能重复请求",
+                    ("资金结果已核实；保留原请求与核验记录"
+                     if money.state == "CONFIRMED" else
+                     money.last_error or "资金请求已发起，须核对实际结果；不能重复请求"),
                     # 迁移批量建立的保护占位不是一次新执行失败；原任务故障仍单独展示。
                     active=money.state in {"REQUEST_STARTED", "UNKNOWN"} and not legacy_guard,
                     recovered=money.state == "CONFIRMED",
