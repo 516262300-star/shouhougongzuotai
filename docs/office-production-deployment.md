@@ -14,6 +14,9 @@ Windows PowerShell 5.1 或更高版本。首次安装在正式运行机的本地
 # 默认仅检查，不安装、不写入
 .\scripts\office-deployment-access.ps1 -Action Inspect
 
+# 管理员运行：只读采集服务、版本、目录 ACL 和最近错误，TXT 保存在脚本旁
+.\scripts\office-deployment-access.ps1 -Action Diagnose
+
 # 先验证参数并预演；不会安装、修改配置或启动服务
 .\scripts\office-deployment-access.ps1 -Action Install -DevelopmentAddress <开发机IPv4> -PublicKeyFile <公钥文件> -WhatIf
 
@@ -32,6 +35,8 @@ Windows PowerShell 5.1 或更高版本。首次安装在正式运行机的本地
 - `%ProgramData%\LdsAftersalesDeployment\access-state.json`：来源标记、开发机地址、公钥文件哈希、账户和安装状态。配置改写前的副本也保存在此目录，权限限 SYSTEM 和 Administrators。
 - `%ProgramData%\ssh\sshd_config` 与 `lds_aftersales_authorized_keys`：仅指定本地账户从指定开发机 IP 以公钥认证登录；关闭密码登录、代理转发、TCP 转发和交互 PTY。此入口允许以该管理员账户执行部署命令及传输文件，应保管好开发机私钥。
 - `LDS-Aftersales-Deployment-SSH` 防火墙规则：仅对指定开发机地址允许 OpenSSH 进程入站 TCP 22。禁用新安装产生的通用 `OpenSSH-Server-In-TCP` 规则；不关闭 Windows 防火墙，不开放整个局域网。
+
+SSH 主目录与 `logs` 目录在启动前先保存 ACL 副本，再设置 SYSTEM/Administrators 完全控制，以及 Authenticated Users 对本层目录的只读和遍历权限；目录只读权限不继承到主机私钥或授权文件。不修改 `%ProgramData%` 父目录权限。配置、公钥授权文件和部署状态目录仍仅 SYSTEM/Administrators 可访问。
 
 参数相同可以重新执行；地址、公钥或账户不同会停止，避免静默替换部署授权。开发机 DHCP 地址变化后需要在正式运行机本地核对再调整，不能临时扩大到整个网段。后续宜在路由器设置两台电脑的 DHCP 地址保留。
 
@@ -55,6 +60,12 @@ Windows PowerShell 5.1 或更高版本。首次安装在正式运行机的本地
 部署连接工具需执行 PowerShell 5.1 语法检查、Inspect、WhatIf 和非法参数检查；这些不代表已在目标电脑实际安装。目标安装、主机指纹、SSH 实际登录及业务迁移必须分别记录，不能用静态检查冒充验收。
 
 本次已完成语法解析、开发机 Inspect、Windows PowerShell 5.1 的 Install/WhatIf，以及 7 类非法地址和错误密钥输入检查；预演未创建系统部署状态。连接包逐项核对只包含两个命令入口、连接脚本、使用说明和公钥，未包含私钥或业务凭据。目标机实际安装与连接验收尚待用户运行连接包。
+
+目标机首次运行已生成主机密钥，但在 `Start-Service sshd` 失败，尚未连通。更新版补上上述目录 ACL 初始化，并在失败关闭后自动保存 `deployment-diagnostics-时间.txt`；亦提供独立 `3-Diagnose-Deployment.cmd` 入口。报告仅采集操作系统版本、服务启动配置/退出码、程序版本、目录与配置 ACL、22 端口监听和最近45分钟 OpenSSH/相关系统错误，不读取密钥正文、密码或业务 `.env`。本机 ACL 对象检查验证目录只读规则不向子项继承，配置与授权文件没有普通用户规则；实际服务能否启动仍待目标机验证。
+
+目前只确认服务启动失败，不能仅凭通用错误判定根因。目录权限是已发现的初始化缺项，也是微软记录的可能原因，参见[OpenSSH 服务启动失败与目录权限](https://learn.microsoft.com/en-us/troubleshoot/windows-server/system-management-components/error-1053-1067-7034-after-update-openssh-doesnt-start)。失败重跑使用原公钥和原状态，不卸载组件、不重建已存在的主机密钥、不清理售后数据。诊断模式只写报告，不启动服务或改变 ACL/防火墙。
+
+更新版已通过 Windows PowerShell 5.1 语法/预演、目录与文件 ACL 对象检查，以及开发机只读诊断报告生成检查（六类诊断章节完整）。新包核对公钥与原包字节一致、脚本与仓库一致，未含私钥。检查没有在开发机安装或启动 SSH，也没有在目标机执行更新版。
 
 通用脚本和本文随任务提交 GitHub。个人地址、公钥、私钥及安装包放在 Git 忽略的本机目录。已有 Notion 说明本会话没有可用连接器，本次不宣称同步 Notion；部署进度以本文件和实际验收记录为准。
 

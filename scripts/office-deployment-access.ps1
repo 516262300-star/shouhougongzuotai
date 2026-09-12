@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
-    [ValidateSet('Inspect', 'Install', 'Disable')]
+    [ValidateSet('Inspect', 'Diagnose', 'Install', 'Disable')]
     [string]$Action = 'Inspect',
     [string]$DevelopmentAddress,
     [string]$PublicKeyFile
@@ -18,7 +18,7 @@ $ruleName = 'LDS-Aftersales-Deployment-SSH'
 $defaultRuleName = 'OpenSSH-Server-In-TCP'
 $sshBin = Join-Path $env:WINDIR 'System32/OpenSSH'
 
-function Protect-AdminPath([string]$Path) {
+function Protect-AdminPath([string]$Path, [switch]$AllowDirectoryRead) {
     $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
     $adminSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
     $item = Get-Item -LiteralPath $Path
@@ -37,7 +37,64 @@ function Protect-AdminPath([string]$Path) {
             $sid, 'FullControl', $inheritance, 'None', 'Allow'
         ))
     }
+    if ($item.PSIsContainer -and $AllowDirectoryRead) {
+        # 只给本层目录读取/遍历权，不向主机私钥或授权文件传播。
+        $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+            [System.Security.Principal.SecurityIdentifier]::new('S-1-5-11'),
+            'ReadAndExecute', 'None', 'None', 'Allow'
+        ))
+    }
     Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Write-DeploymentDiagnostics([string]$FailureMessage = '') {
+    $report = [System.Collections.Generic.List[string]]::new()
+    $report.Add('LDS office SSH diagnostics - ' + (Get-Date -Format o))
+    $report.Add('Computer: ' + $env:COMPUTERNAME + '; User: ' + $env:USERNAME)
+    if ($FailureMessage) { $report.Add('Installer failure: ' + $FailureMessage) }
+    $checks = [ordered]@{
+        OS = { Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture }
+        Service = { Get-CimInstance Win32_Service -Filter "Name='sshd'" | Select-Object Name, State, StartMode, StartName, PathName, ExitCode, ServiceSpecificExitCode }
+        Binary = {
+            Get-Item -LiteralPath (Join-Path $sshBin 'sshd.exe') -ErrorAction Stop |
+                Select-Object FullName, @{Name='Version';Expression={$_.VersionInfo.FileVersion}}
+        }
+        Permissions = {
+            foreach ($path in @($sshRoot, (Join-Path $sshRoot 'logs'), $configPath, $keyPath)) {
+                if (Test-Path -LiteralPath $path) {
+                    $acl = Get-Acl -LiteralPath $path
+                    [pscustomobject]@{ Path = $path; Owner = $acl.Owner; Access = $acl.AccessToString }
+                }
+            }
+        }
+        Port22 = { Get-NetTCPConnection -LocalPort 22 -State Listen -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, OwningProcess }
+        Events = {
+            $since = (Get-Date).AddMinutes(-45)
+            $logs = @(Get-WinEvent -ListLog '*OpenSSH*' -ErrorAction SilentlyContinue |
+                Where-Object IsEnabled | Select-Object -First 5 -ExpandProperty LogName)
+            foreach ($log in $logs) {
+                Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since} -MaxEvents 15 -ErrorAction SilentlyContinue |
+                    Select-Object TimeCreated, LogName, Id, LevelDisplayName, @{Name='Message';Expression={([string]$_.Message).Substring(0,[Math]::Min(5000,([string]$_.Message).Length))}}
+            }
+            foreach ($log in @('System', 'Application')) {
+                Get-WinEvent -FilterHashtable @{LogName=$log; StartTime=$since; Level=1,2,3} -MaxEvents 150 -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Message -match 'sshd|OpenSSH' } | Select-Object -First 15 |
+                    Select-Object TimeCreated, LogName, Id, LevelDisplayName, @{Name='Message';Expression={([string]$_.Message).Substring(0,[Math]::Min(5000,([string]$_.Message).Length))}}
+            }
+        }
+    }
+    foreach ($name in $checks.Keys) {
+        $report.Add("`r`n[$name]")
+        try {
+            $result = & $checks[$name]
+            $report.Add($(if ($null -eq $result) { '(no records)' } else { $result | Format-List | Out-String -Width 240 }))
+        }
+        catch { $report.Add('Read failed: ' + $_.Exception.Message) }
+    }
+    $reportPath = Join-Path $PSScriptRoot ('deployment-diagnostics-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
+    [IO.File]::WriteAllLines($reportPath, $report, [Text.UTF8Encoding]::new($true))
+    Write-Output "诊断文件已保存：$reportPath"
+    Write-Output '请将这个 TXT 文件发回当前对话。文件不读取私钥、公钥正文、Windows 密码或售后配置。'
 }
 
 function Read-ManagedState {
@@ -95,6 +152,10 @@ $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw '请右键启动文件，选择“以管理员身份运行”。'
 }
+if ($Action -eq 'Diagnose') {
+    Write-DeploymentDiagnostics
+    return
+}
 $state = Read-ManagedState
 
 if ($Action -eq 'Disable') {
@@ -151,6 +212,13 @@ try {
     Get-NetFirewallRule -Name $defaultRuleName -ErrorAction SilentlyContinue | Disable-NetFirewallRule | Out-Null
     Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Disable-NetFirewallRule | Out-Null
     New-Item -ItemType Directory -Path $sshRoot -Force | Out-Null
+    $sshLogRoot = Join-Path $sshRoot 'logs'
+    New-Item -ItemType Directory -Path $sshLogRoot -Force | Out-Null
+    foreach ($directory in @($sshRoot, $sshLogRoot)) {
+        $aclBackup = Join-Path $stateRoot ('ssh-directory-acl-' + [guid]::NewGuid().ToString('N') + '.xml')
+        Get-Acl -LiteralPath $directory | Export-Clixml -LiteralPath $aclBackup
+        Protect-AdminPath $directory -AllowDirectoryRead
+    }
     if (Test-Path -LiteralPath $configPath) {
         $backupPath = Join-Path $stateRoot ('sshd-config-before-' + [guid]::NewGuid().ToString('N') + '.txt')
         Copy-Item -LiteralPath $configPath -Destination $backupPath
@@ -195,10 +263,13 @@ try {
     Write-Output '这只完成部署连接，尚未安装或接管售后业务。'
 }
 catch {
+    $installFailure = $_
     Stop-Service -Name sshd -ErrorAction SilentlyContinue
     Set-Service -Name sshd -StartupType Disabled -ErrorAction SilentlyContinue
     Get-NetFirewallRule -Name $ruleName,$defaultRuleName -ErrorAction SilentlyContinue | Disable-NetFirewallRule | Out-Null
     $state.phase = 'failed'
     Save-ManagedState $state
-    throw
+    try { Write-DeploymentDiagnostics -FailureMessage $installFailure.Exception.Message }
+    catch { Write-Warning ('诊断文件生成失败：' + $_.Exception.Message) }
+    throw $installFailure
 }
