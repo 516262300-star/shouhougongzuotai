@@ -676,6 +676,12 @@ function Start-WatchdogLoop {
 }
 
 function Install-AutostartTask {
+    $pythonwExe = Join-Path $projectRoot '.venv\Scripts\pythonw.exe'
+    $hiddenLauncher = Join-Path $PSScriptRoot 'module1-autostart-hidden.py'
+    if (-not (Test-Path -LiteralPath $pythonwExe -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $hiddenLauncher -PathType Leaf)) {
+        throw '缺少无窗口守护启动器或 pythonw.exe，未修改自启动配置'
+    }
     New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
     $detected = Get-RunningMySqlConfiguration
     if (-not $MySqlExe -and $null -ne $detected) {
@@ -711,14 +717,9 @@ function Install-AutostartTask {
     $savedConfig | ConvertTo-Json | Set-Content -LiteralPath $configFile -Encoding utf8
     Copy-Item -LiteralPath $configFile -Destination $configBackupFile -Force
 
-    $scriptPath = [System.IO.Path]::GetFullPath($PSCommandPath)
-    $powershellExe = Get-PowerShellExecutable
-    $taskArguments = (
-        '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
-        "-File `"$scriptPath`" -Action Run"
-    )
+    $taskArguments = "`"$hiddenLauncher`" --action Run"
     $scheduledAction = New-ScheduledTaskAction `
-        -Execute $powershellExe `
+        -Execute $pythonwExe `
         -Argument $taskArguments `
         -WorkingDirectory $projectRoot
     $logonTrigger = New-ScheduledTaskTrigger -AtLogOn
@@ -759,13 +760,10 @@ function Install-AutostartTask {
         }
         $installMode = 'startup-watchdog'
         New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
-        $watchArguments = (
-            '-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden ' +
-            "-File `"$scriptPath`" -Action Watch"
-        )
+        $watchArguments = "`"$hiddenLauncher`" --action Watch"
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($startupFile)
-        $shortcut.TargetPath = $powershellExe
+        $shortcut.TargetPath = $pythonwExe
         $shortcut.Arguments = $watchArguments
         $shortcut.WorkingDirectory = $projectRoot
         $shortcut.WindowStyle = 7

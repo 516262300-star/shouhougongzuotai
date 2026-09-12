@@ -13,6 +13,8 @@
 
 SSH 和 MySQL 是自动启动的 Windows 服务；网页与业务后台由 `Leedis Aftersales Module1 Watchdog` 在运行账户登录时启动，并每 5 分钟检查一次。任务使用实际桌面账户的 Interactive/Limited 会话，不在 SSH 会话中运行企微发送器。重启后仍须登录 Windows 并确认企微在线。2026-09-12 已实际完成整机重启、用户登录及自动恢复验收，首个业务周期于 15:38:40 正常完成；详细证据见[备份与验收说明](office-backup-and-acceptance-20260912.md)。
 
+守护入口已改为 `pythonw.exe` 加无控制台 PowerShell，消除每次检查时黑色终端窗口闪现；周期和自启动保持原设置。启动异常可查 `.runtime/module1-autostart-launcher.log`，见[黑窗修复与验证](wecom-console-flash-20260912.md)。
+
 建议由网络管理员在路由器保留两台电脑当前 DHCP 地址。部署 SSH 与网页防火墙仅允许已登记的开发机地址；地址变化需同步核对设置，不能为省事关闭防火墙。
 
 ## 程序更新

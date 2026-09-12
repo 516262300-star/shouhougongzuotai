@@ -44,7 +44,7 @@ def build(root: Path, output: Path) -> dict:
     for path in tracked:
         if path in ('pyproject.toml', 'README.md', 'alembic.ini') or path.startswith('migrations/'):
             files[path] = subprocess.check_output(['git', 'show', f'{commit}:{path}'], cwd=root)
-    for name in ('module1-autostart.ps1', 'module1-worker.ps1'):
+    for name in ('module1-autostart.ps1', 'module1-autostart-hidden.py', 'module1-worker.ps1'):
         files['scripts/' + name] = (root / 'scripts' / name).read_bytes()
     manifest = {'format': 1, 'releases': pointers, 'files': {p: hashlib.sha256(b).hexdigest() for p, b in sorted(files.items())}}
     output.parent.mkdir(parents=True, exist_ok=True)
