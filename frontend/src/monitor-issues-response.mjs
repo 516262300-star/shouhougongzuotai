@@ -5,7 +5,8 @@ const states = ["OPEN", "RESOLVED", "STOPPED", "ACKNOWLEDGED"];
 export function issuesRequestParams(filters, page, focus) {
   const params = new URLSearchParams({ page: String(page), page_size: "15" });
   if (focus) {
-    params.set("state", "OPEN");
+    // 阶段已限定当前可核实来源；转人工的异常仍在隔离重查，须保留可见。
+    params.set("state", "ALL");
     params.set("stage_id", focus.stageId);
     if (focus.cycleFinishedAt) params.set("cycle_finished_at", focus.cycleFinishedAt);
   } else {

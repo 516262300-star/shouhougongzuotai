@@ -44,6 +44,31 @@ def test_sync_awaiting_retry_is_still_current_but_other_platform_shop_are_exclud
     assert result["issue_keys"] == ["sync:1:example"]
 
 
+def test_focus_all_keeps_acknowledged_order_without_unrelated_history(tmp_path):
+    current = sync_row(platform_order_sn="example-order", after_sales_sn="example")
+    service = journal(tmp_path, [current, sync_row("sync:1:old")])
+    service.list_issues()
+    service.collector.rows = [current]
+    service.collector.latest_cycle = cycle()
+    item = service.list_issues(stage_id="sync")["items"][0]
+    service.acknowledge(item["key"], item["revision"], "人工核验中")
+
+    focused = service.list_issues(state="ALL", stage_id="sync")
+    assert focused["pagination"]["total"] == 1
+    assert focused["counts"]["ACKNOWLEDGED"] == 1
+    assert focused["counts"]["OPEN"] == 0
+    assert focused["items"][0]["key"] == current["key"]
+    assert focused["items"][0]["state"] == "ACKNOWLEDGED"
+    assert focused["items"][0]["platform_order_sn"] == "example-order"
+    assert focused["items"][0]["acknowledgement_reason"] == "人工核验中"
+    assert service.list_issues(stage_id="sync")["items"] == []
+    assert service.list_issues(state="ALL")["pagination"]["total"] == 2
+
+    service.collector.rows = [{**current, "state": "RESOLVED", "reason": "同步已恢复"}]
+    service.collector.latest_cycle = cycle(status="completed", error=None, shops_warning=0)
+    assert service.list_issues(state="ALL", stage_id="sync")["items"] == []
+
+
 def test_shop_failure_keeps_shop_identity_no_fabricated_order():
     row = {**sync_row("shop:pdd_sync_cursors:1"), "platform_order_sn": None}
     result = select_focus([row], cycle(shops_warning=0, shops_failed=1), "sync")

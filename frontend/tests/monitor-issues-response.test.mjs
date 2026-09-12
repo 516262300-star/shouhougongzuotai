@@ -12,11 +12,29 @@ test("告警定位不带入历史筛选且保留精确阶段及周期", () => {
   const params = issuesRequestParams({ state: "ALL", platform: "TMALL", keyword: "old", shop_id: "9" }, 1,
     { stageId: "sync", cycleFinishedAt: "2026-09-11T11:00:00+08:00" });
   assert.equal(params.get("stage_id"), "sync");
-  assert.equal(params.get("state"), "OPEN");
+  assert.equal(params.get("state"), "ALL");
   assert.equal(params.get("cycle_finished_at"), "2026-09-11T11:00:00+08:00");
   assert.equal(params.has("keyword"), false);
   assert.equal(params.has("shop_id"), false);
   assert.equal(params.has("platform"), false);
+});
+
+test("全部异常仍保留用户选择的处理状态", () => {
+  for (const state of ["OPEN", "ACKNOWLEDGED", "RESOLVED", "ALL"]) {
+    const params = issuesRequestParams({ state }, 1, null);
+    assert.equal(params.get("state"), state);
+    assert.equal(params.has("stage_id"), false);
+  }
+});
+
+test("精准告警接受人工跟进订单并保留状态和跟进说明", () => {
+  const item = { key: "sync:1:refund", state: "ACKNOWLEDGED", reason: "订单详情读取失败",
+    category_label: "同步异常", can_open_order: false, platform_order_sn: "example-order",
+    acknowledgement_reason: "人工核验中", events: [] };
+  const result = { ...snapshot(), counts: { ...snapshot().counts, ACKNOWLEDGED: 1 },
+    items: [item], pagination: { page: 1, page_size: 15, pages: 1, total: 1 },
+    focus: { stage_id: "sync", issue_keys: [item.key], message: "已知悉，后台仍会重查" } };
+  assert.equal(validateIssuesResponse(result, "sync").items[0], item);
 });
 
 test("旧后端返回总表或不同阶段数据时拒绝展示成精准结果", () => {
