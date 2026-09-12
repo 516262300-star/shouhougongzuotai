@@ -75,6 +75,16 @@ SSH 主目录与 `logs` 目录在启动前先保存 ACL 副本，再设置 SYSTE
 
 脚本支持 `-WhatIf`，在预演时不提权、不采集、不创建进程和报告。已在开发机 Windows PowerShell 5.1 验证语法、非零退出码与标准输出/错误捕获、超时结束自建进程、非法参数拒绝和不执行预演；测试只使用普通测试进程，没有启动 SSH 或操作真实系统设置。目标机实际采集仍需单独验收。分析依据：[Win32-OpenSSH 官方调试流程](https://github.com/PowerShell/Win32-OpenSSH/wiki/Troubleshooting-Steps)。
 
+### 前台正常、Windows 服务失败时的临时入口
+
+目标专项报告已经确认管理员令牌有效、PowerShell 读取配置成功、SSH 配置校验退出0、前台监听22端口成功；前台进程由8秒诊断超时主动结束，并非崩溃。原服务仍失败，因此未确认服务根因，也没有扩大文件 ACL。
+
+`scripts/office-ssh-temporary.ps1` 提供自动提权的临时前台部署入口，既有本机账户须与受管状态一致，逐项校验13项原配置及既有防火墙来源/程序/端口；原服务或22端口已经占用时拒绝启动。它仅启用既有受限防火墙规则，并以同一管理员用户和公钥运行 `sshd -d -e -f`，调试方式每个连接结束后再等待下一个，最长60分钟。没有自动重试远程命令和业务动作。部署前必须核对已由用户传来的主机指纹；调试模式只能用当前用户的密钥登录，不支持任意账号切换。
+
+启动后保持窗口打开；另一入口以 `-Stop` 写入受保护的停止标记。正常停止、超时或异常清理只结束本工具创建的进程；如果原规则为关闭且正式SSH服务尚未运行，则恢复关闭。若正式服务已运行，保留部署规则。日志、停止标记和单实例文件锁位于受保护的 `%ProgramData%\LdsAftersalesDeployment`；不改配置、文件ACL或正式服务启动类型。强关窗口/断电不保证执行清理，应使用停止入口或原工具 Disable 检查恢复。临时入口不等于正式服务已修复，更不代表售后业务已迁移；它用于建立连接后直接排查原服务并继续部署。
+
+临时入口已通过 Windows PowerShell 5.1 语法与 WhatIf 检查，原配置接受、密码开启/额外账号/重复规则/Include/端口转发五类变化拒绝检查；打包只含脚本、启停入口及说明，未含密钥。没有在开发机真实开放入口，目标临时连接与登录仍待执行验收。
+
 通用脚本和本文随任务提交 GitHub。个人地址、公钥、私钥及安装包放在 Git 忽略的本机目录。已有 Notion 说明本会话没有可用连接器，本次不宣称同步 Notion；部署进度以本文件和实际验收记录为准。
 
 依据：[Microsoft OpenSSH 安装说明](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)、[Windows OpenSSH 配置](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)、[密钥认证与权限](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)。
