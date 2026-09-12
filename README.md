@@ -585,7 +585,7 @@ ERP 补开退款单使用独立双重写开关，默认只允许手工运行只�
 .\.venv\Scripts\aftersales-sync-erp-returns.exe --force --limit 20 --apply
 ```
 
-持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。平台退款明确完成后，即使物流仍显示在途、派件或快递 100 暂时查询失败，后台也会先建立 ERP 只读匹配任务。后台运行器仍每 60 秒执行一个周期，但会读取任务中的上次核对时间，同一待匹配售后默认每 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（30 分钟）才访问一次 ERP；服务器不可用时任务保持待匹配，下个间隔自动重试。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待下次周期，也可先用上述 `--force` 命令只读复查。
+持续运行时设置 `ERP_RETURN_MATCH_SYNC_ENABLED=true`。平台退款明确完成后，即使物流仍显示在途、派件或快递 100 暂时查询失败，后台也会先建立 ERP 只读匹配任务。普通待匹配售后按 `ERP_RETURN_MATCH_REFRESH_SECONDS=1800`（默认30分钟）复查；ERP服务级失败项5分钟后优先重查，并在同批第一笔超时、HTTP、网络/TLS或登录会话故障后立即熔断，避免一次短时宕机把整批订单都写成“ERP查询失败”。错误只保留脱敏分类；完整规则见[ERP退货查询短时故障控制](docs/erp-return-query-outage-control-20260912.md)。该功能仅访问客户档案、发货销售单和退货暂存列表，不自动点击暂存单“认领”，也不要求打开 `ERP_WRITE_ENABLED`。需要恢复时修复网页登录凭据或 ERP 页面后等待优先重查，也可先用上述 `--force` 命令只读复查。
 
 ## 模块 2：仓库扫码收货与验货
 

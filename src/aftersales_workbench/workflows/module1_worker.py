@@ -360,6 +360,8 @@ class Module1WorkerCycleResult:
                     "not_found",
                     "customer_conflict",
                     "unavailable",
+                    "service_unavailable",
+                    "deferred_after_service_failure",
                     "skipped_recent",
                 ),
             ),

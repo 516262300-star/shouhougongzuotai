@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -469,3 +469,162 @@ def test_tracking_expectations_fall_back_when_customers_conflict() -> None:
 
     assert grouped_sns == ("AS-1",)
     assert len(expected) == 1
+
+
+def test_http_500_is_sanitized_and_classified_as_service_failure() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="internal secret details")
+
+    client = httpx.Client(
+        base_url="https://ldswj.net",
+        transport=httpx.MockTransport(handler),
+        follow_redirects=True,
+    )
+    matcher = ErpWebReturnMatcher(
+        base_url="https://ldswj.net",
+        username="user",
+        password="secret-password",
+        http_client=client,
+    )
+    try:
+        result = matcher.lookup(
+            platform_order_sn="260823-1",
+            tracking_number="JT123",
+            expected_items=_expected(),
+        )
+    finally:
+        matcher.close()
+
+    assert result.status is ErpReturnMatchStatus.UNAVAILABLE
+    assert result.failure_scope == "service"
+    assert result.failure_reason == "http_500"
+    assert "HTTP 500" in result.message
+    assert "ldswj.net" not in result.message
+    assert "secret" not in result.message
+
+
+def test_invalid_record_response_does_not_trip_service_circuit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/welcome/loginpage"):
+            return httpx.Response(200, text="登录")
+        if request.url.path.endswith("/welcome/loginact"):
+            return httpx.Response(200, json={"code": 2})
+        return httpx.Response(200, text="not-json")
+
+    client = httpx.Client(
+        base_url="https://ldswj.net",
+        transport=httpx.MockTransport(handler),
+        follow_redirects=True,
+    )
+    matcher = ErpWebReturnMatcher(
+        base_url="https://ldswj.net",
+        username="user",
+        password="password",
+        http_client=client,
+    )
+    try:
+        result = matcher.lookup(
+            platform_order_sn="260823-1",
+            tracking_number="JT123",
+            expected_items=_expected(),
+        )
+    finally:
+        matcher.close()
+
+    assert result.status is ErpReturnMatchStatus.UNAVAILABLE
+    assert result.failure_scope == "record"
+    assert result.failure_reason == "invalid_response"
+
+
+def test_unavailable_match_retries_after_five_minutes_and_is_prioritized() -> None:
+    now = datetime(2026, 9, 12, tzinfo=UTC)
+    failed_payload = {
+        "erp_match_status": "unavailable",
+        "erp_match_checked_at": (now - timedelta(minutes=6)).isoformat(),
+    }
+    normal_payload = {
+        "erp_match_status": "not_found",
+        "erp_match_checked_at": (now - timedelta(minutes=6)).isoformat(),
+    }
+    failed_task = SimpleNamespace(id=2, payload=failed_payload)
+    normal_task = SimpleNamespace(id=1, payload=normal_payload)
+    order = SimpleNamespace(forward_tracking_number="JT123")
+
+    assert ErpReturnMatchSyncService._due(failed_payload, now, 1800) is True
+    assert ErpReturnMatchSyncService._due(normal_payload, now, 1800) is False
+    rows = [(normal_task, order), (failed_task, order)]
+    rows.sort(key=ErpReturnMatchSyncService._row_priority)
+    assert rows[0][0] is failed_task
+
+
+def test_service_failure_stops_batch_after_one_read() -> None:
+    tasks = [
+        SimpleNamespace(
+            id=index,
+            payload={"erp_match_status": "unavailable"},
+            action_status=AutomationTaskStatus.PENDING,
+            last_error=None,
+        )
+        for index in (1, 2)
+    ]
+    orders = [
+        SimpleNamespace(
+            after_sales_sn=f"AS-{index}",
+            platform_order_sn=f"ORDER-{index}",
+            forward_tracking_number=f"JT{index}",
+            items=[],
+            erp_customer_name=None,
+            erp_sales_owner=None,
+            workflow_status=WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+            exception_type=None,
+        )
+        for index in (1, 2)
+    ]
+
+    class Rows:
+        @staticmethod
+        def all():
+            return list(zip(tasks, orders, strict=True))
+
+    class Session:
+        commits = 0
+
+        @staticmethod
+        def execute(_statement):
+            return Rows()
+
+        def commit(self):
+            self.commits += 1
+
+    class Matcher:
+        calls = 0
+
+        def lookup(self, **_kwargs):
+            self.calls += 1
+            return ErpReturnMatchLookup(
+                status=ErpReturnMatchStatus.UNAVAILABLE,
+                message="ERP 服务暂时不可用",
+                failure_scope="service",
+                failure_reason="http_500",
+            )
+
+    class Service(ErpReturnMatchSyncService):
+        @staticmethod
+        def _ensure_waiting_tasks(**_kwargs):
+            return 0, 0
+
+        @staticmethod
+        def _tracking_expectations(order, _cache):
+            return (), (order.after_sales_sn,)
+
+    session = Session()
+    matcher = Matcher()
+    result = Service(session, matcher).run(limit=20, refresh_seconds=1800, dry_run=False)
+
+    assert matcher.calls == 1
+    assert result.scanned == 1
+    assert result.unavailable == 1
+    assert result.service_unavailable == 1
+    assert result.deferred_after_service_failure == 1
+    assert tasks[0].payload["erp_match_failure_scope"] == "service"
+    assert "erp_match_checked_at" not in tasks[1].payload

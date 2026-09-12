@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import re
 from collections import Counter
 from collections.abc import Sequence
@@ -30,9 +31,16 @@ from aftersales_workbench.workflows.platform_state import platform_refund_comple
 if TYPE_CHECKING:
     from aftersales_workbench.integrations.erp.closure import ErpClosureEvidence
 
+logger = logging.getLogger(__name__)
+_UNAVAILABLE_RETRY_SECONDS = 300
+
 
 class ErpReturnMatchConfigurationError(ValueError):
     """ERP 退货单只读匹配缺少必要配置。"""
+
+
+class ErpReturnMatchServiceError(RuntimeError):
+    """ERP 登录或会话异常；同批其他订单继续查询只会放大故障。"""
 
 
 class ErpReturnMatchStatus(StrEnum):
@@ -88,6 +96,8 @@ class ErpReturnMatchLookup:
     rows: tuple[ErpReturnRow, ...] = ()
     source_location: str | None = None
     closure_evidence: ErpClosureEvidence | None = None
+    failure_scope: str | None = None
+    failure_reason: str | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +113,8 @@ class ErpReturnMatchLookup:
             "return_order_sn": self.return_order_sn,
             "rows": [row.safe_dict() for row in self.rows],
             "source_location": self.source_location,
+            "failure_scope": self.failure_scope,
+            "failure_reason": self.failure_reason,
             "closure_evidence": (
                 self.closure_evidence.safe_dict() if self.closure_evidence else None
             ),
@@ -124,6 +136,8 @@ class ErpReturnMatchSyncResult:
     not_found: int = 0
     customer_conflict: int = 0
     unavailable: int = 0
+    service_unavailable: int = 0
+    deferred_after_service_failure: int = 0
     skipped_recent: int = 0
 
     def safe_dict(self) -> dict[str, Any]:
@@ -264,6 +278,8 @@ class ErpWebReturnMatcher:
             return ErpReturnMatchLookup(
                 status=ErpReturnMatchStatus.UNAVAILABLE,
                 message="平台订单号或发货运单号为空，无法核对 ERP 退货单",
+                failure_scope="record",
+                failure_reason="missing_identity",
             )
         try:
             customer_name, sales_owner = self._lookup_customer(order_sn)
@@ -370,12 +386,65 @@ class ErpWebReturnMatcher:
                 sales_owner=sales_owner,
                 receivable_amount=receivable,
             )
-        except (httpx.HTTPError, ValueError, TypeError) as exc:
+        except httpx.TimeoutException:
+            self._logged_in = False
+            return self._service_unavailable(
+                reason="timeout",
+                message="ERP 服务响应超时，已暂停本批后续查询",
+            )
+        except httpx.HTTPStatusError as exc:
+            self._logged_in = False
+            status_code = exc.response.status_code
+            return self._service_unavailable(
+                reason=f"http_{status_code}",
+                message=f"ERP 服务暂时不可用（HTTP {status_code}），已暂停本批后续查询",
+                http_status=status_code,
+            )
+        except httpx.TransportError:
+            self._logged_in = False
+            return self._service_unavailable(
+                reason="transport_error",
+                message="ERP 服务网络连接异常，已暂停本批后续查询",
+            )
+        except httpx.HTTPError:
+            self._logged_in = False
+            return self._service_unavailable(
+                reason="http_error",
+                message="ERP 服务请求异常，已暂停本批后续查询",
+            )
+        except ErpReturnMatchServiceError:
+            self._logged_in = False
+            return self._service_unavailable(
+                reason="session_invalid",
+                message="ERP 登录或会话状态异常，已暂停本批后续查询",
+            )
+        except (ValueError, TypeError):
             self._logged_in = False
             return ErpReturnMatchLookup(
                 status=ErpReturnMatchStatus.UNAVAILABLE,
-                message=f"ERP 退货单只读查询失败：{exc}",
+                message="ERP 返回数据无法识别，请核对该笔记录",
+                failure_scope="record",
+                failure_reason="invalid_response",
             )
+
+    @staticmethod
+    def _service_unavailable(
+        *,
+        reason: str,
+        message: str,
+        http_status: int | None = None,
+    ) -> ErpReturnMatchLookup:
+        logger.warning(
+            "ERP_RETURN_LOOKUP_FAILED reason=%s http_status=%s",
+            reason,
+            http_status,
+        )
+        return ErpReturnMatchLookup(
+            status=ErpReturnMatchStatus.UNAVAILABLE,
+            message=message,
+            failure_scope="service",
+            failure_reason=reason,
+        )
 
     def _classify_return(
         self,
@@ -479,7 +548,7 @@ class ErpWebReturnMatcher:
             if "welcome/loginpage" not in str(response.url):
                 return response
             self._logged_in = False
-        raise ValueError("ERP 管理系统登录状态失效")
+        raise ErpReturnMatchServiceError("ERP 管理系统登录状态失效")
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
         if self._logged_in and not force:
@@ -492,7 +561,7 @@ class ErpWebReturnMatcher:
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict) or str(payload.get("code")) != "2":
-            raise ValueError("ERP 管理系统登录失败")
+            raise ErpReturnMatchServiceError("ERP 管理系统登录失败")
         self._logged_in = True
 
     @staticmethod
@@ -632,6 +701,7 @@ class ErpReturnMatchSyncService:
             )
             .limit(max(100, limit * 10))
         ).all()
+        rows.sort(key=self._row_priority)
         result = ErpReturnMatchSyncResult(
             dry_run=dry_run,
             tasks_created=tasks_created,
@@ -691,6 +761,15 @@ class ErpReturnMatchSyncService:
                     self._cancel_obsolete_actions(order.after_sales_sn)
                 # 最终核验使用锁定读，逐笔提交释放锁，不跨下一笔 ERP 网络查询持锁。
                 self.session.commit()
+            if (
+                lookup.status is ErpReturnMatchStatus.UNAVAILABLE
+                and lookup.failure_scope == "service"
+            ):
+                result.service_unavailable += 1
+                result.deferred_after_service_failure = len(
+                    due_tracking_numbers - processed_tracking_numbers
+                )
+                break
         if not dry_run:
             self.session.commit()
         return result
@@ -925,7 +1004,22 @@ class ErpReturnMatchSyncService:
                 checked_at = checked_at.replace(tzinfo=UTC)
         except ValueError:
             return True
-        return now - checked_at >= timedelta(seconds=refresh_seconds)
+        retry_seconds = refresh_seconds
+        if str(payload.get("erp_match_status") or "") == "unavailable":
+            retry_seconds = min(refresh_seconds, _UNAVAILABLE_RETRY_SECONDS)
+        return now - checked_at >= timedelta(seconds=retry_seconds)
+
+    @staticmethod
+    def _row_priority(row: tuple[Any, Any]) -> tuple[int, str, int]:
+        task, order = row
+        failed_first = 0 if str((task.payload or {}).get("erp_match_status") or "") == (
+            ErpReturnMatchStatus.UNAVAILABLE.value
+        ) else 1
+        return (
+            failed_first,
+            str(order.forward_tracking_number or ""),
+            int(task.id or 0),
+        )
 
     @staticmethod
     def apply_lookup(
@@ -965,6 +1059,8 @@ class ErpReturnMatchSyncService:
             "erp_match_check_count": int(payload.get("erp_match_check_count") or 0) + 1,
             "erp_match_status": lookup.status.value,
             "erp_match_message": lookup.message,
+            "erp_match_failure_scope": lookup.failure_scope,
+            "erp_match_failure_reason": lookup.failure_reason,
             "erp_customer_name": lookup.customer_name,
             "erp_sales_owner": lookup.sales_owner,
             "erp_receivable_amount": (
