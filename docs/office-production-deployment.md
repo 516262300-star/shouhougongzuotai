@@ -67,6 +67,14 @@ SSH 主目录与 `logs` 目录在启动前先保存 ACL 副本，再设置 SYSTE
 
 更新版已通过 Windows PowerShell 5.1 语法/预演、目录与文件 ACL 对象检查，以及开发机只读诊断报告生成检查（六类诊断章节完整）。新包核对公钥与原包字节一致、脚本与仓库一致，未含私钥。检查没有在开发机安装或启动 SSH，也没有在目标机执行更新版。
 
+### 管理员调试仍然无法读取配置
+
+目标机更新版报告显示目录 ACL 已生效、服务 LocalSystem、退出码1067、22端口没有监听；两份前台调试日志均停在读取 `sshd_config` 的 `Permission denied`，不能据此确认原服务失败根因，也不能仅凭“管理员”文件名确认有效提升令牌。新增 `office-ssh-read-probe.cmd` / `.ps1` 独立诊断包，双击 CMD 后由 Windows UAC 明确提权，核实管理员令牌及进程位数，再对比 PowerShell 实际读取与 SSH 本身读取。配置内容不写报告，仅记录字节数和哈希。报告包括目录和配置元数据/SDDL、注册的安全软件名称与状态、服务账号及 SID/权限要求、SSH 自身配置验证日志。
+
+只有配置可读、确认是本工具创建的配置、原服务已停止且 SSH 配置验证成功，才启动最多8秒的前台 SSH 调试进程；沿用原配置的来源账户/公钥限制，不改防火墙、不进行登录，仅结束本工具创建的进程。此项是短暂进程诊断，不是纯只读查询；不改变正式服务状态、ACL、密钥或业务。已有 SSH 服务运行时跳过前台启动。结果文件 `ssh-access-probe-时间.txt` 保存在解压目录。没有诊断证据前，不扩大配置/密钥文件读取权限，不关闭安全软件，不卸载 SSH。
+
+脚本支持 `-WhatIf`，在预演时不提权、不采集、不创建进程和报告。已在开发机 Windows PowerShell 5.1 验证语法、非零退出码与标准输出/错误捕获、超时结束自建进程、非法参数拒绝和不执行预演；测试只使用普通测试进程，没有启动 SSH 或操作真实系统设置。目标机实际采集仍需单独验收。分析依据：[Win32-OpenSSH 官方调试流程](https://github.com/PowerShell/Win32-OpenSSH/wiki/Troubleshooting-Steps)。
+
 通用脚本和本文随任务提交 GitHub。个人地址、公钥、私钥及安装包放在 Git 忽略的本机目录。已有 Notion 说明本会话没有可用连接器，本次不宣称同步 Notion；部署进度以本文件和实际验收记录为准。
 
 依据：[Microsoft OpenSSH 安装说明](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)、[Windows OpenSSH 配置](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)、[密钥认证与权限](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)。
