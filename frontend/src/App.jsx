@@ -1113,10 +1113,12 @@ const MONITOR_DETAIL_LABELS = {
   post_refund_verified: "退款后验收一致",
   records_created: "新增记录",
   shops_ok: "店铺正常",
+  pending_confirmation: "退款结果待确认",
+  confirmed_after_query: "回查确认成功",
 };
 
-const monitorTone = (status) => ({ healthy: "success", completed: "success", warning: "warning", starting: "info", skipped: "neutral", disabled: "neutral", stopped: "danger", failed: "danger", missing: "neutral" }[status] ?? "neutral");
-const monitorStageStatus = (status) => ({ completed: "正常", acknowledged: "人工跟进", warning: "提醒", skipped: "跳过", failed: "失败", missing: "暂无周期" }[status] ?? status);
+const monitorTone = (status) => ({ healthy: "success", completed: "success", pending: "info", awaiting_confirmation: "info", warning: "warning", starting: "info", skipped: "neutral", disabled: "neutral", stopped: "danger", failed: "danger", missing: "neutral" }[status] ?? "neutral");
+const monitorStageStatus = (status) => ({ completed: "正常", awaiting_confirmation: "待确认", acknowledged: "人工跟进", warning: "提醒", skipped: "跳过", failed: "失败", missing: "暂无周期" }[status] ?? status);
 const formatAge = (seconds) => {
   if (seconds === null || seconds === undefined) return "暂无记录";
   if (seconds < 60) return `${seconds} 秒前`;
@@ -1234,7 +1236,7 @@ function MonitorWorkspace({ onOpenIssues }) {
         </section>
         <section className="monitor-metrics">
           <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
-          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : worker.last_cycle_finished_at ? "本轮执行完成" : "等待首个运行周期"}</small></article>
+          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : worker.pending_confirmation ? "退款结果待确认" : worker.last_cycle_finished_at ? "本轮执行完成" : "等待首个运行周期"}</small></article>
           <article><span>企微待发送</span><strong className={queue.pending ? "monitor-warn" : "monitor-good"}>{queue.pending ?? "—"}</strong><small>发送中 {queue.running ?? 0} · 已成功 {queue.succeeded ?? 0}</small></article>
           <article><span>发送失败</span><strong className={queue.failed ? "monitor-bad" : "monitor-good"}>{queue.failed ?? "—"}</strong><small>当前启用范围共 {queue.total ?? 0} 条任务</small></article>
         </section>

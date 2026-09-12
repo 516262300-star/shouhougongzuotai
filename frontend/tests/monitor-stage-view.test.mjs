@@ -28,3 +28,10 @@ test("整店失败、发送阻断、跳过和未知状态不伪装成完成", ()
     assert.equal(stageHasFailure(source), source.status === "failed");
   }
 });
+
+test("退款结果待确认保留独立状态，不提供失败入口；混合真实失败仍提供入口", () => {
+  const pending = { id: "pdd_refund", status: "awaiting_confirmation", failed: 0, pending_confirmation: 1 };
+  assert.equal(runtimeStage(pending).status, "awaiting_confirmation");
+  assert.equal(stageHasFailure(pending), false);
+  assert.equal(stageHasFailure({ ...pending, status: "failed", failed: 1 }), true);
+});

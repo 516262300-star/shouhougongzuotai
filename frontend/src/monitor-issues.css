@@ -25,6 +25,7 @@
 .issue-reason { min-width: 190px; max-width: 420px; overflow-wrap: anywhere; }
 .issue-state { display: block; width: fit-content; border-radius: 4px; padding: 1px 6px; margin-top: 5px; font-size: 13px; }
 .issue-state-open { color: #a43418; background: #fff0e9; }
+.issue-state-pending { color: #1765bc; background: #edf5ff; }
 .issue-state-resolved { color: #147548; background: #e8f6ee; }
 .issue-state-stopped { color: #566477; background: #eef1f5; }
 .issue-actions { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 95px; }

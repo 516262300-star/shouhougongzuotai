@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
 )
 from aftersales_workbench.services.desktop_notice_recovery import resolve_project_path
+from aftersales_workbench.services.refund_confirmation_view import refund_cycle_view
 from aftersales_workbench.workflows.desktop_sender import (
     DesktopLedgerState,
     DesktopNoticeLedger,
@@ -123,7 +124,12 @@ class RuntimeMonitorService:
         runtime_dir = self.project_root / ".runtime"
         pid = self._read_pid(runtime_dir / "module1-worker.pid")
         running = bool(pid and _pid_is_running(pid))
-        latest_cycle = _latest_json_line(runtime_dir / "module1-worker.log")
+        execution_cycle = _latest_json_line(runtime_dir / "module1-worker.log")
+        latest_cycle = refund_cycle_view(self.session, execution_cycle)
+        pending_confirmation = sum(
+            stage.get("pending_confirmation", 0)
+            for stage in (latest_cycle or {}).values() if isinstance(stage, dict)
+        )
         finished_at = _parse_datetime((latest_cycle or {}).get("finished_at"))
         age_seconds = (
             max(0, int((datetime.now(UTC) - finished_at).total_seconds()))
@@ -141,6 +147,8 @@ class RuntimeMonitorService:
             state, state_label = "warning", "后台运行中，但周期长时间未完成"
         elif not bool(latest_cycle.get("ok")):
             state, state_label = "warning", "后台运行中，最近周期存在失败"
+        elif pending_confirmation:
+            state, state_label = "pending", f"后台运行中，{pending_confirmation} 笔退款结果待确认"
         else:
             enabled_module_labels = ["模块 1"]
             if self.settings.module2_worker_enabled:
@@ -164,6 +172,8 @@ class RuntimeMonitorService:
                 "last_cycle_finished_at": (latest_cycle or {}).get("finished_at"),
                 "last_cycle_age_seconds": age_seconds,
                 "last_cycle_ok": (latest_cycle or {}).get("ok"),
+                "last_cycle_execution_ok": (execution_cycle or {}).get("ok"),
+                "pending_confirmation": pending_confirmation,
             },
             "modules": [
                 self._module_status("module1", True, running, cycle_stale, latest_cycle),
@@ -340,6 +350,8 @@ class RuntimeMonitorService:
             status, label = "warning", "需要检查"
         elif latest_cycle is None:
             status, label = "starting", "正在启动"
+        elif any(stage.get("status") == "awaiting_confirmation" for stage in stages):
+            status, label = "pending", "退款结果待确认"
         else:
             status, label = "healthy", "运行正常"
         return {

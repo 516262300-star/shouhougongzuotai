@@ -144,7 +144,7 @@ def select_focus(rows, cycle, stage_id, requested_cycle=None):
             f"已定位 {len(candidates)} 项，另有 {missing} 项缺少可核实来源，"
             "需维护人员核对本轮日志。"
             if candidates and missing else
-            "展示所选运行周期实际失败的任务及其最新状态；已恢复项保留本次失败来源。"
+            "展示所选周期执行异常的任务及其最新状态；结果待确认不代表退款失败，已恢复项保留原始记录。"
             if candidates and exact else
             "仅展示这条告警对应的当前异常，不包含其他阶段或历史异常。"
             if candidates else

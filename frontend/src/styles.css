@@ -538,3 +538,5 @@ th:nth-child(5) { width: 13%; } th:nth-child(6) { width: 9%; } th:nth-child(7) {
   .integration-summary article { padding-inline: 12px; }
   .capability-legend small { display: none; }
 }
+
+.monitor-stage-dot.stage-awaiting_confirmation { background: #2683e6; }

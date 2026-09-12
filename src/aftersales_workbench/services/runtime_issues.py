@@ -27,6 +27,10 @@ from aftersales_workbench.db.models import (
     Shop,
     TmallSyncCursor,
 )
+from aftersales_workbench.services.refund_confirmation_view import (
+    PENDING_REASON,
+    confirmation_state,
+)
 from aftersales_workbench.services.runtime_issue_focus import load_focus_cycle, select_focus
 from aftersales_workbench.services.runtime_monitor import _latest_json_line
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeLedger
@@ -165,6 +169,9 @@ class RuntimeIssueCollector:
         parcels = {p.task_id: p for p in self.session.scalars(select(ParcelNoticeRecord))}
         tasks = list(self.session.scalars(select(Task)))
         task_ids = {t.id for t in tasks}
+        money_rows = list(self.session.scalars(select(MoneyOperation)))
+        money_by_task = {m.task_id: m for m in money_rows
+                         if m.platform == "PDD" and m.operation_type == "PLATFORM_REFUND"}
         for task in tasks:
             payload = task.payload or {}
             action, status = str(task.action_type), str(task.action_status)
@@ -182,6 +189,14 @@ class RuntimeIssueCollector:
             recovered, stopped = status == "SUCCEEDED", status == "CANCELLED"
             checked = local_iso(task.updated_at)
             next_check = None
+            pending_confirmation = confirmation_state(
+                task, orders.get(task.after_sales_sn), money_by_task.get(task.id)) == "pending"
+            if pending_confirmation:
+                active, recovered, stopped = True, False, False
+                reason = PENDING_REASON + (f"；原始记录：{reason}" if reason else "")
+                progress = poll.get(("pdd_failed_refund", task.after_sales_sn))
+                next_check = utc_iso(progress.next_check_at) if progress else None
+                checked = utc_iso(progress.checked_at) if progress else checked
             if action == "ERP_CHECK_FULFILLMENT":
                 state = payload.get("erp_refund_status")
                 active = active or (
@@ -229,6 +244,7 @@ class RuntimeIssueCollector:
                     checked_at=checked,
                     next_check_at=next_check,
                     task_id=task.id,
+                    pending_confirmation=pending_confirmation,
                     action_type=action,
                     origin=payload.get("origin"),
                     erp_refund_status=payload.get("erp_refund_status"),
@@ -281,7 +297,7 @@ class RuntimeIssueCollector:
                     **identity(order.after_sales_sn),
                 )
             )
-        for money in self.session.scalars(select(MoneyOperation)):
+        for money in money_rows:
             # 独立资金账本不能因动作任务删除或取消而被隐藏。
             legacy_guard = (
                 money.task_id is None
@@ -301,6 +317,9 @@ class RuntimeIssueCollector:
                     recovered=money.state == "CONFIRMED",
                     checked_at=utc_iso(money.updated_at),
                     task_id=money.task_id,
+                    pending_confirmation=(money.platform == "PDD"
+                                          and money.operation_type == "PLATFORM_REFUND"
+                                          and money.state in {"REQUEST_STARTED", "UNKNOWN"}),
                     **identity(money.after_sales_sn, money.shop_id),
                 )
             )

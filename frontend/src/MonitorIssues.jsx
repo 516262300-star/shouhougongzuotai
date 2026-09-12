@@ -108,7 +108,7 @@ export function MonitorIssues({ onOpenOrder, focus = null, onClearFocus }) {
 function IssueRows({ item, expanded, onExpand, onOpenOrder, onAcknowledge }) {
   return <>
     <tr>
-      <td><strong>{item.category_label}</strong><span className={`issue-state issue-state-${item.state.toLowerCase()}`}>{labels[item.state]}</span></td>
+      <td><strong>{item.category_label}</strong><span className={`issue-state issue-state-${item.pending_confirmation && item.state === "OPEN" ? "pending" : item.state.toLowerCase()}`}>{item.pending_confirmation && item.state === "OPEN" ? "退款结果待确认" : labels[item.state]}</span></td>
       <td><span className="issue-order-number">{item.platform_order_sn || "无对应平台订单"}</span><small>{platforms[item.platform] || "系统"} · {item.shop_name || "运行阶段"}</small></td>
       <td>{item.sales_owner || "—"}</td>
       <td className="issue-reason">{item.reason}{item.acknowledgement_reason && <p>人工跟进：{item.acknowledgement_reason}</p>}{item.can_acknowledge && <button type="button" className="button secondary" onClick={onAcknowledge}>已知悉，转人工跟进</button>}</td>
