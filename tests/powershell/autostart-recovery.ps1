@@ -43,6 +43,15 @@ function Assert-Throws {
     Assert-True $thrown 'Expected a safe refusal'
 }
 switch ($Case) {
+    'web_lan_bind' {
+        $local = Get-WorkbenchWebEndpoint -Config $config
+        Assert-True ($local.BindAddress -eq '127.0.0.1') 'Default must remain loopback'
+        $config | Add-Member -NotePropertyName WebHost -NotePropertyValue '0.0.0.0'
+        $lan = Get-WorkbenchWebEndpoint -Config $config
+        Assert-True ($lan.BindAddress -eq '0.0.0.0') 'LAN bind lost'
+        Assert-True ($lan.HostName -eq '127.0.0.1') 'Health probe must use a connectable address'
+        Assert-True ($lan.HealthUrl -eq 'http://127.0.0.1:8000/health/ready') 'Wildcard must not enter health URL'
+    }
     'config_missing' {
         $actual = Get-AutostartConfiguration
         Assert-True ($actual.MySqlServerUuid -eq $uuid) 'Incorrect restored identity'

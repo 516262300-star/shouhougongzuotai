@@ -8,6 +8,9 @@ param(
     [int]$MySqlPort = 3306,
     [ValidateRange(1, 65535)]
     [int]$WebPort = 8000,
+    [ValidatePattern('^(0\.0\.0\.0|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$')]
+    [ValidateScript({ $ip = $null; [System.Net.IPAddress]::TryParse($_, [ref]$ip) })]
+    [string]$WebHost = '127.0.0.1',
     [ValidateRange(1, 60)]
     [int]$WatchdogMinutes = 5
 )
@@ -85,11 +88,13 @@ function Get-WorkbenchWebEndpoint {
     if ($null -ne $Config.PSObject.Properties['WebPort'] -and $Config.WebPort) {
         $webPort = [int]$Config.WebPort
     }
+    $probeHost = if ($webHost -eq '0.0.0.0') { '127.0.0.1' } else { $webHost }
     return [pscustomobject]@{
-        HostName = $webHost
+        HostName = $probeHost
+        BindAddress = $webHost
         Port = $webPort
-        HealthUrl = "http://${webHost}:$webPort/health/ready"
-        RootUrl = "http://${webHost}:$webPort/"
+        HealthUrl = "http://${probeHost}:$webPort/health/ready"
+        RootUrl = "http://${probeHost}:$webPort/"
     }
 }
 
@@ -494,7 +499,7 @@ function Start-WorkbenchWeb {
     Remove-Item -LiteralPath $webPidFile -Force -ErrorAction SilentlyContinue
     $arguments = @(
         'aftersales_workbench.main:app',
-        '--host', $endpoint.HostName,
+        '--host', $endpoint.BindAddress,
         '--port', [string]$endpoint.Port
     )
     $previousPythonPath = $env:PYTHONPATH
@@ -696,7 +701,7 @@ function Install-AutostartTask {
         MySqlDefaultsBackupFile = $mysqlDefaultsBackupFile
         MySqlHost = '127.0.0.1'
         MySqlPort = $MySqlPort
-        WebHost = '127.0.0.1'
+        WebHost = $WebHost
         WebPort = $WebPort
         WatchdogMinutes = $WatchdogMinutes
         InstalledAt = (Get-Date).ToString('s')

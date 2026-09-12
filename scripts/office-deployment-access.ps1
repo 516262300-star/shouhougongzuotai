@@ -245,6 +245,16 @@ try {
     Protect-AdminPath $configPath
     & (Join-Path $sshBin 'ssh-keygen.exe') -A
     if ($LASTEXITCODE -ne 0) { throw '生成主机密钥失败。' }
+    # 管理员控制台生成的私钥可能归当前用户所有，控制台可用但 LocalSystem 服务拒绝。
+    # 只调整固定三份主机私钥的 ACL，不重建或读取密钥正文。
+    foreach ($hostKeyName in @('ssh_host_rsa_key', 'ssh_host_ecdsa_key', 'ssh_host_ed25519_key')) {
+        $hostKeyPath = Join-Path $sshRoot $hostKeyName
+        if (Test-Path -LiteralPath $hostKeyPath) {
+            $keyAclBackup = Join-Path $stateRoot ($hostKeyName + '-acl-before-' + [guid]::NewGuid().ToString('N') + '.xml')
+            Get-Acl -LiteralPath $hostKeyPath | Export-Clixml -LiteralPath $keyAclBackup
+            Protect-AdminPath $hostKeyPath
+        }
+    }
     & (Join-Path $sshBin 'sshd.exe') -t -f $configPath
     if ($LASTEXITCODE -ne 0) { throw 'SSH 配置检查失败，未开放连接。' }
     Get-NetFirewallRule -Name $ruleName -ErrorAction SilentlyContinue | Remove-NetFirewallRule

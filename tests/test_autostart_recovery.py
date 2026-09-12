@@ -11,6 +11,7 @@ import pytest
 pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows startup integration")
 
 CASES = [
+    "web_lan_bind",
     "config_missing", "config_corrupt", "config_both_invalid", "identity_partial",
     "config_readonly", "config_invalid_web_port", "cold_start_order",
     "defaults_missing", "alias_missing", "alias_correct", "alias_wrong_target",

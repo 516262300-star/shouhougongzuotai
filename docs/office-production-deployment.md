@@ -85,6 +85,26 @@ SSH 主目录与 `logs` 目录在启动前先保存 ACL 副本，再设置 SYSTE
 
 临时入口已通过 Windows PowerShell 5.1 语法与 WhatIf 检查，原配置接受、密码开启/额外账号/重复规则/Include/端口转发五类变化拒绝检查；打包只含脚本、启停入口及说明，未含密钥。没有在开发机真实开放入口，目标临时连接与登录仍待执行验收。
 
+### 已查明的服务失败原因：主机私钥权限
+
+临时入口已完成主机指纹核对和实际管理员密钥登录。通过在本机回环地址的独立测试端口运行 Windows 服务并指定启动日志，取得确切错误：三份主机私钥权限过宽被忽略，最后因无可用主机密钥退出。原始 ACL 显示主机私钥归生成密钥的交互用户所有，且该用户有独立 Modify 权限；管理员前台能用，并不代表 LocalSystem 服务能接受。
+
+安装器在 `ssh-keygen -A` 后新增固定三份 RSA/ECDSA/Ed25519 主机私钥的权限备份与收紧：关闭继承，所有者为 Administrators，仅保留 SYSTEM/Administrators 完全控制，不读取或修改密钥正文，不重新生成已有密钥，不修改公钥授权范围。备份在受保护的部署状态目录。此前的配置文件读取拒绝不是这次服务退出的根因；不据此扩大配置和私钥读取权限。
+
 通用脚本和本文随任务提交 GitHub。个人地址、公钥、私钥及安装包放在 Git 忽略的本机目录。已有 Notion 说明本会话没有可用连接器，本次不宣称同步 Notion；部署进度以本文件和实际验收记录为准。
 
 依据：[Microsoft OpenSSH 安装说明](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_install_firstuse)、[Windows OpenSSH 配置](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh-server-configuration)、[密钥认证与权限](https://learn.microsoft.com/en-us/windows-server/administration/openssh/openssh_keymanagement)。
+
+## 正式环境准备与发布工具（2026-09-12）
+
+受限入口已完成正式 Windows SSH 服务启动及重新登录验收：自动启动、LocalSystem、公钥认证和原限定来源规则均正常。临时窗口已退出，后续维护不再依赖该窗口。
+
+正式运行目录使用独立的 `D:\LDSAftersales`，目录权限仅 SYSTEM、Administrators 和运行账户。Python 3.12.10 官方安装器已验证 PSF 数字签名；匹配现运行环境的依赖离线安装，并补充 MySQL 8.4 默认认证所需 cryptography。MySQL 8.4.9 程序与业务数据分开，新建受管自动服务，仅监听回环地址，数据库账户使用独立密码。初始化脚本设密成功后移除，不把密码写入命令行或 Git。数据库安装依据：[MySQL 数据目录初始化](https://dev.mysql.com/doc/refman/8.4/en/data-directory-initialization.html)。
+
+`scripts/build_office_release.py --output <新的zip路径>` 从两份正在使用的发布指针打包 Worker/Web 源码和前端，基础打包元数据与迁移来自指针记录的 Git 提交；不读取工作区正在修改的业务源码。启动脚本取当前文件，应验证并提交后使用。每个文件生成 SHA-256 清单，拒绝越界指针与已存在输出；不带环境凭据、数据库、账本、PID、锁或虚拟环境。包本身是代码发布，不能用来覆盖正式数据。当前包已验证 581 个文件哈希和稳定 Worker 一致性。
+
+`scripts/office_state_snapshot.py --root <运行目录> --output <全新受保护目录> --mysqldump <程序路径>` 保存完整 MySQL 逻辑备份、发送账本、监控 SQLite 在线备份、发布指针和生产环境配置，生成校验清单。输出含凭据和业务数据，必须放在受保护且 Git 忽略的位置。SQL 使用单事务，但跨 MySQL/账本的一致性仍要求先暂停守护、等 Worker 安全结束并停止其他写入，再执行最终迁移备份。演练备份不能冒充停写后的最终备份。恢复后核对全部表计数、schema 和文件哈希，保留 UNKNOWN 资金结果及已发送记录，不重置幂等状态。
+
+`module1-autostart.ps1 -Action Install` 新增 `-WebHost`，默认仍为回环；正式 LAN 使用 `0.0.0.0` 时，健康探测改用 `127.0.0.1`，本机管理接口仍可使用本机网址。防火墙另行限制允许的来源电脑，不向公网或所有网络放开。本机限制的管理操作不因 LAN 开放而取消。
+
+新机已通过 21 张表的演练恢复与数量核对、schema `20260910_0027`、LAN 首页和数据库健康检查。企微已在实际登录会话通过主窗口激活、画面抓取、中文 OCR 与四项群映射加载检查；未输入或发送消息。此时外部写入全部关闭、正式业务仍在旧机，最终切换和独立运行验收另记。
