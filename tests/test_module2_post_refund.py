@@ -110,13 +110,19 @@ def test_zero_customer_balance_alone_is_not_verification(field, value):
     assert error and result.post_refund_verified == 0
 
 
-def test_unpaid_refund_keeps_quality_gate_and_shared_tracking_protection():
+def test_unpaid_refund_keeps_quality_gate_and_shared_tracking_continues(monkeypatch):
     order, lookup, bill = sample()
     order.refund_financial_status = "PENDING"
     order.platform_after_sales_status = 3
     order.platform_order_refund_status = 2
     assert "质检" in run(order, lookup, bill)[0]
-    assert "同退货运单" in run(order, lookup, bill, shared={"tracking"})[0]
+    called = []
+    def check(self, order, result, dry_run):
+        called.append(order.after_sales_sn)
+        return "整批实收已核验，待独立质检"
+    monkeypatch.setattr(Module2ErpIntakeService, "_inspect_shared_candidate", check)
+    assert "整批实收" in run(order, lookup, bill, shared={"tracking"})[0]
+    assert called == [order.after_sales_sn]
 
 
 def test_staged_return_is_not_settled():

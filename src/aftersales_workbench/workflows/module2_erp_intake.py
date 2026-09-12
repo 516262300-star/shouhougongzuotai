@@ -100,6 +100,9 @@ class Module2ErpIntakeService:
     def __init__(self, session: Session, matcher: ErpReturnMatcher) -> None:
         self.session = session
         self.matcher = matcher
+        self._shared_results = {}
+        self._shared_failures = {}
+        self._shared_service_error = None
 
     def run(
         self,
@@ -115,6 +118,9 @@ class Module2ErpIntakeService:
             raise ValueError("min_order_id 不能小于 0")
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
+        self._shared_results = {}
+        self._shared_failures = {}
+        self._shared_service_error = None
         candidates = self._list_candidates(
             shop_codes=shop_codes,
             min_order_id=min_order_id,
@@ -188,8 +194,7 @@ class Module2ErpIntakeService:
     def _inspect_candidate(self, order, platform, shared_tracking, result, dry_run):
         tracking = str(order.return_tracking_number or "").strip()
         if tracking in shared_tracking:
-            result.ambiguous += 1
-            return "同退货运单关联多笔售后，须整票核验，禁止按分页拆分退款"
+            return self._inspect_shared_candidate(order, result, dry_run)
         lookup = self.matcher.lookup(
             platform_order_sn=order.platform_order_sn,
             tracking_number=tracking,
@@ -265,6 +270,48 @@ class Module2ErpIntakeService:
             elif platform is Platform.TMALL:
                 result.tmall_refunds_ready += 1
         return None
+
+    def _inspect_shared_candidate(self, order, result, dry_run):
+        from aftersales_workbench.integrations.erp.shared_returns import SharedReturnIncomplete
+        from aftersales_workbench.workflows.module2_shared_return import (
+            VERIFIED_NOTE,
+            recheck_local_evidence,
+            save_allocation,
+            verify_group,
+        )
+
+        tracking = order.return_tracking_number
+        try:
+            if self._shared_service_error:
+                raise RuntimeError("本轮 ERP 整批查询已失败，等待下轮重查")
+            if tracking in self._shared_failures:
+                raise SharedReturnIncomplete(self._shared_failures[tracking])
+            if order.after_sales_sn not in self._shared_results:
+                self._shared_results.update(verify_group(
+                    self.session, self.matcher, order, self._expected_items))
+            message, evidence = self._shared_results[order.after_sales_sn]
+            if evidence and not dry_run:
+                recheck_local_evidence(self.session, evidence, self._expected_items)
+                save_allocation(evidence)
+                order.workflow_status = WorkflowStatus.RETURN_RECEIVED_ASSIGNED
+                order.exception_type = VERIFIED_NOTE
+            elif message and not dry_run:
+                order.exception_type = message
+            if evidence:
+                result.post_refund_verified += 1
+            else:
+                result.ambiguous += 1
+            return message
+        except SharedReturnIncomplete as exc:
+            self._shared_failures[tracking] = str(exc)
+            result.ambiguous += 1
+            message = f"整批退货核验：{exc}"
+            if not dry_run:
+                order.exception_type = message
+            return message
+        except Exception:
+            self._shared_service_error = True
+            raise
 
     def _list_candidates(
         self,
