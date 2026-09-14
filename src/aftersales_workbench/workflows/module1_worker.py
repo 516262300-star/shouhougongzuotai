@@ -1013,6 +1013,19 @@ class Module1WorkerRuntime:
                 resume_due_before_paste_entries(session, ledger)
                 blocking = ledger.blocking_entry()
                 if blocking is not None:
+                    from aftersales_workbench.workflows.desktop_receipt_recovery import (
+                        recover_send_pressed,
+                    )
+
+                    recover_send_pressed(
+                        session, ledger,
+                        DesktopNoticePlanner(self.settings.module1_desktop_group_map,
+                                             self.settings.kuaidi100_carrier_map),
+                        lambda: WindowsWeComGateway(
+                            process_name=self.settings.module1_desktop_process_name),
+                    )
+                    blocking = ledger.blocking_entry()
+                if blocking is not None:
                     return WorkerStageResult(
                         status="failed",
                         details={

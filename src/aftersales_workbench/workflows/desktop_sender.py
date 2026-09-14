@@ -321,6 +321,14 @@ def desktop_blocking_message(entry: DesktopLedgerEntry) -> str:
             f"任务 {entry.task_id} 发送前暂停：{entry.error or '需检查企业微信窗口'}；"
             "确认原因已解除后可重新尝试发送"
         )
+    if entry.state is DesktopLedgerState.SEND_PRESSED and not any(
+        marker in (entry.error or '') for marker in ('ESC', '安全验证', '登录验证', '身份验证')
+    ):
+        return (
+            f"任务 {entry.task_id} 发送结果未确认（SendPressed）："
+            "后台会自动只读核对原群完整消息，核实成功后继续队列；"
+            "不会重复发送。若持续无法确认，请核对原群消息。"
+        )
     return (
         f"任务 {entry.task_id} 发送结果未确认（{entry.state.value}）："
         f"{entry.error or '已开始输入或可能按过发送键'}；"

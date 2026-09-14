@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import ctypes
+import json
 import random
 import re
 import sys
 import time
 from ctypes import wintypes
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -211,6 +213,9 @@ class WindowsWeComGateway:
         self.kernel32.GetCurrentThreadId.restype = wintypes.DWORD
         self._random = random.SystemRandom()
         self._target_hwnd: int | None = None
+        from aftersales_workbench.core.runtime_paths import get_runtime_root
+
+        self.receipt_audit_root = get_runtime_root() / '.runtime/audits/desktop-receipts'
         from aftersales_workbench.workflows.wecom_receipt import WeComReceiptReader
 
         try:
@@ -589,6 +594,7 @@ class WindowsWeComGateway:
         if process_id is not None:
             self._raise_if_security_window(process_id, ambiguous=ambiguous)
         snapshot = self._full_snapshot(hwnd, ambiguous=ambiguous)
+        self._last_receipt_snapshot = snapshot
         try:
             result = self.receipt_reader.inspect(snapshot, plan.target_group, plan.message)
         except Exception as exc:
@@ -598,6 +604,22 @@ class WindowsWeComGateway:
             self._raise_if_security_window(process_id, ambiguous=ambiguous)
         self._raise_if_escape(ambiguous=ambiguous)
         return result
+
+    def verify_existing_receipt(self, plan: DesktopNoticePlan) -> dict:
+        """只查看当前群的原消息；不搜索、不输入消息、不按发送键。"""
+        self._restore_hwnd = int(self.user32.GetForegroundWindow() or 0)
+        self._target_hwnd = None
+        self._target_process_id = None
+        self._ui_suspended = False
+        self._raise_if_escape()
+        try:
+            hwnd, process_id = self._activate_wecom_foreground()
+            self._target_hwnd, self._target_process_id = hwnd, process_id
+            self._raise_if_security_window(process_id, ambiguous=True)
+            self._wait_for_receipt(hwnd, plan)
+            return self._receipt_report
+        finally:
+            self._restore_after_send()
 
     def _recover_receipt_foreground(self, hwnd: int) -> None:
         """只恢复原企微窗口用于读回执，绝不搜索、输入、粘贴或按发送键。"""
@@ -623,14 +645,50 @@ class WindowsWeComGateway:
         self._require_target_foreground(hwnd=hwnd, ambiguous=True)
 
     def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan) -> None:
-        deadline = time.monotonic() + 12.0
-        stable_since: float | None = None
-        confirmations = 0
-        recovered_focus = False
+        # 三次完整 OCR 在忙碌/高分屏机器上可能超过原来的 12 秒。
+        # 只增加读取预算，仍要求连续三次、至少两秒的严格全文和状态核验。
+        started = time.monotonic()
+        self._last_receipt_snapshot = None
+        samples = []
+        verified = False
+        failure = None
+        try:
+            self._poll_receipt(hwnd, plan, started, samples)
+            verified = True
+        except Exception as exc:
+            failure = str(exc)
+            raise
+        finally:
+            self._receipt_report = {
+                'task_id': getattr(plan, 'task_id', None), 'verified': verified, 'error': failure,
+                'checked_at': datetime.now(UTC).isoformat(),
+                'duration_seconds': round(time.monotonic() - started, 3), 'samples': samples,
+            }
+            audit = getattr(self, 'receipt_audit_root', None)
+            if audit is not None:
+                audit.mkdir(parents=True, exist_ok=True)
+                prefixes = [audit / f'{plan.task_id}-latest']
+                first = audit / f'{plan.task_id}-first-failure'
+                if not verified and not first.with_suffix('.json').exists():
+                    prefixes.append(first)
+                for prefix in prefixes:
+                    snapshot = getattr(self, '_last_receipt_snapshot', None)
+                    if snapshot is not None:
+                        snapshot.save(prefix.with_suffix('.png'))
+                    prefix.with_suffix('.json').write_text(
+                        json.dumps(self._receipt_report, ensure_ascii=False, indent=2),
+                        encoding='utf-8')
+
+    def _poll_receipt(self, hwnd, plan, started, samples):
+        deadline = started + 45.0
+        stable_since, confirmations, recovered_focus = None, 0, False
         while time.monotonic() < deadline:
+            sample_start = time.monotonic()
             try:
                 observation = self._read_receipt(hwnd, plan, ambiguous=True)
             except _ReceiptForegroundLost as exc:
+                samples.append({'elapsed': round(time.monotonic() - started, 3),
+                                'error': 'foreground_lost'})
                 if recovered_focus:
                     raise DesktopAmbiguousSendError(
                         "已按发送键，成功核验期间再次失焦；消息可能已发出，禁止重发"
@@ -644,8 +702,13 @@ class WindowsWeComGateway:
                     ) from recovery_error
                 # 丢弃失焦前观测，只用恢复后的连续新截图判断；仅延长一次。
                 stable_since, confirmations = None, 0
-                deadline = time.monotonic() + 12.0
+                deadline = time.monotonic() + 45.0
                 continue
+            samples.append({'elapsed': round(time.monotonic() - started, 3),
+                            'read_seconds': round(time.monotonic() - sample_start, 3),
+                            **{key: getattr(observation, key, None) for key in (
+                                'group_matches', 'input_empty', 'draft_matches',
+                                'matching_bubbles', 'status_clear')}})
             if observation.sent_visible:
                 confirmations += 1
                 if stable_since is None:

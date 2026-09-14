@@ -125,6 +125,7 @@ def test_legacy_paused_entry_is_not_silently_retried(tmp_path):
 
 def test_activation_timeout_is_explicitly_retryable(monkeypatch):
     gateway = object.__new__(windows.WindowsWeComGateway)
+    gateway.user32 = SimpleNamespace(ShowWindow=lambda *args: None)
     candidate = windows._WeComWindowCandidate(11, 101, '企业微信', 1200000)
     monkeypatch.setattr(gateway, '_visible_wecom_windows', lambda: [candidate])
     monkeypatch.setattr(gateway, '_raise_if_security_window', lambda *args: None)

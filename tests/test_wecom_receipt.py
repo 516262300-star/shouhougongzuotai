@@ -245,6 +245,55 @@ def test_ocr_error_after_send_stays_ambiguous(monkeypatch):
         )
 
 
+def test_slow_ocr_still_requires_three_strict_reads_and_saves_timing(monkeypatch, tmp_path):
+    from aftersales_workbench.workflows import windows_wecom as module
+
+    gateway = object.__new__(WindowsWeComGateway)
+    gateway.receipt_audit_root = tmp_path
+    now, calls = [0.0], []
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(gateway, '_sleep_range', lambda *a, **kw:
+                        now.__setitem__(0, now[0] + .5))
+
+    def observe(*args, **kwargs):
+        now[0] += 8  # 三次识别需要超过旧的12秒预算。
+        calls.append(now[0])
+        return ReceiptObservation(True, True, False, 1, True)
+
+    monkeypatch.setattr(gateway, '_read_receipt', observe)
+    gateway._wait_for_receipt(11, SimpleNamespace(task_id=7))
+    assert len(calls) == 3 and now[0] > 12
+    assert gateway._receipt_report['verified']
+    assert [x['read_seconds'] for x in gateway._receipt_report['samples']] == [8, 8, 8]
+    assert (tmp_path / '7-latest.json').exists()
+
+
+@pytest.mark.parametrize('confirmed', [True, False])
+def test_existing_receipt_recheck_never_types_searches_or_sends(monkeypatch, confirmed):
+    from aftersales_workbench.workflows import windows_wecom as module
+
+    gateway = object.__new__(WindowsWeComGateway)
+    now, restores = [0.0], []
+    gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
+    monkeypatch.setattr(module.time, 'monotonic', lambda: now[0])
+    monkeypatch.setattr(gateway, '_sleep_range', lambda *a, **kw:
+                        now.__setitem__(0, now[0] + 1))
+    monkeypatch.setattr(gateway, '_activate_wecom_foreground', lambda: (11, 101))
+    monkeypatch.setattr(gateway, '_raise_if_escape', lambda *a, **kw: None)
+    monkeypatch.setattr(gateway, '_raise_if_security_window', lambda *a, **kw: None)
+    monkeypatch.setattr(gateway, '_restore_after_send', lambda: restores.append(True))
+    monkeypatch.setattr(gateway, '_read_receipt', lambda *a, **kw:
+                        ReceiptObservation(confirmed, True, False, 1, True))
+    for name in ('_hotkey', '_tap', '_type_unicode', '_type_multiline_message', '_open_group_search'):
+        monkeypatch.setattr(gateway, name, lambda *a, **kw: pytest.fail('只读复核不得按键或输入'))
+    if confirmed:
+        assert gateway.verify_existing_receipt(SimpleNamespace(task_id=7))['verified']
+    else:
+        with pytest.raises(DesktopAmbiguousSendError):
+            gateway.verify_existing_receipt(SimpleNamespace(task_id=7))
+    assert restores == [True]
+
+
 @pytest.mark.parametrize('group,empty,draft,expected', [
     (False, True, True, []), (True, False, True, []), (True, True, False, ['paste']),
 ])
