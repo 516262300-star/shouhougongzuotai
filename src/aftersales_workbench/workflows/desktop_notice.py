@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -67,6 +67,7 @@ class DesktopNoticePreviewResult:
     blocked_preflight: int
     blocked_missing_group: int
     plans: list[DesktopNoticePlan]
+    blocked_tasks: list[dict[str, Any]] = field(default_factory=list)
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +77,7 @@ class DesktopNoticePreviewResult:
             "ready": self.ready,
             "blocked_preflight": self.blocked_preflight,
             "blocked_missing_group": self.blocked_missing_group,
+            "blocked_tasks": self.blocked_tasks,
             "plans": [plan.safe_dict() for plan in self.plans],
             "messages_drafted": 0,
             "messages_sent": 0,
@@ -188,38 +190,58 @@ class DesktopNoticePreviewService:
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
             )
             .order_by(AftersalesActionTask.id)
-            .limit(limit)
+            .limit(100)
         )
         if self.notification_min_task_id:
             statement = statement.where(
                 AftersalesActionTask.id >= self.notification_min_task_id
             )
-        rows = self.session.execute(statement).all()
         plans: list[DesktopNoticePlan] = []
         blocked_preflight = 0
         blocked = 0
-        for row in rows:
-            if not notification_preflight_ready(row.payload):
-                blocked_preflight += 1
-                continue
-            candidate = DesktopNoticeCandidate(
-                task_id=row.id,
-                after_sales_sn=row.after_sales_sn,
-                platform_order_sn=row.platform_order_sn,
-                shop_name=row.shop_name,
-                tracking_number=row.forward_tracking_number or "",
-                carrier_id=row.carrier_code or "",
-            )
-            try:
-                plans.append(self.planner.build(candidate))
-            except DesktopNoticeConfigurationError:
-                blocked += 1
+        blocked_tasks: list[dict[str, Any]] = []
+        scanned = 0
+        last_id = None
+        while len(plans) < limit:
+            page = statement
+            if last_id is not None:
+                page = page.where(AftersalesActionTask.id > last_id)
+            rows = self.session.execute(page).all()
+            for row in rows:
+                scanned += 1
+                if not notification_preflight_ready(row.payload):
+                    blocked_preflight += 1
+                    reason = "物流预检尚未通过，等待预检更新"
+                else:
+                    candidate = DesktopNoticeCandidate(
+                        task_id=row.id,
+                        after_sales_sn=row.after_sales_sn,
+                        platform_order_sn=row.platform_order_sn,
+                        shop_name=row.shop_name,
+                        tracking_number=row.forward_tracking_number or "",
+                        carrier_id=row.carrier_code or "",
+                    )
+                    try:
+                        plans.append(self.planner.build(candidate))
+                        if len(plans) >= limit:
+                            break
+                        continue
+                    except DesktopNoticeConfigurationError as exc:
+                        blocked += 1
+                        reason = str(exc)
+                if len(blocked_tasks) < 50:  # 限制日志大小，计数仍包含全部已检查任务。
+                    blocked_tasks.append({"task_id": row.id,
+                                          "carrier_id": row.carrier_code, "reason": reason})
+            if len(rows) < 100:
+                break
+            last_id = rows[-1].id
         return DesktopNoticePreviewResult(
             read_only=True,
             notification_min_task_id=self.notification_min_task_id,
-            pending_tasks=len(rows),
+            pending_tasks=scanned,
             ready=len(plans),
             blocked_preflight=blocked_preflight,
             blocked_missing_group=blocked,
             plans=plans,
+            blocked_tasks=blocked_tasks,
         )

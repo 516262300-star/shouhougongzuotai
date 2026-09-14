@@ -35,6 +35,8 @@ from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
 from aftersales_workbench.workflows.uncollected_refund import pending_confirmation, utc
 
 _CARRIER_ALIASES = {
+    # 拼多多顺丰编号；兼容群白名单用编号、天猫订单用中文名称的情况。
+    "44": "shunfeng",
     "极兔速递": "jtexpress",
     "极兔": "jtexpress",
     "圆通速递": "yuantong",
@@ -46,6 +48,7 @@ _CARRIER_ALIASES = {
     "韵达速递": "yunda",
     "韵达": "yunda",
     "顺丰速运": "shunfeng",
+    "顺丰快递": "shunfeng",
     "顺丰": "shunfeng",
     "德邦快递": "debangwuliu",
     "德邦物流": "debangwuliu",

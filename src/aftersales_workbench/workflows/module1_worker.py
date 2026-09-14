@@ -329,7 +329,8 @@ class Module1WorkerCycleResult:
             ),
             "notification": self._stage_counts(
                 self.notification,
-                ("transport", "scanned", "succeeded", "failed"),
+                ("transport", "scanned", "succeeded", "failed", "sent", "reconciled",
+                 "blocked_preflight", "blocked_missing_group", "blocked_tasks"),
             ),
             "logistics_gate": self._stage_counts(
                 self.logistics_gate,
@@ -1055,12 +1056,8 @@ class Module1WorkerRuntime:
                     "stale_before_paste_discarded": stale_before_paste_discarded,
                     **preview.safe_dict(),
                 }
-                if preview.blocked_preflight or preview.blocked_missing_group:
-                    return WorkerStageResult(
-                        status="failed",
-                        details=details,
-                        error="桌面通知存在未通过物流预检或未映射快递群的任务",
-                    )
+                # 未输入的单条配置/预检异常只留在待处理队列；有效任务继续发送。
+                # 已输入或发送结果未知仍由前面的持久化发送锁阻断整个桌面。
                 run = DesktopNoticeSendService(
                     session,
                     WindowsWeComGateway(
@@ -1075,6 +1072,14 @@ class Module1WorkerRuntime:
                 status="failed",
                 details=details,
                 error=run.error or "桌面通知已暂停",
+            )
+        if preview.blocked_preflight or preview.blocked_missing_group:
+            return WorkerStageResult(
+                status="warning",
+                details=details,
+                error=(f"待处理通知：{preview.blocked_preflight}笔等待物流预检，"
+                       f"{preview.blocked_missing_group}笔缺少快递群对应关系；"
+                       "已通过检查的通知继续处理，待处理原因已记录"),
             )
         return WorkerStageResult.completed(details)
 
