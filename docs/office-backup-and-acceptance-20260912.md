@@ -46,6 +46,12 @@
 
 入口 `scripts/office-backup-pull.ps1`。SSH 使用原来固定主机身份、公钥认证和限制来源的连接。任务参数包含运行机地址、远端备份根目录、公钥认证私钥路径、known_hosts 路径及本机目标目录；不包含业务密码。
 
+2026-09-14 开发机闪窗排查：任务于09:23:58启动，09:24备份拉取完成且无错误。原Action直接启动 `powershell.exe -WindowStyle Hidden`，仍可能在隐藏前短暂出现终端。现改为项目 `.venv\Scripts\pythonw.exe` 启动 `scripts/office-backup-pull-hidden.py`，其后原样传入 `-RemoteHost`、`-RemoteBackupRoot`、`-KeyFile`、`-KnownHostsFile`、`-Destination` 参数。启动器以 `CREATE_NO_WINDOW` 执行原PowerShell备份脚本，将输出写入 `.runtime/office-backup-pull-launcher.log`，退出码仍传给计划任务；不是关闭备份或隐藏错误。
+
+更新仅替换任务Action，原登录/每两小时触发、身份、权限及Settings的XML逐项对比一致。原任务XML与窗口观察证据保存在 Git 忽略的 `.runtime/audits/backup-pull-flash-20260914/`。09:30:04实际触发后的任务结果为0，备份状态completed、21张表及9项文件校验成功；35秒观察中新增可见控制台窗口0个。另有4项启动器测试通过，覆盖无控制台句柄、包含空格的参数、错误日志、非零退出码及缺少脚本。
+
+重新配置开发机任务时须同时保留Python无窗口入口和原PowerShell脚本，不要改回直接启动PowerShell。若启动失败，先查看上述启动器日志和下述拉取状态；恢复原Action须使用审计XML中的动作字段，保留任务触发和权限。
+
 本机目标为项目下 `.runtime/office-deployment/backups`，ACL 限当前用户、SYSTEM 和 Administrators。通过 SSH 传输最新成功的完整备份，先下载到独立临时目录，校验通过才发布本机副本；相同备份只复核，不重复复制。失败临时目录保留，不覆盖成功副本。
 
 开发机在家、关机或网络不通时不会有新的异机副本；正式机每天备份继续执行。下一次开发机开机且能连接办公室时，再复制最新备份。这里只拉取最新成功快照，不逐一追补离线期间的全部每日历史。状态为 `pull-status.json`；无法连接记为 deferred，传输或校验失败记为 failed。
