@@ -78,6 +78,25 @@ def test_full_outgoing_message_with_blank_draft_is_visible():
     assert result.matching_bubbles == 1
 
 
+def test_high_resolution_bubble_ocr_preserves_original_pixels():
+    image = scene().resize((2800, 1714), Image.Resampling.NEAREST)
+    image.putpixel((1501, 850), (255, 0, 0))
+    crops = []
+
+    class NativeOcr:
+        def read_title(self, _image):
+            return GROUP
+
+        def read(self, crop):
+            crops.append(crop)
+            return MESSAGE
+
+    assert WeComReceiptReader(NativeOcr()).inspect(image, GROUP, MESSAGE).sent_visible
+    assert len(crops) == 1
+    assert crops[0].width > 900
+    assert (255, 0, 0) in list(crops[0].getdata())
+
+
 @pytest.mark.parametrize('changes', [
     {'draft': True}, {'mark': True}, {'incoming': True}, {'bubble': False},
 ])

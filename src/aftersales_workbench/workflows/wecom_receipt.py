@@ -234,7 +234,11 @@ class WeComReceiptReader:
             x1 += left
             if x0 < left + (right - left) * .05 or abs(right - x1) > w * .015:
                 continue
-            bubble = rgb.crop((x0, top, x1, bottom))
+            # 归一化图像只用于布局定位；回执文字从原始截图裁剪。
+            # 高分屏先缩到 1400 再放大 OCR 会损失笔画（如“拦”误作“栏”）。
+            bubble = original.crop(tuple(
+                round(value * original.width / w) for value in (x0, top, x1, bottom)
+            ))
             if message_key(self.ocr.read(bubble)) != message_key(message):
                 continue
             matches += 1
