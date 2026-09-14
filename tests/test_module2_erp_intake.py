@@ -110,6 +110,12 @@ class _TodoSession:
     def scalar(self, _statement):
         return None
 
+    def scalars(self, _statement):
+        return SimpleNamespace(unique=lambda: [])
+
+    def flush(self):
+        pass
+
     def add(self, task) -> None:
         self.added.append(task)
 

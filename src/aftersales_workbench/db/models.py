@@ -317,6 +317,8 @@ class AfterSalesItem(Base):
     material: Mapped[str | None] = mapped_column(String(50))
     color: Mapped[str | None] = mapped_column(String(50))
     applied_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    purchased_quantity: Mapped[int | None] = mapped_column(Integer)
+    quantity_source: Mapped[str | None] = mapped_column(String(32))
     inspected_quantity: Mapped[int | None] = mapped_column(
         Integer, default=0, server_default=text("0")
     )

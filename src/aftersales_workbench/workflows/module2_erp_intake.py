@@ -29,6 +29,7 @@ from aftersales_workbench.integrations.erp.return_match import (
 )
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.services.return_quantity import (
+    correct_legacy_quantity_failure,
     hold_quantity_review,
     legacy_quantity_review_note,
     quantity_review_note,
@@ -655,6 +656,26 @@ class Module2ExceptionTodoService:
             raise ValueError("limit 必须在 1–500 之间")
         if min_return_id < 0:
             raise ValueError("min_return_id 不能为负数")
+        # 已发布待办不能让旧误判永久留在验货异常；纠偏与新待办分页分开。
+        correction_query = (
+            select(AfterSalesOrder).join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
+            .join(WarehouseReturnRecord,
+                  WarehouseReturnRecord.after_sales_sn == AfterSalesOrder.after_sales_sn)
+            .where(Shop.platform == Platform.PDD,
+                   AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
+                   WarehouseReturnRecord.inspected_by == "系统ERP核对",
+                   WarehouseReturnRecord.inspection_status == WarehouseInspectionStatus.FAIL,
+                   WarehouseReturnRecord.id >= min_return_id)
+            .order_by(WarehouseReturnRecord.id).limit(500)
+        )
+        if shop_codes:
+            correction_query = correction_query.where(Shop.shop_code.in_(shop_codes))
+        corrected = set()
+        for order in self.session.scalars(correction_query).unique():
+            if correct_legacy_quantity_failure(self.session, order, Platform.PDD, dry_run=dry_run):
+                corrected.add(order.after_sales_sn)
+        if not dry_run:
+            self.session.flush()
         # 与 _idempotency_key 的退款前/退款后身份一致；已发送、取消、失败均不复活。
         # 当前查询限定 RETURN_AND_REFUND，不包含 platform_refund_completed 排除的只记录类型。
         refunded = or_(
@@ -700,8 +721,12 @@ class Module2ExceptionTodoService:
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
         rows = list(self.session.execute(statement).all())
-        result = Module2ExceptionTodoRunResult(dry_run=dry_run, scanned=len(rows))
+        result = Module2ExceptionTodoRunResult(
+            dry_run=dry_run, scanned=len(rows), quantity_reviews=len(corrected),
+        )
         for order, shop_name, warehouse_return, platform in rows:
+            if order.after_sales_sn in corrected:
+                continue
             quantity_note = legacy_quantity_review_note(order, platform, warehouse_return)
             if quantity_note:
                 result.quantity_reviews += 1

@@ -16,6 +16,29 @@ class PddDataMappingError(ValueError):
 class NormalizedRefundItem:
     sku_code: str
     applied_quantity: int
+    purchased_quantity: int | None = None
+    quantity_source: str | None = None
+
+
+def normalize_refund_item(sku_code, detail, list_record):
+    purchased = _positive_int(
+        detail.get("goods_number", list_record.get("goods_number")), field="goods_number",
+    )
+    # 售后详情的部分售后字段必须成对使用，绝不从金额/单价倒推件数。
+    part_type = detail.get("part_after_sales_type")
+    if str(part_type).strip() == "1":
+        value = detail.get("part_after_sales_value")
+        try:
+            number = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise PddDataMappingError("部分售后数量无效") from exc
+        if (not number.is_finite() or number <= 0 or number > purchased
+                or number != number.to_integral_value()):
+            raise PddDataMappingError("部分售后数量须为不超过购买数量的正整数")
+        return NormalizedRefundItem(sku_code, int(number), purchased, "PDD_PART_AFTER_SALES")
+    if part_type is not None and str(part_type).strip() not in {"", "0"}:
+        raise PddDataMappingError("不支持的部分售后类型，需核实数量口径")
+    return NormalizedRefundItem(sku_code, purchased, purchased, "PDD_GOODS_NUMBER")
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,13 +322,5 @@ def normalize_refund(
         ).strip()
         == "1",
         order_shipping_status=_shipping_status(order),
-        item=NormalizedRefundItem(
-            sku_code=sku_code,
-            # goods_number 是购买数量；不能独立证明本次部分退货的应退件数。
-            # ERP 少于此数量时由 return_quantity 转人工核实，禁止据此认定少退。
-            applied_quantity=_positive_int(
-                detail.get("goods_number", list_record.get("goods_number")),
-                field="goods_number",
-            ),
-        ),
+        item=normalize_refund_item(sku_code, detail, list_record),
     )

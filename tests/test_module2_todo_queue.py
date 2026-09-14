@@ -116,6 +116,7 @@ def add_partial_return(db, *, task_status=None):
     order.items.append(AfterSalesItem(sku_code="sample-sku#铜本色", applied_quantity=51))
     receipt = db.get(WarehouseReturnRecord, 1)
     receipt.inspected_by = "系统ERP核对"
+    receipt.inspection_note = "退货实收异常；少退或未收到：sample-sku/铜本色×24；已转人工处理。"
     receipt.items.append(WarehouseReturnItem(product_code="sample-sku", color="铜本色",
                                              quantity=27, item_status="NORMAL"))
     db.commit()
@@ -136,7 +137,8 @@ def test_legacy_partial_failure_becomes_review_without_new_todo(db, refunded):
     assert applied.quantity_reviews == 1 and applied.tasks_created == 0
     assert order.workflow_status == "MANUAL_PROCESSING"
     assert len(order.exception_type) <= 50
-    assert receipt.inspection_status == "FAIL"  # 历史审计保留，绝不改成通过。
+    assert receipt.inspection_status == "PENDING"  # 撤销误判，绝不改成通过。
+    assert "数量纠偏原始审计：" in receipt.note
     assert not db.scalars(select(AftersalesActionTask)).all()
     assert service.run(dry_run=False).scanned == 0
 

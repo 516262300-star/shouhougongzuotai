@@ -145,12 +145,16 @@ class SqlAlchemyPddSyncRepository:
                     after_sales_sn=refund.after_sales_sn,
                     sku_code=refund.item.sku_code,
                     applied_quantity=refund.item.applied_quantity,
+                    purchased_quantity=refund.item.purchased_quantity,
+                    quantity_source=refund.item.quantity_source,
                     inspected_quantity=0,
                     item_status=ItemStatus.NORMAL,
                 )
             )
         else:
             item.applied_quantity = refund.item.applied_quantity
+            item.purchased_quantity = refund.item.purchased_quantity
+            item.quantity_source = refund.item.quantity_source
         return created
 
     def advance_cursor(self, shop_id: int, sync_scope: str, cursor_end_at: int) -> None:

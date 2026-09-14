@@ -1,7 +1,10 @@
 """购买数量不能证明部分退货的申请数量；此处只收紧判断，不放行退款。"""
 
+import json
 from collections import Counter
+from datetime import datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 from sqlalchemy import select
 
@@ -10,6 +13,7 @@ from aftersales_workbench.db.models import (
     ItemStatus,
     Platform,
     Shop,
+    WarehouseInspectionStatus,
     WarehouseReturnRecord,
     WorkflowStatus,
 )
@@ -23,6 +27,11 @@ def quantity_review_note(order, platform, actual_items) -> str | None:
     """
     if platform != Platform.PDD:
         return None
+    if order.items and all(
+        getattr(item, "quantity_source", None) == "PDD_PART_AFTER_SALES"
+        for item in order.items
+    ):
+        return None  # 应退数量明确时，真正的少退继续走异常核验。
     purchased = Counter()
     for item in order.items:
         product, color = str(item.sku_code or "").strip(), str(item.color or "").strip()
@@ -87,7 +96,86 @@ def queued_quantity_review(session, payload, after_sales_sn):
     )))
     if len(receipts) != 1:
         return None
+    if (receipts[0].inspection_status == WarehouseInspectionStatus.PENDING
+            and "数量纠偏原始审计：" in str(receipts[0].note or "")):
+        return receipts[0].inspection_note
     note = legacy_quantity_review_note(order, platform, receipts[0])
     if note:
         hold_quantity_review(order, note)
+    return note
+
+
+def correct_legacy_quantity_failure(session, order, platform, *, dry_run=False):
+    """撤销系统用购买数量做减法产生的旧失败，保留原审计，不确认质量或退款。"""
+    if platform != Platform.PDD or not order.items:
+        return None
+    receipts = list(session.scalars(select(WarehouseReturnRecord).where(
+        WarehouseReturnRecord.after_sales_sn == order.after_sales_sn,
+    )))
+    if len(receipts) != 1:
+        return None
+    receipt = receipts[0]
+    if receipt.inspected_by != "系统ERP核对" or receipt.inspection_status != "FAIL":
+        return None
+    old_note = str(receipt.inspection_note or "")
+    # 仅接受系统原有的单纯少退模板，不掩盖其他异常或人工补充的质量结论。
+    import re
+    if not re.fullmatch(
+        r"(?:平台款项已退，)?退货实收异常；少退或未收到：[^；]+；已转人工处理。?",
+        old_note,
+    ):
+        return None
+    peers = list(session.scalars(select(AfterSalesOrder.after_sales_sn).where(
+        AfterSalesOrder.return_tracking_number == order.return_tracking_number,
+    )))
+    if (peers != [order.after_sales_sn]
+            or receipt.return_tracking_number != order.return_tracking_number):
+        return None
+    purchased_order = SimpleNamespace(items=[SimpleNamespace(
+        sku_code=i.sku_code, color=i.color,
+        applied_quantity=getattr(i, "purchased_quantity", None) or i.applied_quantity,
+    ) for i in order.items])
+    note = quantity_review_note(purchased_order, platform, receipt.items)
+    if not note:
+        return None
+    known = all(getattr(i, "quantity_source", None) == "PDD_PART_AFTER_SALES" for i in order.items)
+    if known:
+        def key(sku, color):
+            if not color and "#" in sku:
+                return tuple(part.strip() for part in sku.split("#", 1))
+            return sku.strip(), (color or "").strip()
+        expected, actual = Counter(), Counter()
+        for i in order.items:
+            expected[key(i.sku_code, i.color)] += i.applied_quantity
+        for i in receipt.items:
+            actual[key(i.product_code, i.color)] += i.quantity
+        if expected != actual:
+            return None  # 明确申请数量后仍不一致的不能撤销。
+        summary = "、".join(f"{s}/{c}×{q}" for (s, c), q in sorted(actual.items()))
+        note = (f"旧少退结论已撤销：平台本次申请与ERP实收一致（{summary}）；"
+                "独立质检及退款后核账另行确认。")
+    if dry_run:
+        return note
+    audit = {
+        "at": datetime.now().isoformat(), "reason": "purchase_quantity_false_shortage",
+        "inspection_status": str(receipt.inspection_status), "inspection_note": old_note,
+        "inspected_by": receipt.inspected_by, "inspected_at": str(receipt.inspected_at),
+        "workflow_status": str(order.workflow_status), "exception_type": order.exception_type,
+        "items": [{"id": i.id, "item_status": str(i.item_status),
+                   "inspected_quantity": i.inspected_quantity} for i in order.items],
+    }
+    receipt.note = ((receipt.note or "") + "\n数量纠偏原始审计："
+                    + json.dumps(audit, ensure_ascii=False))
+    receipt.inspection_status = WarehouseInspectionStatus.PENDING
+    receipt.inspection_note = note
+    receipt.inspected_by = None
+    receipt.inspected_at = None
+    for item in order.items:
+        # 旧系统把数量差异写成 DEFECTIVE，撤销为未知；实收行保留原状。
+        if item.item_status == ItemStatus.DEFECTIVE:
+            item.item_status = None
+            item.inspected_quantity = 0
+    hold_quantity_review(order, note)
+    if known:
+        order.exception_type = "本次退货数量与实收一致，旧少退结论已撤销"
     return note
