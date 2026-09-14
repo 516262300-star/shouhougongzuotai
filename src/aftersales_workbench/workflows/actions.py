@@ -668,6 +668,23 @@ class ExternalActionExecutor:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    from aftersales_workbench.services.return_quantity import queued_quantity_review
+
+                    quantity_note = queued_quantity_review(
+                        self.session, task.payload, task.after_sales_sn,
+                    )
+                    if quantity_note:
+                        self.session.execute(update(AftersalesActionTask).where(
+                            AftersalesActionTask.id == task.id,
+                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                        ).values(action_status=AutomationTaskStatus.CANCELLED,
+                                 last_error=quantity_note,
+                                 payload={**task.payload,
+                                          "cancel_reason": "RETURN_QUANTITY_UNVERIFIED",
+                                          "cancelled_at": datetime.now().isoformat()}))
+                        self.session.commit()
+                        result.skipped += 1
+                        continue
                     from aftersales_workbench.services.return_todo_policy import (
                         check_balance_todo_before_publish,
                     )

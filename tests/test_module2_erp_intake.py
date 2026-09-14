@@ -309,9 +309,11 @@ def test_module2_service_creates_local_todo_without_owner() -> None:
     warehouse_return = SimpleNamespace(
         receipt_sn="receipt-1",
         inspection_note="颜色不一致",
+        inspected_by="人工质检",
+        inspection_status="FAIL",
         items=[],
     )
-    session = _TodoSession([(order, "测试店铺", warehouse_return)])
+    session = _TodoSession([(order, "测试店铺", warehouse_return, "PDD")])
 
     result = Module2ExceptionTodoService(session).run(  # type: ignore[arg-type]
         dry_run=False

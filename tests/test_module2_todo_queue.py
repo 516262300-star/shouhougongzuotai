@@ -8,8 +8,10 @@ from sqlalchemy.orm import Session
 from aftersales_workbench.db.base import Base
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
+    AfterSalesItem,
     AfterSalesOrder,
     Shop,
+    WarehouseReturnItem,
     WarehouseReturnRecord,
 )
 from aftersales_workbench.workflows.module2_erp_intake import Module2ExceptionTodoService
@@ -106,3 +108,74 @@ def test_refund_appeal_keeps_separate_identity(db, field, value):
     assert tasks[0].action_status == "SUCCEEDED"
     assert tasks[1].idempotency_key.endswith(":ERP_CREATE_REFUND_APPEAL_TODO")
     assert service.run(dry_run=False).tasks_created == 0
+
+
+def add_partial_return(db, *, task_status=None):
+    order = add_return(db, 1, task_status=task_status)
+    order.return_tracking_number = "tracking-1"
+    order.items.append(AfterSalesItem(sku_code="sample-sku#铜本色", applied_quantity=51))
+    receipt = db.get(WarehouseReturnRecord, 1)
+    receipt.inspected_by = "系统ERP核对"
+    receipt.items.append(WarehouseReturnItem(product_code="sample-sku", color="铜本色",
+                                             quantity=27, item_status="NORMAL"))
+    db.commit()
+    return order, receipt
+
+
+@pytest.mark.parametrize("refunded", [False, True])
+def test_legacy_partial_failure_becomes_review_without_new_todo(db, refunded):
+    order, receipt = add_partial_return(db)
+    if refunded:
+        order.platform_after_sales_status = 10
+    db.commit()
+    service = Module2ExceptionTodoService(db)
+    preview = service.run(dry_run=True)
+    assert preview.quantity_reviews == 1 and preview.tasks_created == 0
+    assert order.workflow_status == "RETURN_INSPECTED_FAIL"
+    applied = service.run(dry_run=False)
+    assert applied.quantity_reviews == 1 and applied.tasks_created == 0
+    assert order.workflow_status == "MANUAL_PROCESSING"
+    assert len(order.exception_type) <= 50
+    assert receipt.inspection_status == "FAIL"  # 历史审计保留，绝不改成通过。
+    assert not db.scalars(select(AftersalesActionTask)).all()
+    assert service.run(dry_run=False).scanned == 0
+
+
+def test_old_successful_todo_does_not_create_partial_return_appeal(db):
+    order, _ = add_partial_return(db, task_status="SUCCEEDED")
+    order.platform_after_sales_status = 10
+    db.commit()
+    result = Module2ExceptionTodoService(db).run(dry_run=False)
+    assert result.quantity_reviews == 1 and result.tasks_created == 0
+    tasks = db.scalars(select(AftersalesActionTask)).all()
+    assert len(tasks) == 1 and tasks[0].action_status == "SUCCEEDED"
+
+
+def test_publisher_cancels_queued_false_shortage_without_contacting_erp(db, monkeypatch):
+    from types import SimpleNamespace
+
+    from aftersales_workbench.core.config import Settings
+    from aftersales_workbench.db.models import AutomationActionType
+    from aftersales_workbench.workflows.actions import ExternalActionExecutor, ExternalTaskSnapshot
+
+    order, _ = add_partial_return(db, task_status="PENDING")
+    task = db.scalar(select(AftersalesActionTask))
+    task.payload = {"origin": "module2", "reason_code": "RETURN_ITEM_MISMATCH",
+                    "content": "历史少退提醒"}
+    db.commit()
+    snapshot = ExternalTaskSnapshot(task.id, order.after_sales_sn,
+                                   AutomationActionType.ERP_CREATE_MANUAL_TODO, task.payload,
+                                   order.platform_order_sn, "pdd-test")
+    executor = ExternalActionExecutor(db, Settings(_env_file=None))
+    monkeypatch.setattr(executor, "_list_pending", lambda *args: [snapshot])
+    monkeypatch.setattr(executor, "_validate_write_gates", lambda *args: None)
+    monkeypatch.setattr(executor, "_build_erp_todo_client", lambda: SimpleNamespace(
+        close=lambda: None, create_todo=lambda *args: pytest.fail("不得发布错误待办")))
+    result = executor.run(
+        action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False)
+    db.refresh(task)
+    assert result.skipped == 1
+    assert task.action_status == "CANCELLED" and task.attempts == 0
+    assert task.payload["cancel_reason"] == "RETURN_QUANTITY_UNVERIFIED"
+    assert task.payload["content"] == "历史少退提醒"
+    assert order.workflow_status == "MANUAL_PROCESSING"

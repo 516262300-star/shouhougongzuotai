@@ -28,6 +28,11 @@ from aftersales_workbench.integrations.erp.return_match import (
     ExpectedReturnItem,
 )
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
+from aftersales_workbench.services.return_quantity import (
+    hold_quantity_review,
+    legacy_quantity_review_note,
+    quantity_review_note,
+)
 from aftersales_workbench.workflows.module2 import (
     ActualReturnItem,
     CreateWarehouseReturnCommand,
@@ -54,6 +59,7 @@ class Module2ErpIntakeRunResult:
     receipts_created: int = 0
     inspections_passed: int = 0
     inspections_failed: int = 0
+    quantity_reviews: int = 0
     not_found: int = 0
     post_refund_waiting_tracking: int = 0
     post_refund_waiting_receipt: int = 0
@@ -74,6 +80,7 @@ class Module2ExceptionTodoRunResult:
     tasks_created: int = 0
     tasks_existing: int = 0
     skipped_missing_owner: int = 0
+    quantity_reviews: int = 0
 
     def safe_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -253,6 +260,13 @@ class Module2ErpIntakeService:
         if actual_items is None:
             result.unavailable += 1
             return "ERP 实收数量无法转换为有效验货明细"
+        quantity_note = quantity_review_note(order, platform, actual_items)
+        if quantity_note:
+            result.quantity_reviews += 1
+            result.ambiguous += 1
+            if not dry_run:
+                hold_quantity_review(order, quantity_note)
+            return quantity_note
         inspection = (
             WarehouseInspectionStatus.FAIL
             if lookup.status is ErpReturnMatchStatus.ITEM_MISMATCH
@@ -656,7 +670,7 @@ class Module2ExceptionTodoService:
             AftersalesActionTask.idempotency_key == task_key,
         ).exists()
         statement = (
-            select(AfterSalesOrder, Shop.shop_name, WarehouseReturnRecord)
+            select(AfterSalesOrder, Shop.shop_name, WarehouseReturnRecord, Shop.platform)
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .join(
                 WarehouseReturnRecord,
@@ -687,7 +701,13 @@ class Module2ExceptionTodoService:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
         rows = list(self.session.execute(statement).all())
         result = Module2ExceptionTodoRunResult(dry_run=dry_run, scanned=len(rows))
-        for order, shop_name, warehouse_return in rows:
+        for order, shop_name, warehouse_return, platform in rows:
+            quantity_note = legacy_quantity_review_note(order, platform, warehouse_return)
+            if quantity_note:
+                result.quantity_reviews += 1
+                if not dry_run:
+                    hold_quantity_review(order, quantity_note)
+                continue
             idempotency_key = self._idempotency_key(order)
             existing = self.session.scalar(
                 select(AftersalesActionTask).where(

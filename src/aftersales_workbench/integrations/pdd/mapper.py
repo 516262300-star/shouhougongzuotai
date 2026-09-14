@@ -301,6 +301,8 @@ def normalize_refund(
         order_shipping_status=_shipping_status(order),
         item=NormalizedRefundItem(
             sku_code=sku_code,
+            # goods_number 是购买数量；不能独立证明本次部分退货的应退件数。
+            # ERP 少于此数量时由 return_quantity 转人工核实，禁止据此认定少退。
             applied_quantity=_positive_int(
                 detail.get("goods_number", list_record.get("goods_number")),
                 field="goods_number",
