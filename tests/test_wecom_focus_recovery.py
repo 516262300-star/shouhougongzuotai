@@ -47,7 +47,7 @@ def test_send_focus_loss_recovers_only_reading_and_returns_original_window(sendi
 
     def read(*args, **kwargs):
         observations[0] += 1
-        if observations[0] == 3:
+        if "press" in case.events and not case.recoveries:
             raise module._ReceiptForegroundLost("失焦")
         return case.prepared
 

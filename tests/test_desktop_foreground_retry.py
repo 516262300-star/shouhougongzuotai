@@ -40,7 +40,8 @@ def setup_sender(tmp_path, monkeypatch, failure, after_paste=False):
 
 
 @pytest.mark.parametrize('error_type', [sender.DesktopForegroundUnavailableError,
-                                       sender.DesktopSearchUnavailableError])
+                                       sender.DesktopSearchUnavailableError,
+                                       sender.DesktopGroupUnavailableError])
 def test_activation_failure_retries_only_after_cooldown(tmp_path, monkeypatch, error_type):
     session, ledger, service, plan = setup_sender(
         tmp_path, monkeypatch, error_type('未就绪'),

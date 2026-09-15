@@ -17,6 +17,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopAmbiguousSendError,
     DesktopBeforePasteError,
     DesktopForegroundUnavailableError,
+    DesktopGroupUnavailableError,
     DesktopSearchUnavailableError,
     DesktopSendHooks,
 )
@@ -255,9 +256,7 @@ class WindowsWeComGateway:
             self._raise_if_security_window(process_id)
             self._raise_if_escape()
 
-            prepared = self._read_receipt(hwnd, plan)
-            if not prepared.group_matches:
-                raise DesktopBeforePasteError("群聊标题未匹配目标完整群名，禁止输入消息")
+            prepared = self._wait_for_prepared_group(hwnd, plan)
             if not prepared.input_empty:
                 raise DesktopBeforePasteError("目标群输入框已有草稿，禁止追加或发送")
             if prepared.matching_bubbles:
@@ -297,6 +296,66 @@ class WindowsWeComGateway:
             finally:
                 self._target_hwnd = None
                 self._target_process_id = None
+
+    def _wait_for_prepared_group(self, hwnd: int, plan: DesktopNoticePlan):
+        """只读等待群聊加载；完整群名连续匹配两次后才允许开始输入。"""
+        started = time.monotonic()
+        deadline = started + 12.0
+        confirmations = 0
+        samples = []
+        verified = False
+        failure = None
+        self._last_receipt_snapshot = None
+        try:
+            while time.monotonic() < deadline:
+                observed = self._read_receipt(hwnd, plan)
+                samples.append({
+                    'elapsed': round(time.monotonic() - started, 3),
+                    'group_matches': observed.group_matches,
+                    'input_empty': observed.input_empty,
+                    'matching_bubbles': observed.matching_bubbles,
+                })
+                if observed.group_matches:
+                    # 草稿和相同历史消息不是加载慢，不允许自动清除或重发。
+                    if not observed.input_empty:
+                        raise DesktopBeforePasteError("目标群输入框已有草稿，禁止追加或发送")
+                    if observed.matching_bubbles:
+                        raise DesktopBeforePasteError(
+                            "目标群已存在相同消息，须核对历史发送，禁止重复输入"
+                        )
+                    confirmations += 1
+                    if confirmations >= 2:
+                        verified = True
+                        return observed
+                else:
+                    confirmations = 0
+                self._sleep_range(350, 500)
+            raise DesktopGroupUnavailableError(
+                "等待群聊加载后，完整群名仍未连续匹配；尚未输入聊天消息，等待自动重查"
+            )
+        except Exception as exc:
+            failure = str(exc)
+            raise
+        finally:
+            audit = getattr(self, 'receipt_audit_root', None)
+            if audit is not None:
+                audit.mkdir(parents=True, exist_ok=True)
+                report = {
+                    'task_id': plan.task_id, 'phase': 'before_paste',
+                    'verified': verified, 'message_input_started': False, 'error': failure,
+                    'checked_at': datetime.now(UTC).isoformat(), 'samples': samples,
+                }
+                prefixes = [audit / f'{plan.task_id}-before-paste-latest']
+                first = audit / f'{plan.task_id}-before-paste-first-failure'
+                if not verified and not first.with_suffix('.json').exists():
+                    prefixes.append(first)
+                for prefix in prefixes:
+                    snapshot = getattr(self, '_last_receipt_snapshot', None)
+                    if snapshot is not None:
+                        snapshot.save(prefix.with_suffix('.png'))
+                    prefix.with_suffix('.json').write_text(
+                        json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8',
+                    )
 
     def _open_group_search(self, hwnd: int, process_id: int) -> None:
         # 搜索框已获得焦点时，Ctrl+F 不产生新画面变化，但可以直接继续搜索。

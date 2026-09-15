@@ -44,6 +44,10 @@ class DesktopSearchUnavailableError(DesktopBeforePasteError):
     """未确认搜索框获得焦点，尚未输入任何文字，可延迟自动重试。"""
 
 
+class DesktopGroupUnavailableError(DesktopBeforePasteError):
+    """群标题尚未稳定匹配，未输入聊天消息，可冷却后重新完整核验。"""
+
+
 class DesktopAmbiguousSendError(DesktopNoticeSendError):
     """已经开始输入或可能按过发送键，禁止自动重试。"""
 
@@ -541,6 +545,7 @@ class DesktopNoticeSendService:
                             (datetime.now(UTC) + timedelta(seconds=60)).isoformat()
                             if isinstance(exc, (
                                 DesktopForegroundUnavailableError, DesktopSearchUnavailableError,
+                                DesktopGroupUnavailableError,
                             ))
                             else None
                         ),
