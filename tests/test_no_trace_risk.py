@@ -349,6 +349,90 @@ def test_old_no_trace_manual_case_recovers_but_other_manual_reason_does_not(db, 
     assert task.action_status == AutomationTaskStatus.CANCELLED
 
 
+@pytest.mark.parametrize("days_old", [1, 7])
+def test_cross_day_no_trace_case_keeps_polling_and_recovers_real_transit(db, sample, days_old):
+    order, client = sample
+    order.created_at -= timedelta(days=days_old)
+    client.info["shipping_time"] = (NOW - timedelta(days=days_old)).isoformat()
+    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+    order.exception_type = "快递100连续11次查询无轨迹，请人工核对运单号和快递公司"
+    order.logistics_query_failures = 11
+    db.commit()
+    # 跨天的空轨迹仍不能按当天发货风险规则退款，但必须继续安排回查。
+    result = gate(db, sample)
+    assert result.scanned == 1 and result.no_trace_risk_allowed == 0
+    assert base.task(db) is None
+    assert order.workflow_status == WorkflowStatus.MANUAL_PROCESSING
+    assert order.logistics_next_check_at > NOW.replace(tzinfo=None)
+    result = gate(db, sample, events=[LogisticsEvent(context="快件运输中", status_code="0")])
+    assert result.allowed_refunds == 1
+    assert base.task(db).payload["refund_gate"] == "IN_TRANSIT"
+    assert order.exception_type is None and order.logistics_query_failures == 0
+    assert client.writes == 0  # 这里只创建资格任务，资金执行仍需独立预检。
+
+
+@pytest.mark.parametrize("change", ["notice", "tracking", "history", "manual_note", "closed"])
+def test_cross_day_recovery_does_not_take_over_unrelated_or_unsafe_cases(db, sample, change):
+    order, _ = sample
+    order.created_at -= timedelta(days=1)
+    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+    order.exception_type = "快递100连续11次查询无轨迹，请人工核对运单号和快递公司"
+    notice = db.get(AftersalesActionTask, 1)
+    if change == "notice":
+        notice.action_status = AutomationTaskStatus.PENDING
+    elif change == "tracking":
+        order.forward_tracking_number = "CHANGED"
+    elif change == "history":
+        order.logistics_physical_seen_at = NOW.replace(tzinfo=None)
+    elif change == "manual_note":
+        order.exception_type += "；客诉争议，人工暂停"
+    else:
+        order.platform_after_sales_status = 10
+    db.commit()
+    result = gate(db, sample, events=[LogisticsEvent(context="运输中", status_code="0")])
+    assert result.allowed_refunds == 0 and base.task(db) is None
+    assert order.workflow_status == WorkflowStatus.MANUAL_PROCESSING
+
+
+@pytest.mark.parametrize(
+    "outcome", ["success", "pending", "wrong_amount", "wrong_order", "unavailable"],
+)
+def test_ambiguous_refund_response_immediately_reads_without_retry(db, sample, outcome):
+    from aftersales_workbench.db.models import MoneyOperation
+    from aftersales_workbench.integrations.pdd.client import PddTransportError
+
+    gate(db, sample)
+    task = base.task(db)
+    task.action_status = AutomationTaskStatus.RUNNING
+    db.commit()
+    order, client = sample
+
+    def uncertain_write(**kwargs):
+        client.writes += 1
+        client.detail["after_sales_status"] = 2 if outcome == "pending" else 10
+        if outcome == "wrong_amount":
+            client.detail["refund_amount"] += 1
+        elif outcome == "wrong_order":
+            client.detail["order_sn"] = "OTHER"
+        elif outcome == "unavailable":
+            def failed_read(**kwargs):
+                raise OSError("read unavailable")
+            client.get_refund_information = failed_read
+        raise PddTransportError("ambiguous response")
+
+    client.agree_refund = uncertain_write
+    if outcome == "success":
+        assert execute(db, sample, task) is True
+        assert order.refund_financial_status == "SUCCESS"
+    else:
+        with pytest.raises(PddTransportError, match="ambiguous"):
+            execute(db, sample, task)
+        assert order.refund_financial_status != "SUCCESS"
+    operation = db.scalar(select(MoneyOperation))
+    assert operation.state == ("CONFIRMED" if outcome == "success" else "UNKNOWN")
+    assert client.writes == 1
+
+
 @pytest.mark.parametrize("failure", ["kd", "pdd", "night"])
 def test_pending_risk_task_is_cancelled_on_gate_recheck(db, sample, failure):
     gate(db, sample)

@@ -8,7 +8,7 @@ from enum import StrEnum
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, exists, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
@@ -452,15 +452,26 @@ class Module1LogisticsGateService:
         candidate_filter = AfterSalesOrder.workflow_status.in_(self._CANDIDATE_STATUSES)
         if self.risk_verifier is not None:
             from aftersales_workbench.services.manual_todo_policy import NO_TRACE_REASON_LIKE
-            from aftersales_workbench.workflows.no_trace_risk import SHANGHAI
 
-            midnight = utc(now).astimezone(SHANGHAI).replace(
-                hour=0, minute=0, second=0, microsecond=0,
-            ).replace(tzinfo=None)
+            # 查询恢复不受建单日期限制；当天发货限制仍由风险退款核验器执行。
+            notice_exists = exists().where(
+                AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                AftersalesActionTask.action_status == AutomationTaskStatus.SUCCEEDED,
+                AftersalesActionTask.payload["tracking_number"].as_string()
+                == AfterSalesOrder.forward_tracking_number,
+                AftersalesActionTask.payload["carrier_code"].as_string()
+                == AfterSalesOrder.carrier_code,
+            )
             candidate_filter = or_(candidate_filter, and_(
                 AfterSalesOrder.workflow_status == WorkflowStatus.MANUAL_PROCESSING,
                 AfterSalesOrder.exception_type.like(NO_TRACE_REASON_LIKE),
-                AfterSalesOrder.created_at >= midnight,
+                AfterSalesOrder.after_sales_type == "ONLY_REFUND",
+                AfterSalesOrder.platform_after_sales_status == 2,
+                AfterSalesOrder.logistics_state == "UNKNOWN",
+                AfterSalesOrder.logistics_physical_seen_at.is_(None),
+                AfterSalesOrder.logistics_return_detected_at.is_(None),
+                notice_exists,
             ))
         statement = (
             select(AfterSalesOrder)
@@ -472,7 +483,7 @@ class Module1LogisticsGateService:
                 AfterSalesOrder.carrier_code.is_not(None),
                 AfterSalesOrder.carrier_code != "",
             )
-            .order_by(AfterSalesOrder.id)
+            .order_by(AfterSalesOrder.logistics_next_check_at, AfterSalesOrder.id)
             .limit(limit)
         )
         if after_sales_sns:
@@ -489,6 +500,16 @@ class Module1LogisticsGateService:
         query_cache: LogisticsQueryCache = {}
         no_trace_packages: set[tuple[str, str, str | None]] = set()
         for order in orders:
+            recovering_no_trace = order.workflow_status == WorkflowStatus.MANUAL_PROCESSING
+            if recovering_no_trace:
+                import re
+
+                # 不接管附加客诉、人工锁定等其他异常，只恢复本服务的原始错误。
+                if not re.fullmatch(
+                    r"快递100连续\d+次查询无轨迹，请人工核对运单号和快递公司",
+                    order.exception_type or "",
+                ):
+                    continue
             if (
                 logistics_no_trace_manual_required(order, policy=self.polling_policy)
                 and pending_confirmation(self.session, order, now=now) is None
@@ -549,6 +570,8 @@ class Module1LogisticsGateService:
                         auto_evidence=auto_evidence,
                         events=events,
                     )
+                    if recovering_no_trace:
+                        order.exception_type = None
                     self.session.commit()
             except Exception as exc:
                 self.session.rollback()

@@ -23,7 +23,11 @@ from aftersales_workbench.db.models import (
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.todo import ErpTodoClient, ErpTodoRequest
-from aftersales_workbench.integrations.pdd.client import PddClient, PddConfigurationError
+from aftersales_workbench.integrations.pdd.client import (
+    PddClient,
+    PddConfigurationError,
+    PddTransportError,
+)
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.qywx.client import InterceptNotice, QywxWebhookClient
 from aftersales_workbench.integrations.tmall.client import (
@@ -1146,12 +1150,39 @@ class ExternalActionExecutor:
         if confirmation is not None or auto_evidence is not None or risk_evidence is not None:
             mark_request_started(self.session, task.id)
         self._require_final_refund_gate(order, task, Platform.PDD)
-        run_money_write(
-            self.session, order, operation_type="PLATFORM_REFUND", task_id=task.id,
-            write=lambda: client.agree_refund(
-                after_sales_id=int(task.after_sales_sn), order_sn=task.platform_order_sn,
-            ),
-        )
+        try:
+            run_money_write(
+                self.session, order, operation_type="PLATFORM_REFUND", task_id=task.id,
+                write=lambda: client.agree_refund(
+                    after_sales_id=int(task.after_sales_sn), order_sn=task.platform_order_sn,
+                ),
+            )
+        except PddTransportError as write_error:
+            # 资金键已经持久化为 UNKNOWN；只读回查，绝不再次调用 agree_refund。
+            try:
+                confirmed = verify_pdd_refund(
+                    client, order, origin=str(task.payload.get("origin") or ""),
+                )
+            except Exception as read_error:
+                raise write_error from read_error
+            if not confirmed:
+                raise
+            current_task = self.session.get(AftersalesActionTask, task.id)
+            PddFailedRefundReconciler(self.session, self.settings).confirm_money(
+                current_task, order, order.refund_amount, dry_run=False,
+            )
+            current_task.payload = {
+                **(current_task.payload or {}),
+                "original_execution_error": str(write_error),
+                "platform_reconciled_at": datetime.now(UTC).isoformat(),
+                "platform_observed_status": 10,
+                "platform_observed_refund_amount": str(order.refund_amount),
+            }
+            order.platform_after_sales_status = 10
+            order.refund_financial_status = "SUCCESS"
+            order.actual_refund_amount = order.refund_amount
+            self.session.commit()
+            return True
         return False
 
     def _require_final_refund_gate(self, order, task, platform):
