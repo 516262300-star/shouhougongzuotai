@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from aftersales_workbench.workflows import windows_wecom as windows
 from aftersales_workbench.workflows import desktop_sender as sender
+from aftersales_workbench.workflows import windows_wecom as windows
 from tests.test_desktop_foreground_retry import setup_sender
 
 
