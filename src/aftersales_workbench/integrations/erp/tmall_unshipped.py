@@ -54,8 +54,10 @@ def complete_table(document, required):
     return candidates[0]
 
 
-def no_shipments(client, customer_id, erp_order, platform_order):
+def no_shipments(client, customer_id, erp_order, platform_order, *, prefix="tmx"):
     """扫描全部发货页，并回读首页检测取数漂移；空页必须有完整表头和分页。"""
+    if prefix not in {"tmx", "tbx"}:
+        raise ValueError("未适配的ERP平台前缀")
     first = None
     page_count = None
     seen = set()
@@ -81,7 +83,7 @@ def no_shipments(client, customer_id, erp_order, platform_order):
             raise ValueError("ERP重复发货页")
         seen.add(fingerprint)
         if any(r["编号"].startswith("RC-") and (
-            r["客户编号"] in {platform_order, "tmx" + platform_order}
+            r["客户编号"] in {platform_order, prefix + platform_order}
             or r["订单编号"] in {erp_order, erp_order.removeprefix("DD-")}
         ) for r in rows):
             raise ValueError("ERP已出现目标订单发货销售记录")
@@ -149,7 +151,13 @@ def read_existing_refund(client, order_sn):
 
 
 def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, items, child_id,
-                            source_mode="dedicated"):
+                            source_mode="dedicated", platform="TMALL"):
+    # 淘宝仅供独立只读预演；资金服务仍单独限制TMALL，不能靠此参数获得写权限。
+    if platform not in {"TMALL", "TAOBAO"}:
+        raise ValueError("未适配的ERP平台")
+    label, prefix = ("天猫", "tmx") if platform == "TMALL" else ("淘宝", "tbx")
+    if platform == "TAOBAO" and source_mode != "existing_admin":
+        raise ValueError("淘宝只读预演必须使用现有管理账页，不能借用天猫专用接口")
     # 列表未显示原始detail，但现有管理详情页已提供；不自动切换核验来源。
     if source_mode == "existing_admin":
         source = read_existing_refund(client, order_sn)
@@ -167,7 +175,7 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
     details = json.loads(source.get("detail") or "null")
     quantity = next(iter(items.values())) if len(items) == 1 else None
     if (str(source.get("orderId")) != order_sn or str(source.get("refundId")) != refund_sn
-            or source.get("platform") != "天猫" or source.get("overall_status") != "退款成功"
+            or source.get("platform") != label or source.get("overall_status") != "退款成功"
             or source.get("isRefundGoods") not in (False, 0, "0") or source.get("waybill")
             or amount(source.get("applyPayment")) + amount(source.get("applyCarriage"))
             != expected_amount or not isinstance(details, dict) or set(details) != {child_id}
@@ -181,7 +189,7 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
     if len(records) != 1 or records[0]["平台单号"] != order_sn:
         raise ValueError("ERP订单退款记录不唯一或筛选失效")
     row = records[0]
-    if (row["平台"] != "天猫" or row["退款单号"] != refund_sn or row["状态"] != "退款成功"
+    if (row["平台"] != label or row["退款单号"] != refund_sn or row["状态"] != "退款成功"
             or row["是否退货"] not in {"仅退款", "0", "否"} or row["运单号"]
             or amount(row["退款金额"]) + amount(row["退款运费"] or "0") != expected_amount):
         raise ValueError("ERP平台、退款身份、类型、运单或金额不一致")
@@ -213,7 +221,7 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
     if len(original) != 1 or len(receipts) != 1 + len(refunds):
         raise ValueError("ERP客户存在其他收退款流水或原收款不唯一，须人工核账")
     outstanding = outstanding_records(profile)
-    if any(r["订单编号"] != erp_order or r.get("客户编号") not in {order_sn, "tmx" + order_sn}
+    if any(r["订单编号"] != erp_order or r.get("客户编号") not in {order_sn, prefix + order_sn}
            for r in outstanding):
         raise ValueError("ERP欠货含其他订单或缺少原订单关联")
     actual = Counter()
@@ -222,7 +230,7 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
         if not quantity.is_finite() or quantity <= 0 or r["型号"] in {"税点", "运费"}:
             raise ValueError("ERP欠货存在特殊费用、无效数量或未适配明细")
         actual[(r["型号"], r["完整颜色"])] += quantity
-    no_shipments(client, customer_id, erp_order, order_sn)
+    no_shipments(client, customer_id, erp_order, order_sn, prefix=prefix)
     kwargs = dict(platform_order_sn=order_sn, record_id=ids.pop(), erp_order_sn=erp_order,
                   customer_name=customer, refund_amount=expected_amount, receivable_amount=balance)
     if refunds:
@@ -232,11 +240,11 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
         if len(refunds) != 1 or not reference or outstanding or balance != 0:
             raise ValueError("已有退款记录但退款流水、欠货或零余额未一致，禁止重发")
         return ErpUnshippedRefundLookup(status=Status.COMPLETED,
-                                       message="天猫退款流水、无欠货和零余额已只读确认",
+                                       message=f"{label}退款流水、无欠货和零余额已只读确认",
                                        reference_sn=reference, **kwargs)
     if "移除" in row["操作记录"] or "已退款" in row["操作记录"] or "失败" in row["操作记录"]:
         raise ValueError("ERP存在历史处理记录，禁止自动补发")
     if actual != items or balance != -expected_amount:
         raise ValueError("ERP完整SKU欠货或原收款余额与平台不一致")
-    return ErpUnshippedRefundLookup(status=Status.READY, message="天猫独立未发货整单核验通过",
+    return ErpUnshippedRefundLookup(status=Status.READY, message=f"{label}独立未发货整单核验通过",
                                    **kwargs)

@@ -25,7 +25,7 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
     HEADERS = {"编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只"}
 
     def __init__(self, *, platform="PDD", **kwargs):
-        if platform not in {"PDD", "TMALL"}:
+        if platform not in {"PDD", "TMALL", "TAOBAO"}:
             raise ValueError("未适配的平台原销售关联")
         super().__init__(**kwargs)
         self.platform = platform

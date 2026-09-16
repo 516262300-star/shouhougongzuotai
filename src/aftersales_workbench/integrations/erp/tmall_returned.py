@@ -41,11 +41,15 @@ def inspect_return_account(
     quantity,
     customer_id,
     tracking,
+    platform="TMALL",
 ):
+    if platform not in {"TMALL", "TAOBAO"}:
+        raise ValueError("未适配的ERP退回核账平台")
+    label = "天猫" if platform == "TMALL" else "淘宝"
     source = read_existing_refund(client, order_sn)
     detail = json.loads(source["detail"])
     if (
-        source["platform"] != "天猫"
+        source["platform"] != label
         or source["overall_status"] != "退款成功"
         or source["refundId"] != refund_sn
         or source["isRefundGoods"] != 0
