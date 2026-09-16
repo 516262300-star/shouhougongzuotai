@@ -303,7 +303,7 @@ def _shop_capabilities(
             limited = _requirements(
                 (
                     (capability["state"] == "enabled", capability["detail"]),
-                    (configured.shop_number in range(1, 6), "该店不在前五店有限退款范围"),
+                    (configured.shop_number in range(1, 7), "该店不在天猫六店退款范围"),
                     (settings.tmall_single_parcel_refund_enabled, "天猫单订单单包裹退款尚未启用"),
                     (settings.erp_web_lookup_enabled, "ERP原销售只读核验未开启"),
                     (bool(settings.erp_web_username and settings.erp_web_password), "ERP核验凭据缺失"),

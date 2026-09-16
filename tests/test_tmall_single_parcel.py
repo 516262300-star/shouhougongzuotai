@@ -173,8 +173,9 @@ def test_restoration_requires_separate_explicit_rollout_switch(case):
 
 
 @pytest.mark.parametrize("origin", ["module1", "module2"])
-@pytest.mark.parametrize("failure", [None, "changed", "expired", "lost_task", "receipt", "shop6"])
-def test_limited_executor_rechecks_before_single_money_call(case, monkeypatch, origin, failure):
+@pytest.mark.parametrize("shop_number", [1, 3, 6])
+@pytest.mark.parametrize("failure", [None, "changed", "expired", "lost_task", "receipt", "not_whitelisted", "unknown_shop"])
+def test_limited_executor_rechecks_before_single_money_call(case, monkeypatch, origin, shop_number, failure):
     from datetime import UTC, datetime, timedelta
     from aftersales_workbench.db.models import AutomationActionType, AutomationTaskStatus
     from aftersales_workbench.workflows import actions, module2_safety
@@ -188,11 +189,11 @@ def test_limited_executor_rechecks_before_single_money_call(case, monkeypatch, o
     task = ExternalTaskSnapshot(
         1, c.order.after_sales_sn, AutomationActionType.TMALL_AGREE_REFUND,
         {"origin": origin, "refund_gate": "IN_TRANSIT"}, c.order.platform_order_sn,
-        "tmall-shop-06" if failure == "shop6" else "tmall-shop-01",
+        "tmall-shop-07" if failure == "unknown_shop" else f"tmall-shop-{shop_number:02d}",
     )
     executor = ExternalActionExecutor(c.session, Settings(
         _env_file=None, tmall_single_parcel_refund_enabled=True,
-        tmall_refund_enabled_shop_numbers=[1, 6],
+        tmall_refund_enabled_shop_numbers=([] if failure == "not_whitelisted" else [1, 3, 6, 7]),
     ))
     gate = Mock()
     monkeypatch.setattr(executor, "_require_final_refund_gate", gate)

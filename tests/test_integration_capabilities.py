@@ -192,6 +192,40 @@ def test_tmall_module3_enablement_does_not_imply_platform_refund_permission():
     assert all(s['capabilities']['module3']['state'] != 'enabled' for s in shops)
 
 
+def test_sixth_shop_platform_refund_is_separate_from_erp_enablement():
+    from pydantic import SecretStr
+
+    settings = _settings()
+    settings.tmall_shop_6_session_key = SecretStr("main-6")
+    settings.tmall_shop_6_refund_session_key = SecretStr("child-6")
+    settings.tmall_refund_enabled_shop_numbers = [1, 6]
+    settings.tmall_single_parcel_refund_enabled = True
+    settings.erp_web_lookup_enabled = True
+    settings.erp_web_username = SecretStr("synthetic")
+    settings.erp_web_password = SecretStr("synthetic")
+    settings.tmall_module1_return_claim_enabled = True
+    settings.erp_automation_account_dedicated = True
+    settings.tmall_module3_erp_refund_enabled = True
+
+    def caps():
+        result = build_integration_capabilities(settings, [])
+        shops = next(p for p in result["platforms"] if p["platform"] == "TMALL")["shops"]
+        return next(s["capabilities"] for s in shops if s["shop_code"] == "tmall-shop-06")
+
+    current = caps()
+    assert current["refund_permission"]["state"] == "enabled"
+    for key in ("module1", "module2"):
+        assert current[key]["state"] == "enabled"
+        assert current[key]["label"] == "有限开启"
+    assert current["module3"]["state"] == "disabled"
+    assert current["module1_erp"]["label"] == "核账已开·认领补单未接入"
+    settings.tmall_refund_enabled_shop_numbers = [1]
+    assert caps()["refund_permission"]["state"] == "disabled"
+    settings.tmall_refund_enabled_shop_numbers = [1, 6]
+    settings.tmall_shop_6_refund_session_key = None
+    assert caps()["module2"]["state"] == "disabled"
+
+
 def test_tmall_return_accounting_is_readonly_and_not_a_refund_permission_claim():
     from pydantic import SecretStr
 

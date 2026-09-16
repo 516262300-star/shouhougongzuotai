@@ -191,9 +191,13 @@ def test_write_request_is_blocked_by_default(credentials: TmallCredentials) -> N
     http_client.close()
 
 
+@pytest.mark.parametrize("shop_number", [1, 3, 6])
 def test_agree_refund_uses_main_review_then_child_agree(
-    credentials: TmallCredentials,
+    credentials: TmallCredentials, shop_number: int,
 ) -> None:
+    from dataclasses import replace
+
+    credentials = replace(credentials, shop_code=f"tmall-shop-{shop_number:02d}")
     requests: list[dict[str, str]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -228,7 +232,7 @@ def test_agree_refund_uses_main_review_then_child_agree(
         return httpx.Response(200, json=body, request=request)
 
     child_credentials = TmallCredentials(
-        shop_code="tmall-shop-01",
+        shop_code=credentials.shop_code,
         app_key=credentials.app_key,
         app_secret=credentials.app_secret,
         session_key=SecretStr("refund-child-session"),

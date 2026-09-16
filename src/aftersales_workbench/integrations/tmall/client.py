@@ -200,8 +200,8 @@ class TmallClient:
 
     def execute_write(self, method: str, **parameters: Any) -> dict[str, Any]:
         """执行不可逆写请求；只发送一次，避免网关超时后重复退款。"""
-        if self.credentials.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 6)}:
-            raise TmallConfigurationError("该店铺未获退款写能力；天猫第6店及未知店铺禁止写入")
+        if self.credentials.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 7)}:
+            raise TmallConfigurationError("该店铺未获退款写能力；天猫六店以外的未知店铺禁止写入")
         if not self.write_enabled:
             raise TmallConfigurationError("天猫写操作未启用（TMALL_WRITE_ENABLED=false）")
         payload = self.build_signed_payload(method, parameters)

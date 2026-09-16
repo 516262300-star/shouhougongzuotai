@@ -108,3 +108,38 @@ def test_database_unique_key_blocks_stale_claim_read(db, order, monkeypatch):
     with pytest.raises(MoneyOperationBlocked, match="其他执行器"):
         execute(db, order, second_write, task_id=99)
     second_write.assert_not_called()
+
+
+@pytest.mark.parametrize("number", [3, 6, 7])
+def test_tmall_platform_refund_scope_and_duplicate_guard(db, order, number):
+    from aftersales_workbench.db.models import Platform, Shop
+
+    shop = db.get(Shop, order.shop_id)
+    shop.platform = Platform.TMALL
+    shop.shop_code = f"tmall-shop-{number:02d}"
+    db.commit()
+    write = Mock(return_value={"success": True})
+    kwargs = dict(operation_type="PLATFORM_REFUND", task_id=20, write=write)
+    if number == 7:
+        with pytest.raises(MoneyOperationBlocked, match="没有资金写能力"):
+            run_money_write(db, order, **kwargs)
+        write.assert_not_called()
+        return
+    run_money_write(db, order, **kwargs)
+    assert db.scalar(select(MoneyOperation.state)) == "ACKNOWLEDGED"
+    with pytest.raises(MoneyOperationBlocked, match="禁止重复请求"):
+        run_money_write(db, order, **kwargs)
+    write.assert_called_once()
+
+
+def test_sixth_shop_does_not_gain_erp_write_access(db, order):
+    from aftersales_workbench.db.models import Platform, Shop
+
+    shop = db.get(Shop, order.shop_id)
+    shop.platform = Platform.TMALL
+    shop.shop_code = "tmall-shop-06"
+    db.commit()
+    write = Mock()
+    with pytest.raises(MoneyOperationBlocked):
+        execute(db, order, write)
+    write.assert_not_called()

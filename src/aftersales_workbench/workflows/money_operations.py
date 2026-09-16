@@ -77,7 +77,10 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
     allowed = (
         {f"pdd-shop-{n:02d}" for n in range(1, 8)}
         if platform == "PDD"
-        else {f"tmall-shop-{n:02d}" for n in range(1, 6)}
+        # 第6店仅新增平台退款；ERP认领/补单适配范围保持前五店。
+        else {f"tmall-shop-{n:02d}" for n in range(
+            1, 7 if operation_type == "PLATFORM_REFUND" else 6,
+        )}
         if platform == "TMALL"
         else set()
     )

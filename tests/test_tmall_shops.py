@@ -38,3 +38,24 @@ def test_refund_enabled_loader_rejects_missing_child_session() -> None:
 
     with pytest.raises(TmallConfigurationError, match="REFUND_SESSION_KEY"):
         load_refund_enabled_tmall_shops(settings)
+
+
+def test_sixth_shop_needs_explicit_allowlist_and_separate_child_credentials():
+    settings = Settings(
+        _env_file=None, tmall_app_key="app", tmall_app_secret="secret",
+        tmall_shop_6_session_key="main-6", tmall_shop_6_refund_session_key="child-6",
+    )
+    assert load_refund_enabled_tmall_shops(settings) == []
+    settings.tmall_refund_enabled_shop_numbers = [6]
+    assert [s.shop_number for s in load_refund_enabled_tmall_shops(settings)] == [6]
+    settings.tmall_shop_6_refund_session_key = None
+    with pytest.raises(TmallConfigurationError, match="REFUND_SESSION_KEY"):
+        load_refund_enabled_tmall_shops(settings)
+
+
+@pytest.mark.parametrize("numbers", [[0], [7], [6, 6]])
+def test_refund_loader_rejects_unknown_or_duplicate_shops(numbers):
+    with pytest.raises(TmallConfigurationError):
+        load_refund_enabled_tmall_shops(Settings(
+            _env_file=None, tmall_refund_enabled_shop_numbers=numbers,
+        ))
