@@ -553,4 +553,7 @@ class IntegrationCapabilityService:
             )
             for row in rows
         ]
-        return build_integration_capabilities(self.settings, snapshots)
+        from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
+
+        return decorate_capabilities(build_integration_capabilities(self.settings, snapshots),
+                                     self.settings)

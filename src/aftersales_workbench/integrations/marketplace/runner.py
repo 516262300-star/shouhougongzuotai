@@ -94,4 +94,8 @@ def sync_marketplaces(
                     error=str(exc),
                 )
             )
+    if Platform.TAOBAO in selected:
+        from aftersales_workbench.workflows.taobao_checks import run_checks
+
+        run_checks(settings)
     return results

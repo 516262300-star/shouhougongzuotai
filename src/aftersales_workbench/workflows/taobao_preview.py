@@ -148,14 +148,15 @@ def build_preview_client(settings, shop):
     )
 
 
-def inspect_platform(client, order, shop):
+def inspect_platform(client, order, shop, *, receipt_only=False):
     """全额、单子单、单SKU；以实时平台事实分流，不用缺字段推断未发货。"""
     seller = client.get_seller().get("user_seller_get_response", {}).get("user", {})
     if not shop.platform_shop_id or str(seller.get("user_id") or "") != shop.platform_shop_id:
         raise ValueError("淘宝授权卖家身份不一致")
     refund = unwrap_refund(client.get_refund(refund_id=int(order.after_sales_sn)))
     trade = unwrap_trade(client.get_trade_fullinfo(tid=int(order.platform_order_sn)))
-    logistics = client.get_logistics_orders(tid=int(order.platform_order_sn))
+    if not trade.get("seller_nick"):
+        raise ValueError("中转订单详情缺少seller_nick，无法交叉核实本单卖家归属")
     if (
         str(refund.get("refund_id") or "") != order.after_sales_sn
         or str(refund.get("tid") or "") != order.platform_order_sn
@@ -220,6 +221,25 @@ def inspect_platform(client, order, shop):
         or amount(order.actual_refund_amount) != expected
     ):
         raise ValueError("本地实际成功金额尚未与平台核对一致")
+    if receipt_only:
+        if not has_return:
+            raise ValueError("实收独立核验仅用于退货退款，不支持仅退款/未发货推断")
+        if not refund.get("sid") or str(refund["sid"]).strip() != order.return_tracking_number:
+            raise ValueError("退货运单缺失或与本地不一致")
+        return dict(
+            module=2,
+            status=status,
+            amount=expected,
+            quantity=quantity,
+            product=product,
+            color=color,
+            child_id=str(child["oid"]),
+            tracking=None,
+            shipping="NOT_CHECKED",
+            refund_request_metadata_present=False,
+            items=Counter({(product, color): quantity}),
+        )
+    logistics = client.get_logistics_orders(tid=int(order.platform_order_sn))
     response = logistics.get("logistics_orders_get_response", {})
     shippings = response.get("shippings", {}).get("shipping")
     if not isinstance(shippings, list):
@@ -338,7 +358,7 @@ class TaobaoPreviewService:
         )
         self.source_factory = source_factory or (lambda: build_readonly_erp(settings, sales=True))
 
-    def inspect(self, order):
+    def inspect(self, order, *, receipt_only=False):
         started = datetime.now(UTC)
         if self.session.new or self.session.dirty or self.session.deleted:
             raise ValueError("预演会话存在未提交改动，禁止带入")
@@ -404,7 +424,7 @@ class TaobaoPreviewService:
             raise ValueError("同父订单或包裹有其他售后，须整批核验占用")
         client = self.platform_factory(shop)
         try:
-            facts = inspect_platform(client, order, shop)
+            facts = inspect_platform(client, order, shop, receipt_only=receipt_only)
         finally:
             client.close()
         result = dict(
@@ -416,6 +436,7 @@ class TaobaoPreviewService:
             refund_permission="not_verified",
             warehouse_qc="not_verified",
             refund_request_metadata_present=facts["refund_request_metadata_present"],
+            forward_logistics_evidence="not_checked" if receipt_only else "verified",
         )
         if facts["module"] == 3:
             lookup = inspect_tmall_unshipped(
