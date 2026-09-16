@@ -131,7 +131,7 @@ class TmallModule3Service(Module3ErpRefundService):
                  .join(Shop, Shop.shop_id == Order.shop_id).options(selectinload(Order.items))
                  .where(sync_safe_order_filter(), Shop.platform == Platform.TMALL,
                         Shop.is_active == 1, Shop.shop_code.in_([
-                            f"tmall-shop-{n:02d}" for n in range(1, 6)]),
+                            f"tmall-shop-{n:02d}" for n in range(1, 7)]),
                         Order.id >= self.settings.tmall_module123_min_order_id,
                         Task.action_type == Action.ERP_CHECK_FULFILLMENT,
                         Task.action_status == State.PENDING,
@@ -153,7 +153,7 @@ class TmallModule3Service(Module3ErpRefundService):
         self.session.refresh(task)
         shop = self.session.get(Shop, order.shop_id)
         if (not shop or shop.platform != Platform.TMALL or not shop.is_active
-                or shop.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 6)}
+                or shop.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 7)}
                 or order.id < self.settings.tmall_module123_min_order_id
                 or task.after_sales_sn != order.after_sales_sn
                 or task.action_type != Action.ERP_CHECK_FULFILLMENT

@@ -77,10 +77,8 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
     allowed = (
         {f"pdd-shop-{n:02d}" for n in range(1, 8)}
         if platform == "PDD"
-        # 第6店仅新增平台退款；ERP认领/补单适配范围保持前五店。
-        else {f"tmall-shop-{n:02d}" for n in range(
-            1, 7 if operation_type == "PLATFORM_REFUND" else 6,
-        )}
+        # 六店ERP补单仍须通过上方专用适配器和逐单核验证据。
+        else {f"tmall-shop-{n:02d}" for n in range(1, 7)}
         if platform == "TMALL"
         else set()
     )

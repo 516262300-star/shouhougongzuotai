@@ -148,7 +148,10 @@ def case(db):
     return SimpleNamespace(**locals())
 
 
-def test_preview_is_read_only_and_does_not_create_ledger(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_preview_is_read_only_and_does_not_create_ledger(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     result = case.service.run(dry_run=True, include_details=True)
     assert result.ready == 1 and result.applied == 0, result.details
     assert case.state["writes"] == 0
@@ -157,7 +160,10 @@ def test_preview_is_read_only_and_does_not_create_ledger(case):
     assert case.task.action_status == State.PENDING
 
 
-def test_apply_confirms_real_accounting_and_does_not_repeat(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_apply_confirms_real_accounting_and_does_not_repeat(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     result = case.service.run(dry_run=False, include_details=True)
     assert result.applied == 1 and result.blocked == 0, result.details
     assert case.state["writes"] == 1
@@ -169,7 +175,10 @@ def test_apply_confirms_real_accounting_and_does_not_repeat(case):
     assert case.state["writes"] == 1
 
 
-def test_unknown_result_is_readonly_reconciled_not_resent(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_unknown_result_is_readonly_reconciled_not_resent(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     case.state["timeout"] = True
     first = case.service.run(dry_run=False)
     assert first.blocked == 1 and case.state["writes"] == 1
@@ -180,7 +189,10 @@ def test_unknown_result_is_readonly_reconciled_not_resent(case):
     assert case.db.scalar(select(MoneyOperation)).state == "CONFIRMED"
 
 
-def test_unknown_unconfirmed_cannot_write_again(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_unknown_unconfirmed_cannot_write_again(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     case.state["timeout"] = True
     case.service.run(dry_run=False)
     case.state["completed"] = False
@@ -200,16 +212,18 @@ def test_money_request_never_follows_redirect_or_retries(case):
 
 
 @pytest.mark.parametrize("change", [
-    "sixth_shop", "shipped", "closed", "wrong_shop", "wrong_amount", "missing_actual",
+    "unknown_shop", "shipped", "closed", "wrong_shop", "wrong_amount", "missing_actual",
     "partial_quantity", "other_sku", "multiple_children", "logistics", "missing_logistics",
     "erp_contract", "erp_editing", "erp_duplicate", "erp_wrong_detail", "erp_amount",
     "erp_wrong_platform", "erp_wrong_id", "erp_customer", "erp_sku", "erp_balance",
     "erp_other_receipt", "erp_partial_receipt", "manual_todo", "duplicate_aftersale",
 ])
-def test_uncertain_case_cannot_write(case, change):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_uncertain_case_cannot_write(case, change, shop_number):
     c = case
-    if change == "sixth_shop":
-        c.shop.shop_code = "tmall-shop-06"
+    c.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    if change == "unknown_shop":
+        c.shop.shop_code = "tmall-shop-07"
     elif change == "shipped":
         c.state["shipped"] = True
     elif change == "closed":

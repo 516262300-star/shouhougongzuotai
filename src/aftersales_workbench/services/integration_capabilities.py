@@ -332,10 +332,10 @@ def _shop_capabilities(
         )
         if module1_erp["state"] == "enabled":
             module1_erp.update(state="warning", label="核账已开·认领补单未接入")
-            if settings.tmall_module1_return_claim_enabled and configured.shop_number in range(1, 6):
+            if settings.tmall_module1_return_claim_enabled and configured.shop_number in range(1, 7):
                 module1_erp = _requirements(
                     (
-                        (configured.shop_number in range(1, 6), "该店暂未纳入ERP自动认领补单范围"),
+                        (configured.shop_number in range(1, 7), "该店暂未纳入ERP自动认领补单范围"),
                         (settings.tmall_module123_trial_enabled, "天猫模块接入开关关闭"),
                         (settings.erp_automation_account_dedicated, "尚未确认ERP账号专用于自动化"),
                         (settings.module1_erp_refund_execution_enabled, "ERP补单总开关关闭"),
@@ -351,7 +351,7 @@ def _shop_capabilities(
             (
                 (sync_enabled, "售后同步未开启"),
                 (tmall_modules_enabled, "天猫模块接入开关未开启"),
-                (configured.shop_number in range(1, 6), "该店暂未纳入天猫ERP补单范围"),
+                (configured.shop_number in range(1, 7), "该店暂未纳入天猫ERP补单范围"),
                 (settings.tmall_module3_erp_refund_enabled, "天猫模块3专用执行开关关闭"),
                 (settings.module3_worker_enabled, "模块3后台运行未开启"),
                 (settings.module3_erp_refund_execution_enabled, "模块3ERP补单总开关未开启"),

@@ -185,7 +185,8 @@ def test_tmall_module3_enablement_does_not_imply_platform_refund_permission():
     shops = {s['shop_code']: s['capabilities'] for s in shops}
     assert shops['tmall-shop-02']['module3']['label'] == '有限开启·未发货平账'
     assert shops['tmall-shop-02']['refund_permission']['state'] != 'enabled'
-    assert shops['tmall-shop-06']['module3']['state'] == 'disabled'
+    assert shops['tmall-shop-06']['module3']['label'] == '有限开启·未发货平账'
+    assert shops['tmall-shop-06']['refund_permission']['state'] != 'enabled'
     settings.module3_erp_refund_execution_enabled = False
     result = build_integration_capabilities(settings, [])
     shops = next(p for p in result['platforms'] if p['platform'] == 'TMALL')['shops']
@@ -217,8 +218,13 @@ def test_sixth_shop_platform_refund_is_separate_from_erp_enablement():
     for key in ("module1", "module2"):
         assert current[key]["state"] == "enabled"
         assert current[key]["label"] == "有限开启"
-    assert current["module3"]["state"] == "disabled"
-    assert current["module1_erp"]["label"] == "核账已开·认领补单未接入"
+    assert current["module3"]["label"] == "有限开启·未发货平账"
+    assert current["module1_erp"]["label"] == "有限开启·认领补单"
+    settings.erp_write_enabled = False
+    assert caps()["module3"]["state"] == "disabled"
+    assert caps()["module1_erp"]["state"] == "disabled"
+    assert caps()["refund_permission"]["state"] == "enabled"
+    settings.erp_write_enabled = True
     settings.tmall_refund_enabled_shop_numbers = [1]
     assert caps()["refund_permission"]["state"] == "disabled"
     settings.tmall_refund_enabled_shop_numbers = [1, 6]

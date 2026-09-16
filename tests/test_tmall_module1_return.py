@@ -86,7 +86,10 @@ def case(db, monkeypatch):
     return c
 
 
-def test_preview_does_not_claim_or_write_money(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_preview_does_not_claim_or_write_money(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     result = case.service.run()
     assert result["ready"] == 1 and result["applied"] == 0, result
     assert case.state["writes"] == 0
@@ -94,7 +97,10 @@ def test_preview_does_not_claim_or_write_money(case):
     case.platform.agree_refund.assert_not_called()
 
 
-def test_module1_money_ledger_committed_before_single_request(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_module1_money_ledger_committed_before_single_request(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     result = case.service.run(dry_run=False)
     assert result["applied"] == 1 and result["blocked"] == 0, result
     assert case.state["writes"] == 1
@@ -102,7 +108,10 @@ def test_module1_money_ledger_committed_before_single_request(case):
     case.platform.agree_refund.assert_not_called()
 
 
-def test_unknown_financial_request_never_retried(case):
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_unknown_financial_request_never_retried(case, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    case.db.commit()
     case.state["timeout"] = True
     result = case.service.run(dry_run=False)
     assert result["blocked"] == 1 and case.state["writes"] == 1
@@ -115,7 +124,7 @@ def test_unknown_financial_request_never_retried(case):
 @pytest.mark.parametrize(
     "change",
     [
-        "sixth_shop",
+        "unknown_shop",
         "not_success",
         "partial_amount",
         "multi_parcel",
@@ -124,9 +133,11 @@ def test_unknown_financial_request_never_retried(case):
         "unshipped",
     ],
 )
-def test_gates_cannot_be_bypassed(case, change):
-    if change == "sixth_shop":
-        case.shop.shop_code = "tmall-shop-06"
+@pytest.mark.parametrize("shop_number", [1, 6])
+def test_gates_cannot_be_bypassed(case, change, shop_number):
+    case.shop.shop_code = f"tmall-shop-{shop_number:02d}"
+    if change == "unknown_shop":
+        case.shop.shop_code = "tmall-shop-07"
     elif change == "not_success":
         case.refund["status"] = "WAIT_SELLER_AGREE"
     elif change == "partial_amount":

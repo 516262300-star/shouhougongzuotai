@@ -132,7 +132,7 @@ def test_tmall_platform_refund_scope_and_duplicate_guard(db, order, number):
     write.assert_called_once()
 
 
-def test_sixth_shop_does_not_gain_erp_write_access(db, order):
+def test_sixth_shop_erp_write_still_requires_dedicated_adapter_evidence(db, order):
     from aftersales_workbench.db.models import Platform, Shop
 
     shop = db.get(Shop, order.shop_id)
