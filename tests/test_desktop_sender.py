@@ -27,6 +27,7 @@ from aftersales_workbench.workflows.desktop_sender import (
 @pytest.fixture(autouse=True)
 def fake_parcel_store_for_gateway_unit_tests(monkeypatch):
     """此文件隔离网关状态机；持久化竞争在test_parcel_notice_store使用SQLite验证。"""
+    monkeypatch.setattr(DesktopNoticeSendService, "_package_notice_ready", lambda *args: True)
     class Store:
         def __init__(self, session):
             if not hasattr(session, "parcel_records"):

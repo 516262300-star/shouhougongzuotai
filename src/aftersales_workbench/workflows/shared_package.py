@@ -34,6 +34,18 @@ class PackageCheckUnavailable(ValueError):
     """未发出资金请求，允许后续重新只读核验。"""
 
 
+def has_shared_package_hold(session, order):
+    if not order.forward_tracking_number or not order.carrier_code:
+        return False
+    return session.scalar(select(AftersalesActionTask.id).where(
+        AftersalesActionTask.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+        AftersalesActionTask.payload["task_scope"].as_string() == SCOPE,
+        AftersalesActionTask.payload["tracking_number"].as_string()
+        == order.forward_tracking_number,
+        AftersalesActionTask.payload["carrier_code"].as_string() == str(order.carrier_code),
+    ).limit(1)) is not None
+
+
 class SharedPackageVerifier:
     def __init__(self, session, settings, *, source_factory=None, now_provider=None):
         self.session, self.settings = session, settings

@@ -245,6 +245,16 @@ class PddFailedRefundReconciler:
                     )
         else:
             # 未知平台状态不臆断为关闭/成功，更不能自动重新执行退款。
+            from aftersales_workbench.workflows.shared_package import (
+                HOLD_REASON,
+                has_shared_package_hold,
+            )
+
+            if has_shared_package_hold(self.session, order):
+                task.last_error = HOLD_REASON
+                order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+                order.exception_type = HOLD_REASON
+                return  # 保留整包裹人工原因，避免被改成普通失败而重复创建待办。
             task.last_error = (
                 f"平台最新售后状态为 {status}；原退款任务失败，需人工核验，禁止自动重试"
             )

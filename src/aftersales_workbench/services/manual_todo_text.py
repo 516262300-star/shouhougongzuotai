@@ -77,12 +77,14 @@ def prepare_manual_todo(
             str(sn) for sn in related if sn and str(sn) != platform_order_sn
         ))
         content = f"{marker} 店铺：{shop}；整包裹退款条件未满足，已暂停自动退款。"
+        if evidence.get("phase") == "before_notice":
+            content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
         if related:
             # 只删商品清单，不省略业务员需要联系处理的关联订单。
             content += f"关联订单：{'、'.join(related)}。"
         content += (
             "请联系客户确认商品是否仍需要：不需要则协助申请退款；"
-            "仍需要则确认后续发货安排，核实后人工处理本笔退款。明细见售后工作台。"
+            "仍需要则协调保留收货或部分退货，核实后人工处理本笔退款。明细见售后工作台。"
         )
     elif origin == "module1":
         marker, content, legacy = concise_module1_todo(

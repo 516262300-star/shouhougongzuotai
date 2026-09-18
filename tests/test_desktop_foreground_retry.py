@@ -33,6 +33,7 @@ def setup_sender(tmp_path, monkeypatch, failure, after_paste=False):
             raise failure
 
     service = sender.DesktopNoticeSendService(session, Gateway(), ledger)
+    monkeypatch.setattr(service, '_package_notice_ready', lambda plan: True)
     monkeypatch.setattr(service, '_tracking_group_already_notified', lambda task_id: False)
     monkeypatch.setattr(service, '_claim', lambda task_id: None)
     monkeypatch.setattr(service, '_record_ambiguous_failure', lambda *args: None)

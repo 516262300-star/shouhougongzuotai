@@ -62,6 +62,9 @@ def test_scan_passes_full_page_of_blocked_tasks_without_writes(db):
 
 
 def worker(db, tmp_path, monkeypatch):
+    # 本文件测队列隔离；整包裹只读核验使用独立数据库集成测试。
+    monkeypatch.setattr(module1_worker.DesktopNoticeSendService, "_package_notice_ready",
+                        lambda self, plan: True)
     runtime = object.__new__(module1_worker.Module1WorkerRuntime)
     runtime.settings = NS(
         module1_desktop_send_enabled=True, module1_desktop_batch_limit=2,

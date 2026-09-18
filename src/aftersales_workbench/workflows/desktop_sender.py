@@ -412,6 +412,7 @@ class DesktopNoticeSendResult:
     reconciled: int = 0
     skipped_sent: int = 0
     paused: int = 0
+    blocked_package: int = 0
     error: str | None = None
 
     def safe_dict(self) -> dict[str, int | bool | str | None]:
@@ -521,6 +522,11 @@ class DesktopNoticeSendService:
                 result.reconciled += 1
                 continue
 
+            # 在任何窗口切换、搜索或消息输入之前完成整包裹核验。
+            # 仅此包裹待核实，不把其他可发送包裹锁在桌面暂停账本后面。
+            if not self._package_notice_ready(plan):
+                result.blocked_package += 1
+                continue
             hooks = _LedgerHooks(self, plan, plan_hash)
             try:
                 if self.gateway is None:
@@ -574,7 +580,20 @@ class DesktopNoticeSendService:
                 break
         return result
 
+    def _package_notice_ready(self, plan):
+        from aftersales_workbench.core.config import get_settings
+        from aftersales_workbench.workflows.notice_package_guard import NoticePackageGuard
+
+        if not hasattr(self, "package_guard"):
+            self.package_guard = NoticePackageGuard(self.session, get_settings())
+        return self.package_guard.check(plan)
+
     def _claim(self, task_id: int) -> None:
+        if hasattr(self, "package_guard"):
+            try:
+                self.package_guard.validate_before_input(task_id)
+            except ValueError as exc:
+                raise DesktopBeforePasteError(str(exc)) from exc
         task = self.session.get(AftersalesActionTask, task_id)
         if task is None:
             raise DesktopBeforePasteError(f"动作任务不存在：{task_id}")
