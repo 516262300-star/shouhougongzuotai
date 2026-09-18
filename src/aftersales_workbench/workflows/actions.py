@@ -544,11 +544,13 @@ class ExternalActionExecutor:
         self, session: Session, settings: Settings, *,
         pdd_shop_codes: tuple[str, ...] | None = None,
         package_verifier=None,
+        todo_owner_router=None,
     ) -> None:
         self.session = session
         self.settings = settings
         self.pdd_shop_codes = pdd_shop_codes
         self.package_verifier = package_verifier
+        self.todo_owner_router = todo_owner_router
 
     def run(
         self,
@@ -725,23 +727,6 @@ class ExternalActionExecutor:
                         task = replace(
                             task, payload={**task.payload, "reason_text": accounting_reason},
                         )
-                    if (task.payload.get("task_scope") == "shared_package"
-                            and not str(task.payload.get("assignee") or "").strip()):
-                        current = self.session.scalar(select(AfterSalesOrder).where(
-                            AfterSalesOrder.after_sales_sn == task.after_sales_sn,
-                        ))
-                        if (current is None or current.erp_sales_owner_status != "matched"
-                                or not str(current.erp_sales_owner or "").strip()):
-                            result.skipped += 1  # 不猜业务员，不消耗发布次数。
-                            continue
-                        payload = {**task.payload, "assignee": current.erp_sales_owner,
-                                   "assignee_status": "matched"}
-                        self.session.execute(update(AftersalesActionTask).where(
-                            AftersalesActionTask.id == task.id,
-                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
-                        ).values(payload=payload))
-                        self.session.commit()
-                        task = replace(task, payload=payload)
                     if suppress_manual_todo(task.payload):
                         self.session.execute(update(AftersalesActionTask).where(
                             AftersalesActionTask.id == task.id,
@@ -763,6 +748,17 @@ class ExternalActionExecutor:
                     except ManualTodoPublishingPaused:
                         result.skipped += 1
                         continue
+                    from aftersales_workbench.workflows.todo_owner_routing import TodoOwnerRouter
+
+                    if self.todo_owner_router is None:
+                        self.todo_owner_router = TodoOwnerRouter(self.session, self.settings)
+                    routed = self.todo_owner_router.route(task)
+                    if routed is None:
+                        result.skipped += 1
+                        continue
+                    if accounting_reason:
+                        routed = {**routed, "reason_text": accounting_reason}
+                    task = replace(task, payload=routed)
                 if not self._claim(task.id):
                     result.skipped += 1
                     continue
@@ -1438,7 +1434,8 @@ class ExternalActionExecutor:
         if any(not str(payload.get(key) or "").strip() for key in required):
             raise WorkflowTransitionError("ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识")
         prepared = prepare_manual_todo(
-            payload, platform_order_sn=task.platform_order_sn, after_sales_sn=task.after_sales_sn,
+            payload, platform_order_sn=(payload.get("platform_order_sn") or task.platform_order_sn),
+            after_sales_sn=task.after_sales_sn,
         )
         return ErpTodoRequest(
             assignee=str(payload["assignee"]),

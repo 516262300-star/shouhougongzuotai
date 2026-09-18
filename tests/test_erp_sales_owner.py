@@ -40,7 +40,7 @@ def _engine():
     return engine
 
 
-def test_resolves_current_customer_archive_owner_by_pdd_order_number() -> None:
+def test_resolves_sales_order_owner_instead_of_customer_archive_owner() -> None:
     engine = _engine()
     with engine.begin() as connection:
         connection.execute(
@@ -61,11 +61,11 @@ def test_resolves_current_customer_archive_owner_by_pdd_order_number() -> None:
     )
 
     assert result.status == "matched"
-    assert result.sales_owner == "当前业务员"
+    assert result.sales_owner == "历史业务员"
     assert result.customer_name == "拼多多客户A"
 
 
-def test_falls_back_to_order_snapshot_owner_when_customer_archive_is_blank() -> None:
+def test_resolves_sales_order_owner_when_customer_archive_is_blank() -> None:
     engine = _engine()
     with engine.begin() as connection:
         connection.execute(
@@ -112,6 +112,10 @@ def test_web_resolver_logs_in_and_reads_sales_owner() -> None:
                     }
                 ],
             )
+        if request.url.path.endswith("/customer/stdview"):
+            return httpx.Response(200, text="shipment?kehuid=1")
+        if request.url.path.endswith("/customer/shipment"):
+            return httpx.Response(200, text=sales_page("260831-569486907022924", "销售业务员"))
         return httpx.Response(404)
 
     client = httpx.Client(
@@ -131,13 +135,15 @@ def test_web_resolver_logs_in_and_reads_sales_owner() -> None:
     second = resolver.resolve("260831-569486907022924")
 
     assert first.status == "matched"
-    assert first.sales_owner == "张东升"
+    assert first.sales_owner == "销售业务员"
     assert first.customer_name == "拼多多客户A"
     assert second == first
     assert requests == [
         ("GET", "/leedis/index.php/welcome/loginpage"),
         ("POST", "/leedis/index.php/welcome/loginact"),
         ("GET", "/leedis2/public/customer/GetCustomerName"),
+        ("GET", "/leedis2/public/customer/stdview"),
+        ("GET", "/leedis2/public/customer/shipment"),
     ]
 
 
@@ -158,8 +164,12 @@ def test_web_resolver_relogs_once_when_session_lookup_is_blank() -> None:
                 return httpx.Response(200, text="")
             return httpx.Response(
                 200,
-                json=[{"autocomplete": "客户B@地址@商标@价格@李四@2026-08-31"}],
+                json=[{"id": 1, "autocomplete": "客户B@地址@商标@价格@李四@2026-08-31"}],
             )
+        if request.url.path.endswith("/customer/stdview"):
+            return httpx.Response(200, text="shipment?kehuid=1")
+        if request.url.path.endswith("/customer/shipment"):
+            return httpx.Response(200, text=sales_page("ORDER-2", "订单业务员"))
         return httpx.Response(404)
 
     resolver = ErpWebSalesOwnerResolver(
@@ -175,7 +185,7 @@ def test_web_resolver_relogs_once_when_session_lookup_is_blank() -> None:
 
     result = resolver.resolve("ORDER-2")
 
-    assert result.sales_owner == "李四"
+    assert result.sales_owner == "订单业务员"
     assert login_attempts == 2
     assert lookup_attempts == 2
 
@@ -334,3 +344,17 @@ def test_sales_owner_sync_marks_completed_pdd_fast_refund_as_not_required() -> N
     assert result.not_required == 1
     assert result.not_found == 0
     assert order.erp_sales_owner_status == "not_required"
+
+
+def sales_page(sn, owner):
+    from tests.test_shared_package import SN, html_page
+    return html_page().replace(SN, sn).replace("销售订单业务员", owner)
+
+
+def test_blank_sales_owner_never_falls_back_to_customer_archive():
+    engine = _engine()
+    with engine.begin() as conn:
+        conn.execute(text("INSERT INTO `00sobackup` VALUES ('pddORDER-2', '客户', '')"))
+        conn.execute(text("INSERT INTO `kehu` VALUES ('客户', '档案业务员')"))
+    lookup = ErpSalesOwnerResolver(engine).resolve("ORDER-2")
+    assert lookup.status == "not_found" and lookup.sales_owner is None

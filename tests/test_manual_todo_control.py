@@ -193,7 +193,9 @@ def test_close_mid_batch_stops_next_task_and_does_not_undo_sent_receipt(db, monk
         def close(self):
             pass
 
-    executor = ExternalActionExecutor(db, settings())
+    executor = ExternalActionExecutor(
+        db, settings(), todo_owner_router=SimpleNamespace(route=lambda task: task.payload),
+    )
     monkeypatch.setattr(executor, "_build_erp_todo_client", FakeClient)
     result = executor.run(
         action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False,
@@ -219,7 +221,9 @@ def test_close_after_claim_before_post_restores_pending_without_consuming_retry(
         def close(self):
             pass
 
-    executor = ExternalActionExecutor(db, settings())
+    executor = ExternalActionExecutor(
+        db, settings(), todo_owner_router=SimpleNamespace(route=lambda task: task.payload),
+    )
     monkeypatch.setattr(executor, "_build_erp_todo_client", FakeClient)
     result = executor.run(
         action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False,
@@ -317,7 +321,9 @@ def test_no_trace_todo_cancelled_before_claim_other_todo_still_sent(db, monkeypa
         def close(self):
             pass
 
-    executor = ExternalActionExecutor(db, settings())
+    executor = ExternalActionExecutor(
+        db, settings(), todo_owner_router=SimpleNamespace(route=lambda task: task.payload),
+    )
     monkeypatch.setattr(executor, "_build_erp_todo_client", FakeClient)
     result = executor.run(
         action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False,

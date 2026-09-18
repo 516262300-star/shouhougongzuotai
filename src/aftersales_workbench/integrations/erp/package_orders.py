@@ -22,7 +22,7 @@ class CustomerSales:
 
 class ErpPackageOrderSource(ErpWebReturnMatcher):
     MAX_PAGES = 20
-    HEADERS = {"编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只"}
+    HEADERS = {"编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只", "归属业务员"}
 
     def __init__(self, *, platform="PDD", **kwargs):
         if platform not in {"PDD", "TMALL", "TAOBAO"}:
@@ -30,21 +30,23 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
         super().__init__(**kwargs)
         self.platform = platform
 
-    def read(self, order_sn: str) -> CustomerSales:
-        payload = self._get_response(
+    def read(self, order_sn: str, *, only_order=False, customer_payload=None) -> CustomerSales:
+        payload = customer_payload if customer_payload is not None else self._get_response(
             "/leedis2/public/customer/GetCustomerName", params={"keyword": order_sn}
         ).json()
         if not isinstance(payload, list) or not payload:
             raise ValueError("ERP 尚未唯一匹配客户，不能认定没有同包裹订单")
         identities = set()
         for entry in payload:
-            parts = str(entry.get("autocomplete") or "").split("@")
-            if len(parts) < 5 or not str(entry.get("id") or "").isdigit():
+            if not isinstance(entry, dict):
                 raise ValueError("ERP 客户身份字段不完整")
-            identities.add((str(entry["id"]), parts[0].strip(), parts[4].strip()))
+            parts = str(entry.get("autocomplete") or "").split("@")
+            if not parts[0].strip() or not str(entry.get("id") or "").isdigit():
+                raise ValueError("ERP 客户身份字段不完整")
+            identities.add((str(entry["id"]), parts[0].strip()))
         if len(identities) != 1:
-            raise ValueError("ERP 客户或归属业务员不唯一")
-        customer_id, name, owner = identities.pop()
+            raise ValueError("ERP 客户身份不唯一")
+        customer_id, name = identities.pop()
         profile = self._get("/leedis2/public/customer/stdview", params={"autocustomer": name})
         ids = set(re.findall(r"shipment\?kehuid=(\d+)", profile))
         if ids != {customer_id}:
@@ -89,8 +91,11 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                 if not row["编号"].startswith("RC-") or row["型号"] in {"税点", "运费"}:
                     continue
                 sn = row["客户编号"].strip()
+                sn = sn[3:] if sn.lower().startswith("pdd") else sn
+                if only_order and sn != order_sn:
+                    continue
                 pattern = r"\d{6}-\d{15}" if self.platform == "PDD" else r"\d{15,22}"
-                if not re.fullmatch(pattern, sn):
+                if not only_order and not re.fullmatch(pattern, sn):
                     raise ValueError("原销售订单号格式不符或含其他平台，不能跳过")
                 quantity = Decimal(row["入库化只"])
                 if not quantity.is_finite() or quantity <= 0 or not row["订单编号"].isdigit():
@@ -103,6 +108,7 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                         "product": row["型号"],
                         "color": row["颜色"],
                         "quantity": str(quantity),
+                        "sales_owner": row["归属业务员"].strip(),
                     }
                 )
             if current == pages:
@@ -115,6 +121,8 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                 raise ValueError("取数期间原销售记录改变，需重新读取完整分页")
         if order_sn not in {row["order_sn"] for row in all_rows}:
             raise ValueError("ERP 全部分页未找到目标原销售订单，不能判断包裹范围")
+        owners = {row["sales_owner"] for row in all_rows if row["order_sn"] == order_sn}
+        owner = next(iter(owners)) if len(owners) == 1 and "" not in owners else ""
         return CustomerSales(customer_id, name, owner, tuple(all_rows), expected_pages)
 
 

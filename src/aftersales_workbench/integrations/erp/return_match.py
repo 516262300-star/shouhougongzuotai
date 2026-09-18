@@ -1077,8 +1077,8 @@ class ErpReturnMatchSyncService:
         )
         if lookup.customer_name and not retain_customer:
             order.erp_customer_name = lookup.customer_name
-        if lookup.sales_owner and not retain_customer:
-            order.erp_sales_owner = lookup.sales_owner
+        # 此处 lookup.sales_owner 来自客户档案，仅留在核验载荷中。
+        # 订单的发货销售归属由独立销售明细同步维护，不能被客户档案覆盖。
 
         if lookup.status is ErpReturnMatchStatus.CLOSED_LOOP:
             task.action_status = AutomationTaskStatus.SUCCEEDED

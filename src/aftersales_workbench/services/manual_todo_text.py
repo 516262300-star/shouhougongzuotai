@@ -68,7 +68,9 @@ def prepare_manual_todo(
                      or _field(old_content, "原因"))
     reason = _short_reason(raw_reason, platform_order_sn, after_sales_sn, "售后异常需核对")
     if origin == "module1" and payload.get("task_scope") == "shared_package":
-        marker = f"【同包裹跟进：{platform_order_sn}】"
+        marker = (str(payload.get("routing_marker") or "")
+                  if payload.get("owner_source") == "shipment_order" else "")
+        marker = marker or f"【同包裹跟进：{platform_order_sn}】"
         evidence = payload.get("package_evidence") or {}
         related = payload.get("related_order_sns") or [
             row.get("order_sn") for row in evidence.get("blockers", [])
@@ -79,6 +81,8 @@ def prepare_manual_todo(
         content = f"{marker} 店铺：{shop}；整包裹退款条件未满足，已暂停自动退款。"
         if evidence.get("phase") == "before_notice":
             content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
+        if payload.get("assigned_order_sns"):
+            content += f"您负责的退款申请订单：{'、'.join(payload['assigned_order_sns'])}。"
         if related:
             # 只删商品清单，不省略业务员需要联系处理的关联订单。
             content += f"关联订单：{'、'.join(related)}。"

@@ -62,6 +62,7 @@ def setup(db):
             quantity="2",
             sale_sn="RC-example",
             sale_id=str(i),
+            sales_owner="示例业务员",
         )
         for i, sn in enumerate(infos)
     )
@@ -218,7 +219,9 @@ def test_all_orders_covered_passes_without_refunding_any_sibling(db, setup, refu
 
 def test_no_business_owner_still_freezes_refund_and_retains_local_todo(db, setup):
     x = setup
-    x.source.read.return_value = replace(x.sales, sales_owner="")
+    x.source.read.return_value = replace(
+        x.sales, rows=tuple({**r, "sales_owner": ""} for r in x.sales.rows),
+    )
     with pytest.raises(PackageRefundHeld):
         x.verifier.require_before_refund(x.order, x.client, 2)
     assert todos(db)[0].payload["assignee"] == ""
@@ -370,7 +373,9 @@ def test_todo_switch_does_not_remove_refund_hold_and_publish_is_once(db, setup, 
     with pytest.raises(PackageRefundHeld):
         x.verifier.require_before_refund(x.order, x.client, 2)
     client = Mock(create_todo=Mock(return_value=SimpleNamespace(todo_id="test-todo", created=True)))
-    executor = ExternalActionExecutor(db, x.cfg)
+    executor = ExternalActionExecutor(
+        db, x.cfg, todo_owner_router=Mock(route=lambda task: task.payload),
+    )
     monkeypatch.setattr(executor, "_build_erp_todo_client", lambda: client)
     with pytest.raises(ValueError):
         executor.run(action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False)
@@ -390,37 +395,6 @@ def test_todo_switch_does_not_remove_refund_hold_and_publish_is_once(db, setup, 
     client.create_todo.assert_called_once()
     with pytest.raises(PackageRefundHeld):
         x.verifier.require_before_refund(x.order, x.client, 2)
-
-
-def test_missing_owner_waits_then_uses_synced_owner_without_spending_attempts(
-    db, setup, monkeypatch
-):
-    x = setup
-    x.cfg.erp_write_enabled = True
-    x.cfg.erp_todo_publish_enabled = True
-    x.source.read.return_value = replace(x.sales, sales_owner="")
-    with pytest.raises(PackageRefundHeld):
-        x.verifier.require_before_refund(x.order, x.client, 2)
-    executor = ExternalActionExecutor(db, x.cfg)
-    client = Mock(create_todo=Mock(return_value=SimpleNamespace(todo_id="test-id", created=True)))
-    monkeypatch.setattr(executor, "_build_erp_todo_client", lambda: client)
-    assert (
-        executor.run(
-            action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False
-        ).skipped
-        == 1
-    )
-    assert todos(db)[0].attempts == 0
-    x.order.erp_sales_owner = "ERP匹配业务员"
-    x.order.erp_sales_owner_status = "matched"
-    db.commit()
-    assert (
-        executor.run(
-            action_types=(AutomationActionType.ERP_CREATE_MANUAL_TODO,), dry_run=False
-        ).succeeded
-        == 1
-    )
-    assert client.create_todo.call_args.args[0].assignee == "ERP匹配业务员"
 
 
 def test_generic_todo_coexists_and_single_order_closure_cannot_cancel_package_todo(db, setup):
@@ -477,7 +451,7 @@ def test_generic_todo_coexists_and_single_order_closure_cannot_cancel_package_to
 
 
 SN = "260909-111111111111111"
-HEAD = ["编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只"]
+HEAD = ["编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只", "归属业务员"]
 
 
 def test_cli_is_readonly_and_resolves_order_shop_join(db, setup, monkeypatch, capsys):
@@ -512,7 +486,7 @@ def test_cli_is_readonly_and_resolves_order_shop_join(db, setup, monkeypatch, ca
 
 def html_page(page=0, pages=1, count=1):
     headers = "<tr>" + "".join(f"<th>{c}</th>" for c in HEAD) + "</tr>"
-    values = ["RC-example", "2026-09-09", "8064-25", "铜本色", "123", SN, "1"]
+    values = ["RC-example", "2026-09-09", "8064-25", "铜本色", "123", SN, "1", "销售订单业务员"]
     row = "<tr>" + "".join(f"<td>{c}</td>" for c in values) + "</tr>"
     return f"<p>上一页 {page + 1}/{pages} 下一页</p><table>{headers}{row * count}</table>"
 

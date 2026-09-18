@@ -86,9 +86,9 @@ def _aggregate_lookup(
     *,
     matched_message: str,
 ) -> SalesOwnerLookup:
-    sorted_owners = sorted(owners)
+    sorted_owners = sorted(owners - {""})
     customer_name = "、".join(sorted(customers)) or None
-    if len(sorted_owners) == 1:
+    if len(sorted_owners) == 1 and "" not in owners:
         return SalesOwnerLookup(
             sales_owner=sorted_owners[0],
             customer_name=customer_name,
@@ -106,12 +106,12 @@ def _aggregate_lookup(
         sales_owner=None,
         customer_name=customer_name,
         status="not_found",
-        message="ERP 客户档案未匹配到归属业务员",
+        message="ERP 发货销售订单未完整匹配到归属业务员",
     )
 
 
 class ErpSalesOwnerResolver:
-    """通过旧管理系统客户档案只读反查平台订单的归属业务员。"""
+    """只读查询原销售订单归属，不回退客户档案归属。"""
 
     # 此旧 SQL 适配器仍固定查 pdd 前缀，不能拿其空结果判断其他平台未入 ERP。
     supported_platforms = frozenset({Platform.PDD})
@@ -121,13 +121,8 @@ class ErpSalesOwnerResolver:
         SELECT
             so.`客户编号` AS platform_customer_number,
             so.`客户名字` AS customer_name,
-            COALESCE(
-                NULLIF(TRIM(customer.`归属业务员`), ''),
-                NULLIF(TRIM(so.`归属业务员`), '')
-            ) AS sales_owner
+            NULLIF(TRIM(so.`归属业务员`), '') AS sales_owner
         FROM `00sobackup` AS so
-        LEFT JOIN `kehu` AS customer
-            ON customer.`客户名字` = so.`客户名字`
         WHERE so.`客户编号` IN :customer_numbers
         """
     ).bindparams(bindparam("customer_numbers", expanding=True))
@@ -205,8 +200,7 @@ class ErpSalesOwnerResolver:
                         continue
                     owner = str(row["sales_owner"] or "").strip()
                     customer = str(row["customer_name"] or "").strip()
-                    if owner:
-                        owners[order_sn].add(owner)
+                    owners[order_sn].add(owner)
                     if customer:
                         customers[order_sn].add(customer)
         except SQLAlchemyError:
@@ -225,13 +219,13 @@ class ErpSalesOwnerResolver:
             result[order_sn] = _aggregate_lookup(
                 owners[order_sn],
                 customers[order_sn],
-                matched_message="已从 ERP 客户档案数据库匹配",
+                matched_message="已从 ERP 原销售订单数据库匹配",
             )
         return result
 
 
 class ErpWebSalesOwnerResolver:
-    """登录旧管理系统，通过客户自动补全接口只读查询归属业务员。"""
+    """用客户接口定位销售页，再逐笔读取发货销售单归属业务员。"""
 
     supported_platforms = ALL_OWNER_PLATFORMS
 
@@ -311,7 +305,22 @@ class ErpWebSalesOwnerResolver:
                     continue
                 payload = response.json()
                 if isinstance(payload, list):
-                    return self._parse_results(payload)
+                    if not payload:
+                        return SalesOwnerLookup(None, None, "not_found", "ERP 未匹配到原销售客户")
+                    from aftersales_workbench.integrations.erp.package_orders import (
+                        ErpPackageOrderSource,
+                    )
+
+                    source = ErpPackageOrderSource(
+                        base_url=self.base_url, username=self.username, password=self.password,
+                        http_client=self._client,
+                    )
+                    source._logged_in = True
+                    sales = source.read(order_sn, only_order=True, customer_payload=payload)
+                    return _aggregate_lookup(
+                        {str(row.get("sales_owner") or "").strip() for row in sales.rows},
+                        {sales.customer_name}, matched_message="已从 ERP 发货销售订单逐笔匹配",
+                    )
                 self._logged_in = False
         except httpx.TimeoutException:
             reason = "timeout"
@@ -333,7 +342,7 @@ class ErpWebSalesOwnerResolver:
             sales_owner=None,
             customer_name=None,
             status="unavailable",
-            message="ERP 客户档案网页暂时无法读取",
+            message="ERP 发货销售订单归属暂时无法完整读取",
         )
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
@@ -350,27 +359,8 @@ class ErpWebSalesOwnerResolver:
             raise ValueError("ERP 管理系统登录失败")
         self._logged_in = True
 
-    @staticmethod
-    def _parse_results(payload: list[object]) -> SalesOwnerLookup:
-        owners: set[str] = set()
-        customers: set[str] = set()
-        for item in payload:
-            if not isinstance(item, dict):
-                raise ValueError("ERP 客户查询结果行格式无效")
-            parts = str(item.get("autocomplete") or "").split("@")
-            customer = parts[0].strip() if parts else ""
-            owner = parts[4].strip() if len(parts) > 4 else ""
-            if not customer:
-                raise ValueError("ERP 客户查询结果缺少客户标识")
-            if customer:
-                customers.add(customer)
-            if owner:
-                owners.add(owner)
-        return _aggregate_lookup(
-            owners,
-            customers,
-            matched_message="已从 ERP 客户档案网页匹配",
-        )
+    def close(self):
+        self._client.close()
 
 
 class ErpSalesOwnerSyncService:

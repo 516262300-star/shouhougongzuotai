@@ -1,7 +1,5 @@
 """模块1未揽收退款前的整包裹保护：独立于无轨迹放行证据，不代替它。"""
 
-import hashlib
-import json
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -12,12 +10,10 @@ from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
     MoneyOperation,
-    Shop,
     WorkflowStatus,
 )
 from aftersales_workbench.integrations.erp.package_orders import build_package_source
 from aftersales_workbench.integrations.pdd.mapper import normalize_refund, unwrap_order_information
-from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.uncollected_refund import order_snapshot, utc
 
 SCOPE = "shared_package"
@@ -258,45 +254,6 @@ class SharedPackageVerifier:
         return evidence
 
     def _enqueue_todo(self, order, evidence):
-        # 跨售后共享包裹+业务员唯一键，独立于原普通待办，既不覆盖也不重复发。
-        identity = [
-            evidence["customer_id"],
-            order.carrier_code,
-            order.forward_tracking_number,
-            evidence["assignee"],
-        ]
-        digest = hashlib.sha256(json.dumps(identity, ensure_ascii=False).encode()).hexdigest()
-        key = f"module1:shared-package:{digest}"
-        existing = self.session.scalar(
-            select(AftersalesActionTask).where(AftersalesActionTask.idempotency_key == key)
-        )
-        if existing:
-            return
-        shop = self.session.get(Shop, order.shop_id)
-        marker = f"【同包裹跟进：{order.platform_order_sn}】"
-        self.session.add(
-            AftersalesActionTask(
-                after_sales_sn=order.after_sales_sn,
-                action_type=AutomationActionType.ERP_CREATE_MANUAL_TODO,
-                action_status=AutomationTaskStatus.PENDING,
-                idempotency_key=key,
-                attempts=0,
-                payload=prepare_manual_todo({
-                    "origin": "module1",
-                    "task_scope": SCOPE,
-                    "reason_code": REASON,
-                    "reason_text": HOLD_REASON,
-                    "assignee": evidence["assignee"],
-                    "assignee_status": "matched" if evidence["assignee"] else "not_found",
-                    "started_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "platform_order_sn": order.platform_order_sn,
-                    "shop_name": shop.shop_name,
-                    "tracking_number": order.forward_tracking_number,
-                    "carrier_code": str(order.carrier_code),
-                    "marker": marker,
-                    "content": marker,
-                    "related_order_sns": [b["order_sn"] for b in evidence["blockers"]],
-                    "package_evidence": evidence,
-                }, platform_order_sn=order.platform_order_sn, after_sales_sn=order.after_sales_sn),
-            )
-        )
+        from aftersales_workbench.workflows.todo_owner_routing import enqueue_shared_owner_todos
+
+        return enqueue_shared_owner_todos(self.session, order, evidence)
