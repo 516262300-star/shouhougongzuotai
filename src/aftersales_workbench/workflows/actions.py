@@ -672,6 +672,21 @@ class ExternalActionExecutor:
                 erp_todo_client = self._build_erp_todo_client()
             for task in tasks:
                 if task.action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
+                    from aftersales_workbench.workflows.shared_package import (
+                        redundant_refund_failure_todo,
+                    )
+
+                    if redundant_refund_failure_todo(
+                        self.session, task.payload, task.after_sales_sn,
+                    ):
+                        self.session.execute(update(AftersalesActionTask).where(
+                            AftersalesActionTask.id == task.id,
+                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                        ).values(action_status=AutomationTaskStatus.CANCELLED,
+                                 last_error="合包业务暂停已有专用待办，取消重复退款失败提醒"))
+                        self.session.commit()
+                        result.skipped += 1
+                        continue
                     from aftersales_workbench.services.return_quantity import queued_quantity_review
 
                     quantity_note = queued_quantity_review(
@@ -707,7 +722,9 @@ class ExternalActionExecutor:
                         result.skipped += 1
                         continue
                     if accounting_reason:
-                        task = replace(task, payload={**task.payload, "reason_text": accounting_reason})
+                        task = replace(
+                            task, payload={**task.payload, "reason_text": accounting_reason},
+                        )
                     if (task.payload.get("task_scope") == "shared_package"
                             and not str(task.payload.get("assignee") or "").strip()):
                         current = self.session.scalar(select(AfterSalesOrder).where(
@@ -864,8 +881,19 @@ class ExternalActionExecutor:
                 except Exception as exc:
                     from aftersales_workbench.workflows.shared_package import (
                         PackageCheckUnavailable,
+                        PackageRefundHeld,
+                        mark_refund_business_hold,
                     )
 
+                    if isinstance(exc, PackageRefundHeld):
+                        row = self.session.get(AftersalesActionTask, task.id)
+                        order = self.session.scalar(select(AfterSalesOrder).where(
+                            AfterSalesOrder.after_sales_sn == task.after_sales_sn,
+                        ))
+                        if mark_refund_business_hold(self.session, row, order):
+                            self.session.commit()
+                            result.skipped += 1
+                            continue
                     if isinstance(exc, PackageCheckUnavailable):
                         # 本次仅前置只读失败，未发资金请求；交回物流队列五分钟后重查。
                         row = self.session.get(AftersalesActionTask, task.id)

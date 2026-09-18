@@ -51,6 +51,11 @@ class PddFailedRefundReconciler:
                 or_(
                     AftersalesActionTask.action_status == AutomationTaskStatus.FAILED,
                     and_(
+                        AftersalesActionTask.action_status == AutomationTaskStatus.CANCELLED,
+                        AftersalesActionTask.payload["execution_outcome"].as_string()
+                        == "BUSINESS_HOLD",
+                    ),
+                    and_(
                         AftersalesActionTask.action_status == AutomationTaskStatus.SUCCEEDED,
                         exists().where(
                             MoneyOperation.task_id == AftersalesActionTask.id,
@@ -146,6 +151,12 @@ class PddFailedRefundReconciler:
                         previous["previous_refund_case"] = previous.pop("pdd_refund_case")
                         current.payload = previous
                     self.apply_observation(current, order, status, amount)
+                if status != 10:
+                    from aftersales_workbench.workflows.shared_package import (
+                        mark_refund_business_hold,
+                    )
+
+                    mark_refund_business_hold(self.session, current, order)
                 record_poll(
                     self.session, scope="pdd_failed_refund", reference=reference, delay_seconds=1800
                 )
@@ -248,9 +259,11 @@ class PddFailedRefundReconciler:
             from aftersales_workbench.workflows.shared_package import (
                 HOLD_REASON,
                 has_shared_package_hold,
+                mark_refund_business_hold,
             )
 
-            if has_shared_package_hold(self.session, order):
+            if (has_shared_package_hold(self.session, order)
+                    and mark_refund_business_hold(self.session, task, order)):
                 task.last_error = HOLD_REASON
                 order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
                 order.exception_type = HOLD_REASON

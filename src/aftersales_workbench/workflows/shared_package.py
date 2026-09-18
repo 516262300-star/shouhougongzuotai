@@ -11,6 +11,7 @@ from aftersales_workbench.db.models import (
     AfterSalesOrder,
     AutomationActionType,
     AutomationTaskStatus,
+    MoneyOperation,
     Shop,
     WorkflowStatus,
 )
@@ -44,6 +45,58 @@ def has_shared_package_hold(session, order):
         == order.forward_tracking_number,
         AftersalesActionTask.payload["carrier_code"].as_string() == str(order.carrier_code),
     ).limit(1)) is not None
+
+
+def has_refund_request_evidence(session, order):
+    if session.scalar(select(MoneyOperation.operation_key).where(
+        MoneyOperation.after_sales_sn == order.after_sales_sn,
+        MoneyOperation.shop_id == order.shop_id,
+        MoneyOperation.operation_type == "PLATFORM_REFUND",
+    ).limit(1)) is not None:
+        return True
+    return session.scalar(select(AftersalesActionTask.id).where(
+        AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+        AftersalesActionTask.action_type == "PDD_AGREE_REFUND",
+        AftersalesActionTask.payload["uncollected_request_started_at"].as_string().is_not(None),
+    ).limit(1)) is not None
+
+
+def mark_refund_business_hold(session, task, order):
+    """只归类确定未调用资金接口的合包阻断；保留实际失败/结果未知凭证。"""
+    if (order is None or task is None or task.action_type != "PDD_AGREE_REFUND"
+            or task.action_status not in {"PENDING", "RUNNING", "FAILED", "CANCELLED"}
+            or (task.payload or {}).get("origin") != "module1"
+            or (task.payload or {}).get("uncollected_request_started_at")
+            or order.refund_financial_status == "SUCCESS"
+            or order.platform_after_sales_status == 10
+            or not has_shared_package_hold(session, order)):
+        return False
+    if has_refund_request_evidence(session, order):
+        return False
+    task.payload = {**(task.payload or {}), "cancel_reason": REASON,
+                    "execution_outcome": "BUSINESS_HOLD",
+                    "business_held_at": (task.payload or {}).get("business_held_at")
+                    or datetime.now(UTC).isoformat()}
+    task.action_status = AutomationTaskStatus.CANCELLED
+    task.last_error = HOLD_REASON
+    order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+    order.exception_type = HOLD_REASON
+    return True
+
+
+def redundant_refund_failure_todo(session, payload, after_sales_sn):
+    """同包裹已转业务员时，普通退款失败提醒没有额外处理事项。"""
+    if (payload.get("origin") != "module1" or payload.get("task_scope") == SCOPE
+            or payload.get("reason_code") != "MANUAL_PROCESSING"
+            or payload.get("reason_text") not in {
+                HOLD_REASON, "退款失败或平台状态变化，需人工核验",
+            }):
+        return False
+    order = session.scalar(select(AfterSalesOrder).where(
+        AfterSalesOrder.after_sales_sn == after_sales_sn,
+    ))
+    return (order is not None and has_shared_package_hold(session, order)
+            and not has_refund_request_evidence(session, order))
 
 
 class SharedPackageVerifier:

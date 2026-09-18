@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
-from sqlalchemy import and_, func, or_, select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
@@ -14,6 +14,7 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    MoneyOperation,
     ShippingStatus,
     Shop,
     WorkflowStatus,
@@ -204,6 +205,27 @@ class SqlAlchemyModule1ManualTodoRepository:
         shop_codes: tuple[str, ...] | None,
         limit: int,
     ) -> list[Module1ManualTodoCandidate]:
+        package_todo = aliased(AftersalesActionTask)
+        refund_task = aliased(AftersalesActionTask)
+        requested = or_(
+            exists(select(MoneyOperation.operation_key).where(
+                MoneyOperation.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                MoneyOperation.shop_id == AfterSalesOrder.shop_id,
+                MoneyOperation.operation_type == "PLATFORM_REFUND",
+            ).correlate(AfterSalesOrder)),
+            exists(select(refund_task.id).where(
+                refund_task.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                refund_task.action_type == "PDD_AGREE_REFUND",
+                refund_task.payload["uncollected_request_started_at"].as_string().is_not(None),
+            ).correlate(AfterSalesOrder)),
+        )
+        package_hold = exists(select(package_todo.id).where(
+            package_todo.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+            package_todo.payload["task_scope"].as_string() == "shared_package",
+            package_todo.payload["tracking_number"].as_string()
+            == AfterSalesOrder.forward_tracking_number,
+            package_todo.payload["carrier_code"].as_string() == AfterSalesOrder.carrier_code,
+        ).correlate(AfterSalesOrder))
         manual_state = AfterSalesOrder.workflow_status.in_(
             (WorkflowStatus.INTERCEPT_FAILED, WorkflowStatus.MANUAL_PROCESSING)
         )
@@ -255,6 +277,13 @@ class SqlAlchemyModule1ManualTodoRepository:
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 or_(manual_state, logistics_state, return_match_state),
+                ~and_(
+                    AfterSalesOrder.workflow_status == WorkflowStatus.MANUAL_PROCESSING,
+                    func.coalesce(AfterSalesOrder.exception_type, "")
+                    == "退款失败或平台状态变化，需人工核验",
+                    package_hold,
+                    ~requested,
+                ),
                 or_(
                     AfterSalesOrder.exception_type.is_(None),
                     AfterSalesOrder.exception_type.not_like(NO_TRACE_REASON_LIKE),
