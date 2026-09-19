@@ -98,6 +98,13 @@ class ErpTodoClient:
     def close(self) -> None:
         self._client.close()
 
+    def find_existing(self, assignee: str, marker: str) -> str | None:
+        """仅回查已提交或结果不明的待办，不产生写请求。"""
+        if not assignee.strip() or not marker.strip():
+            raise ErpTodoPublishError("待办回查缺少经办人或标识")
+        self._ensure_logged_in()
+        return self._find_existing(assignee, marker)
+
     def create_todo(self, request: ErpTodoRequest) -> ErpTodoReceipt:
         self._validate(request)
         self._ensure_logged_in()

@@ -75,7 +75,10 @@ def backup(root: Path, output: Path, dump: Path, admin_file: Path) -> None:
             conn.close()  # Always release the global read lock, including failure.
     # Code files are immutable release directories; package both current versions.
     members = set()
-    for pointer_name in ('module1-worker-release.json', 'workbench-web-release.json'):
+    pointers = ['module1-worker-release.json', 'workbench-web-release.json']
+    if (output / 'shipment-watch-release.json').is_file():
+        pointers.append('shipment-watch-release.json')
+    for pointer_name in pointers:
         release = json.loads((output / pointer_name).read_text(encoding='utf-8-sig'))
         release_root = (root / release['source_path']).resolve()
         if not release_root.is_relative_to(root / '.runtime/releases'):

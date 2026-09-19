@@ -42,6 +42,9 @@ def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
     engine.dispose()
     for name in ('module1-worker-release.json', 'workbench-web-release.json', 'module1-worker.log'):
         shutil.copy2(root / '.runtime' / name, output / name)
+    reminder_pointer = root / '.runtime/shipment-watch-release.json'
+    if reminder_pointer.is_file():
+        shutil.copy2(reminder_pointer, output / reminder_pointer.name)
     ledger = Path(settings.get('MODULE1_DESKTOP_LEDGER_PATH') or '.runtime/desktop-notice-ledger.jsonl')
     ledger = ledger if ledger.is_absolute() else root / ledger
     if not ledger.is_file():
