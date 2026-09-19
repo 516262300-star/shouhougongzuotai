@@ -87,10 +87,10 @@ def list_manual_todos(
     service: Annotated[AftersalesRecordService, Depends(get_record_service)],
     page: Annotated[int, Query(ge=1)] = 1,
     page_size: Annotated[int, Query(ge=10, le=100)] = 15,
-    task_status: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+    task_status: Literal["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED", "UNKNOWN"]
     | None = None,
     assignee: Annotated[str | None, Query(max_length=50)] = None,
-    origin: Literal["module1", "module2", "module3"] | None = None,
+    origin: Literal["module1", "module2", "module3", "shipment_reminder"] | None = None,
     started_on: date | None = None,
     ended_on: date | None = None,
     keyword: Annotated[str | None, Query(max_length=100)] = None,

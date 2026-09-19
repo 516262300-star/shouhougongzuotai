@@ -426,98 +426,13 @@ class AftersalesRecordService:
         ended_on: date | None = None,
         keyword: str | None = None,
     ) -> dict[str, Any]:
-        assignee_field = AftersalesActionTask.payload["assignee"].as_string()
-        origin_field = AftersalesActionTask.payload["origin"].as_string()
-        content_field = AftersalesActionTask.payload["content"].as_string()
-        filters: list[Any] = [
-            AftersalesActionTask.action_type
-            == AutomationActionType.ERP_CREATE_MANUAL_TODO
-        ]
-        clean_status = (task_status or "").strip().upper()
-        if clean_status:
-            filters.append(AftersalesActionTask.action_status == clean_status)
-        clean_assignee = (assignee or "").strip()
-        if clean_assignee:
-            filters.append(assignee_field == clean_assignee)
-        clean_origin = (origin or "").strip().lower()
-        if clean_origin:
-            filters.append(origin_field == clean_origin)
-        if started_on:
-            filters.append(
-                AftersalesActionTask.created_at
-                >= datetime.combine(started_on, time.min)
-            )
-        if ended_on:
-            filters.append(
-                AftersalesActionTask.created_at
-                < datetime.combine(ended_on + timedelta(days=1), time.min)
-            )
-        clean_keyword = (keyword or "").strip()
-        if clean_keyword:
-            pattern = f"%{clean_keyword}%"
-            filters.append(
-                or_(
-                    AfterSalesOrder.after_sales_sn.like(pattern),
-                    AfterSalesOrder.platform_order_sn.like(pattern),
-                    Shop.shop_name.like(pattern),
-                    assignee_field.like(pattern),
-                    content_field.like(pattern),
-                )
-            )
+        from aftersales_workbench.services.manual_todo_audit import list_manual_todos
 
-        total = int(
-            self.session.scalar(
-                select(func.count())
-                .select_from(AftersalesActionTask)
-                .join(
-                    AfterSalesOrder,
-                    AfterSalesOrder.after_sales_sn
-                    == AftersalesActionTask.after_sales_sn,
-                )
-                .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
-                .where(*filters)
-            )
-            or 0
+        return list_manual_todos(
+            self, page=page, page_size=page_size, task_status=task_status,
+            assignee=assignee, origin=origin, started_on=started_on,
+            ended_on=ended_on, keyword=keyword,
         )
-        rows = self.session.execute(
-            select(AftersalesActionTask, AfterSalesOrder, Shop)
-            .join(
-                AfterSalesOrder,
-                AfterSalesOrder.after_sales_sn
-                == AftersalesActionTask.after_sales_sn,
-            )
-            .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
-            .where(*filters)
-            .order_by(
-                AftersalesActionTask.updated_at.desc(),
-                AftersalesActionTask.id.desc(),
-            )
-            .offset((page - 1) * page_size)
-            .limit(page_size)
-        ).all()
-        from aftersales_workbench.services.return_todo_policy import return_problem_state
-
-        linked_tasks = self._tasks_by_order([order.after_sales_sn for _, order, _ in rows])
-        items = []
-        for task, order, shop in rows:
-            match = next((item for item in linked_tasks.get(order.after_sales_sn, [])
-                          if _enum_value(item.action_type) == "ERP_MATCH_RETURN_ORDER"), None)
-            items.append({
-                **self._serialize_manual_todo(task, order, shop),
-                **return_problem_state(task.payload or {}, order, match),
-            })
-        return {
-            "summary": self._manual_todo_summary(),
-            "assignees": self._manual_todo_assignees(),
-            "items": items,
-            "pagination": {
-                "page": page,
-                "page_size": page_size,
-                "total": total,
-                "pages": max(1, (total + page_size - 1) // page_size),
-            },
-            "last_updated_at": self._manual_todo_last_updated_at(),
-        }
 
     def get_order(self, after_sales_sn: str) -> dict[str, Any] | None:
         row = self.session.execute(

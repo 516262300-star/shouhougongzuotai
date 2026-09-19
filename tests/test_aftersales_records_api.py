@@ -313,7 +313,7 @@ def test_list_manual_todos_rejects_unknown_status() -> None:
     try:
         response = TestClient(app).get(
             "/api/v1/aftersales/manual-todos",
-            params={"task_status": "UNKNOWN"},
+            params={"task_status": "NOT_A_STATUS"},
         )
     finally:
         app.dependency_overrides.clear()

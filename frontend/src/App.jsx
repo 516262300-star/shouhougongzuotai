@@ -876,6 +876,7 @@ function ManualTodoSummary({ summary }) {
     { label: "待发送", value: summary.waiting ?? 0, tone: "orange" },
     { label: "已发送给业务员", value: summary.sent ?? 0, tone: "green" },
     { label: "发送失败", value: summary.failed ?? 0, tone: "orange" },
+    { label: "结果待确认", value: summary.unknown ?? 0, tone: "orange" },
     { label: "已取消", value: summary.cancelled ?? 0, tone: "blue" },
   ];
   return (
@@ -890,13 +891,13 @@ function ManualTodoFilters({ draft, setDraft, assignees, busy, onSubmit, onReset
   return (
     <form className="filters manual-filters" onSubmit={onSubmit}>
       <div className="filter-row filter-row-primary">
-        <label><span>发送状态</span><select value={draft.task_status} onChange={update("task_status")}><option value="">全部</option><option value="PENDING">待发送</option><option value="RUNNING">发送中</option><option value="SUCCEEDED">已发送</option><option value="FAILED">发送失败</option><option value="CANCELLED">已取消</option></select></label>
+        <label><span>发送状态</span><select value={draft.task_status} onChange={update("task_status")}><option value="">全部</option><option value="PENDING">待发送</option><option value="RUNNING">发送中</option><option value="UNKNOWN">结果待确认</option><option value="SUCCEEDED">已发送</option><option value="FAILED">发送失败</option><option value="CANCELLED">已取消</option></select></label>
         <label><span>对应业务员</span><select value={draft.assignee} onChange={update("assignee")}><option value="">全部</option>{assignees.map((name) => <option value={name} key={name}>{name}</option>)}</select></label>
-        <label><span>触发模块</span><select value={draft.origin} onChange={update("origin")}><option value="">全部</option><option value="module1">模块1·在途拦截</option><option value="module2">模块2·退货验收</option><option value="module3">模块3·未发货退款</option></select></label>
-        <div className="date-field"><span>待办生成时间</span><div className="date-range"><CalendarBlank size={16} /><input type="date" value={draft.started_on} onChange={update("started_on")} aria-label="待办开始日期" /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} aria-label="待办结束日期" /></div></div>
+        <label><span>触发模块</span><select value={draft.origin} onChange={update("origin")}><option value="">全部</option><option value="module1">模块1·在途拦截</option><option value="module2">模块2·退货验收</option><option value="module3">模块3·未发货退款</option><option value="shipment_reminder">发货20小时无物流提醒</option></select></label>
+        <div className="date-field"><span>待办记录时间</span><div className="date-range"><CalendarBlank size={16} /><input type="date" value={draft.started_on} onChange={update("started_on")} aria-label="待办开始日期" /><b>~</b><input type="date" value={draft.ended_on} onChange={update("ended_on")} aria-label="待办结束日期" /></div></div>
       </div>
       <div className="filter-row filter-row-secondary">
-        <label className="search-field"><MagnifyingGlass size={17} /><input value={draft.keyword} onChange={update("keyword")} placeholder="订单号 / 售后单 / 店铺 / 业务员 / 事项" /></label>
+        <label className="search-field"><MagnifyingGlass size={17} /><input value={draft.keyword} onChange={update("keyword")} placeholder="订单号 / 运单号 / 售后单 / 店铺 / 业务员 / 事项" /></label>
         <button type="button" className="button secondary" onClick={onReset}><ArrowCounterClockwise size={16} />重置</button>
         <button type="submit" className="button primary" disabled={busy}><MagnifyingGlass size={16} />查询</button>
       </div>
@@ -916,7 +917,7 @@ function ManualTodoTable({ items, selected, onSelect, loading, error, onRetry })
             <td className="manual-reason-cell" title={item.problem_message || item.reason}><div className="stacked-cell">{item.problem_label && <StatusTag tone={item.problem_tone}>{item.problem_label}</StatusTag>}<span>{item.problem_status === "RESOLVED" ? "已平账，无需按旧通知补单" : item.reason}</span></div></td>
             <td>{item.origin_label}</td>
             <td className="mono">{item.platform_order_sn}</td>
-            <td className="mono">{item.after_sales_sn}</td>
+            <td className="mono">{item.after_sales_sn || "—"}</td>
             <td title={item.shop_name}><span className="truncate">{item.shop_name}</span></td>
             <td>{formatDateTime(item.updated_at, true)}</td>
             <td><button className="link-button" type="button" onClick={(event) => { event.stopPropagation(); onSelect(item.task_id); }}>查看详情</button></td>
@@ -937,13 +938,13 @@ function ManualTodoDetail({ item }) {
       <div className="detail-scroll">
         <section className={`manual-delivery-card ${item.sent_to_assignee ? "delivery-sent" : "delivery-unsent"}`}>
           {item.sent_to_assignee ? <CheckCircle size={22} /> : <WarningCircle size={22} />}
-          <div><strong>{item.sent_to_assignee ? `已发送给 ${item.assignee}` : `尚未发送给 ${item.assignee}`}</strong><span>{item.sent_to_assignee ? `发送时间 ${formatDateTime(item.sent_at, true)}` : `当前状态：${item.status_label}`}</span></div>
+          <div><strong>{item.sent_to_assignee ? `已发送给 ${item.assignee}` : `尚未发送给 ${item.assignee}`}</strong><span>{item.sent_to_assignee ? `${item.sent_time_label || "发送时间"} ${formatDateTime(item.sent_at, true)}` : `当前状态：${item.status_label}`}</span></div>
         </section>
         {item.problem_label && <section className="detail-section"><h3>当前处理情况 <StatusTag tone={item.problem_tone}>{item.problem_label}</StatusTag></h3><p className="manual-reason-detail">{item.problem_message}</p>{item.problem_resolved_at && <dl><DetailRow label="解除核验时间" value={formatDateTime(item.problem_resolved_at, true)} /></dl>}</section>}
         <section className="detail-section"><h3>发送时的触发原因</h3><p className="manual-reason-detail">{item.reason}</p><dl><DetailRow label="原因代码" value={item.reason_code} /><DetailRow label="触发模块" value={item.origin_label} /><DetailRow label="对应业务员" value={item.assignee} /></dl></section>
         <section className="detail-section"><h3>发送给业务员的具体事项</h3><p className="manual-content-detail">{item.content}</p></section>
-        <section className="detail-section"><h3>关联订单</h3><dl><DetailRow label="平台订单号" value={item.platform_order_sn} /><DetailRow label="售后单号" value={item.after_sales_sn} /><DetailRow label="店铺" value={item.shop_name} /><DetailRow label="任务编号" value={item.task_id} /></dl></section>
-        <section className="detail-section"><h3>发送审计</h3><dl><DetailRow label="是否已发送" value={item.sent_to_assignee ? "是" : "否"} /><DetailRow label="ERP待办 ID" value={item.external_todo_id || "—"} /><DetailRow label="已尝试次数" value={item.attempts} /><DetailRow label="待办发起时间" value={formatDateTime(item.started_at, true)} /><DetailRow label="本地创建时间" value={formatDateTime(item.created_at, true)} /><DetailRow label="最近更新" value={formatDateTime(item.updated_at, true)} /></dl>{item.last_error && <div className={item.task_status === "CANCELLED" ? "manual-cancel-box" : "manual-error-box"}><strong>{item.task_status === "CANCELLED" ? "取消/未发送原因" : "发送失败原因"}</strong><span>{item.last_error}</span></div>}{item.cancel_reason && <div className="manual-cancel-box"><strong>取消原因</strong><span>{item.cancel_reason}</span></div>}</section>
+        <section className="detail-section"><h3>关联订单</h3><dl><DetailRow label="平台订单号" value={item.platform_order_sn} /><DetailRow label="售后单号" value={item.after_sales_sn || "—（普通订单）"} />{item.tracking_number && <DetailRow label="发货运单号" value={item.tracking_number} />}{item.shipped_at && <DetailRow label="发货时间" value={formatDateTime(item.shipped_at, true)} />}<DetailRow label="店铺" value={item.shop_name} /><DetailRow label="任务编号" value={item.task_id} /></dl></section>
+        <section className="detail-section"><h3>发送审计</h3><dl><DetailRow label="是否已发送" value={item.sent_to_assignee ? "是" : "否"} /><DetailRow label="ERP待办 ID" value={item.external_todo_id || "—"} /><DetailRow label="已尝试次数" value={item.attempts ?? "未单独记录"} /><DetailRow label="待办发起时间" value={formatDateTime(item.started_at, true)} /><DetailRow label="本地创建时间" value={formatDateTime(item.created_at, true)} /><DetailRow label="最近更新" value={formatDateTime(item.updated_at, true)} /></dl>{item.audit_note && <p className="manual-reason-detail">{item.audit_note}</p>}{item.last_error && <div className={item.task_status === "CANCELLED" ? "manual-cancel-box" : "manual-error-box"}><strong>{item.task_status === "CANCELLED" ? "取消/未发送原因" : "发送失败原因"}</strong><span>{item.last_error}</span></div>}{item.cancel_reason && <div className="manual-cancel-box"><strong>取消原因</strong><span>{item.cancel_reason}</span></div>}</section>
       </div>
     </aside>
   );
@@ -981,7 +982,7 @@ function ManualTodoWorkspace() {
   const reset = () => { const initial = createManualFilters(); setDraft(initial); setFilters(initial); setPage(1); };
   return (
     <>
-      <main className="workspace manual-workspace"><header className="topbar"><div className="page-title"><User size={22} /><h1>人工待办</h1><span className="read-only-badge">发送审计</span></div><div className="sync-status"><span />最近更新 {formatDateTime(data.last_updated_at, true)}</div></header><div className="workspace-body"><ManualTodoPublishing /><ManualTodoSummary summary={data.summary} /><ManualTodoFilters draft={draft} setDraft={setDraft} assignees={data.assignees ?? []} busy={loading} onSubmit={submit} onReset={reset} /><ManualTodoTable items={data.items ?? []} selected={selectedId} onSelect={setSelectedId} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} /><div className="workspace-actions"><span className="table-total">共 <strong>{data.pagination.total}</strong> 条人工待办</span><button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />刷新</button><Pagination pagination={data.pagination} onPage={(nextPage) => { if (nextPage >= 1 && nextPage <= data.pagination.pages) setPage(nextPage); }} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></div></main>
+      <main className="workspace manual-workspace"><header className="topbar"><div className="page-title"><User size={22} /><h1>人工待办</h1><span className="read-only-badge">发送审计</span></div><div className="sync-status"><span />最近更新 {formatDateTime(data.last_updated_at, true)}</div></header><div className="workspace-body"><ManualTodoPublishing /><ManualTodoSummary summary={data.summary} />{data.source_warnings?.map((warning) => <div className="monitor-alert monitor-alert-danger" key={warning}>{warning}</div>)}<ManualTodoFilters draft={draft} setDraft={setDraft} assignees={data.assignees ?? []} busy={loading} onSubmit={submit} onReset={reset} /><ManualTodoTable items={data.items ?? []} selected={selectedId} onSelect={setSelectedId} loading={loading} error={error} onRetry={() => setRefreshKey((key) => key + 1)} /><div className="workspace-actions"><span className="table-total">共 <strong>{data.pagination.total}</strong> 条人工待办</span><button type="button" className="button secondary" disabled={loading} onClick={() => setRefreshKey((key) => key + 1)}><ArrowsClockwise className={loading ? "spin" : ""} size={16} />刷新</button><Pagination pagination={data.pagination} onPage={(nextPage) => { if (nextPage >= 1 && nextPage <= data.pagination.pages) setPage(nextPage); }} onPageSize={(size) => { setPageSize(size); setPage(1); }} /></div></div></main>
       <ManualTodoDetail item={selected} />
     </>
   );
