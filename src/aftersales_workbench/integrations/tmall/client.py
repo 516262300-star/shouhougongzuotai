@@ -430,7 +430,7 @@ class TmallClient:
         fields = (
             "tid,status,seller_nick,consign_time,payment,total_fee,post_fee,orders.oid,orders.outer_iid,"
             "orders.outer_sku_id,orders.sku_properties_name,orders.title,orders.num,"
-            "orders.status,orders.consign_time,orders.payment"
+            "orders.status,orders.consign_time,orders.payment,orders.refund_status,orders.refund_id"
         )
         return self.execute_read(TAOBAO_TRADE_FULLINFO_GET, fields=fields, tid=tid)
 

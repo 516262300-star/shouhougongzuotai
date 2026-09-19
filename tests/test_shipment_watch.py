@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AutomationSwitch
 from aftersales_workbench.integrations.logistics.kuaidi100 import Kuaidi100NoTraceError
+from aftersales_workbench.workflows.shipment_refund import ShipmentSnapshot
 from aftersales_workbench.workflows.shipment_watch import ShipmentWatch
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentNoTraceNotice as Notice,
@@ -258,3 +259,43 @@ def test_separate_parcels_get_separate_reminders(setup):
     assert state.posts == 2
     watch.check_order(order, source, "店铺", publish=True)
     assert state.posts == 2
+
+
+@pytest.mark.parametrize("refund_on_call", [1, 2, 3])
+def test_full_refund_blocks_initial_check_owner_recheck_and_final_submission(setup, refund_on_call):
+    watch, session, order, source, state, parcel = setup
+    calls = 0
+
+    def refresh(sn):
+        nonlocal calls
+        calls += 1
+        if calls >= refund_on_call:
+            return ShipmentSnapshot(full_refund={"order_sn": sn, "refund_ids": ["refund-1"]})
+        return [parcel]
+
+    source.refresh = refresh
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 0
+    notice = session.scalar(select(Notice))
+    if refund_on_call == 1:
+        assert notice is None
+    else:
+        assert notice.status == "REFUNDED" and notice.todo_id is None
+
+
+def test_full_refund_keeps_sent_receipt_and_unknown_submission_audit(setup):
+    watch, session, order, source, state, parcel = setup
+    watch.check_order(order, source, "店铺", publish=True)
+    notice = session.scalar(select(Notice))
+    old_payload = dict(notice.payload)
+    sent_at = notice.updated_at
+    source.refresh = lambda sn: ShipmentSnapshot(full_refund={"order_sn": sn})
+    watch.check_order(order, source, "店铺", publish=True)
+    assert notice.status == "SENT" and notice.todo_id == "todo-1"
+    assert notice.updated_at == sent_at and notice.payload["content"] == old_payload["content"]
+    assert notice.payload["full_refund"]["order_sn"] == order.order_sn
+    notice.status = "UNKNOWN"
+    notice.todo_id = None
+    session.commit()
+    watch.check_order(order, source, "店铺", publish=True)
+    assert notice.status == "UNKNOWN" and state.posts == 1

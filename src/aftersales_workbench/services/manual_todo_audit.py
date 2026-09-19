@@ -78,7 +78,11 @@ def _index(session):
         .outerjoin(Shop, Shop.shop_code == Notice.shop_code)
         .where(
             # 已发现轨迹、未发布的提醒只保留后台核验记录，不进入人工待办及统计。
-            Notice.status != "TRACE_SEEN",
+            Notice.status.not_in(("TRACE_SEEN", "REFUNDED")),
+            or_(
+                Notice.payload["full_refund"]["order_sn"].as_string().is_(None),
+                Notice.status.in_(("SUBMITTING", "UNKNOWN")),
+            ),
         )
     )
     return union_all(aftersales, reminder).subquery(), True
@@ -93,6 +97,9 @@ def _shipment_item(notice, shop):
     }.get(notice.status, ("UNKNOWN", "结果待确认", "warning"))
     if sent:
         status, label, tone = "SUCCEEDED", "已发送", "success"
+    reason = payload.get("reason") or "发货满20小时仍无物流信息"
+    if payload.get("full_refund"):
+        reason = "已全额退款，不再催揽收；原提醒发送结果待确认"
     return {
         "task_id": f"shipment:{notice.notice_key}",
         "source": "shipment_reminder",
@@ -103,7 +110,7 @@ def _shipment_item(notice, shop):
         "origin": "shipment_reminder",
         "origin_label": "发货20小时无物流提醒",
         "reason_code": "SHIPMENT_NO_TRACE_20H",
-        "reason": payload.get("reason") or "发货满20小时仍无物流信息",
+        "reason": reason,
         "content": payload.get("content") or "尚未形成可发布内容，等待核验物流和原销售业务员",
         "tracking_number": notice.tracking_number,
         "shipped_at": _utc_iso(payload.get("shipped_at")),

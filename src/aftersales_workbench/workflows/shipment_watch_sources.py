@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from aftersales_workbench.workflows.shipment_refund import (
+    ShipmentSnapshot,
+    pdd_full_refund,
+    tmall_full_refund,
+)
+
 CN = ZoneInfo("Asia/Shanghai")
 
 
@@ -109,6 +115,8 @@ class ShipmentSource:
             ]
             if str(row.get("order_sn")) != sn:
                 raise ValueError("拼多多订单身份不匹配")
+            if evidence := pdd_full_refund(self.client, row):
+                return ShipmentSnapshot(full_refund=evidence)
             candidate = self.candidate(row)
             if candidate is None:
                 return []
@@ -120,6 +128,8 @@ class ShipmentSource:
             ]
             if str(trade.get("tid")) != sn:
                 raise ValueError("天猫订单身份不匹配")
+            if evidence := tmall_full_refund(self.client, trade):
+                return ShipmentSnapshot(full_refund=evidence)
             candidate = self.candidate(trade)
             if candidate is None:
                 return []

@@ -128,6 +128,12 @@ class ShipmentWatch:
         parcels = source.refresh(order.order_sn)
         now = self.now()
         sent = 0
+        if self._record_full_refund(order, parcels):
+            order.checks += 1
+            order.last_error = None
+            order.next_check_at = now + timedelta(days=1)
+            self.session.commit()
+            return 0
         for parcel in parcels:
             if parcel.shipped_at > now:
                 raise ValueError("发货时间来自未来")
@@ -138,7 +144,7 @@ class ShipmentWatch:
             if notice and notice.status in {"SUBMITTING", "UNKNOWN"}:
                 self._reconcile(notice)
                 continue
-            if notice and notice.status in {"SENT", "TRACE_SEEN"}:
+            if notice and notice.status in {"SENT", "TRACE_SEEN", "REFUNDED"}:
                 continue
             evidence = self._trace_absent(parcel)
             if notice is None:
@@ -175,6 +181,8 @@ class ShipmentWatch:
             require_publish_enabled(self.session, self.settings)
             # 归属查询期间可能已出现物流或退款/换单，发布前重新核对。
             fresh = source.refresh(order.order_sn)
+            if self._record_full_refund(order, fresh):
+                break
             if parcel not in fresh:
                 notice.last_error = "发布前订单或包裹已变化，等待下一轮核对"
                 self.session.commit()
@@ -198,8 +206,13 @@ class ShipmentWatch:
                               "checked_at": checked_at.isoformat(), "evidence": evidence}
             self.session.commit()
 
-            def before_publish(key=key, checked_at=checked_at):
+            def before_publish(key=key, checked_at=checked_at, parcel=parcel):
                 require_publish_enabled(self.session, self.settings)
+                final = source.refresh(order.order_sn)
+                if self._record_full_refund(order, final):
+                    raise ManualTodoPublishingPaused("订单已全额退款成功，不再催揽收")
+                if parcel not in final:
+                    raise ManualTodoPublishingPaused("提交前订单或包裹已变化，留待重新核验")
                 if self.now() - checked_at > timedelta(seconds=120):
                     raise ManualTodoPublishingPaused("物流核验已超过120秒，留待下轮重查")
                 changed = self.session.execute(update(Notice).where(
@@ -223,7 +236,8 @@ class ShipmentWatch:
                 self.session.refresh(notice)
                 if notice.status == "SUBMITTING":
                     notice.status = "UNKNOWN"
-                notice.last_error = f"{type(exc).__name__}: {str(exc)[:350]}"
+                if notice.status != "REFUNDED":
+                    notice.last_error = f"{type(exc).__name__}: {str(exc)[:350]}"
             finally:
                 client.close()
             notice.updated_at = self.now()
@@ -238,6 +252,26 @@ class ShipmentWatch:
         order.next_check_at = now + (timedelta(minutes=5) if active else timedelta(days=1))
         self.session.commit()
         return sent
+
+    def _record_full_refund(self, order, snapshot):
+        evidence = getattr(snapshot, "full_refund", None)
+        if not evidence:
+            return False
+        if evidence.get("order_sn") != order.order_sn:
+            raise ValueError("全额退款证据订单不匹配")
+        for notice in self.session.scalars(select(Notice).where(
+            Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
+        )):
+            notice.payload = {**notice.payload, "full_refund": {
+                **evidence, "checked_at": self.now().isoformat(),
+            }}
+            if notice.status == "PENDING":
+                notice.status = "REFUNDED"
+                notice.last_error = None
+                notice.updated_at = self.now()
+            # 已发送/结果不明保留原状态、远端ID和确认时间；不能伪称远端已撤回。
+        self.session.commit()
+        return True
 
     def check_due(self, sources, *, publish=False, limit=200):
         # 即使订单关闭或运单被替换，原未知请求也只能独立回查，不能失去审计。
