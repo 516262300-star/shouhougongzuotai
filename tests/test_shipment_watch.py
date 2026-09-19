@@ -185,3 +185,47 @@ def test_order_source_does_not_filter_to_aftersales():
 
 def test_timezone_is_china_not_host_local():
     assert utc_time("2026-09-19 16:00:00") == NOW
+
+
+@pytest.mark.parametrize("total,raises", [(0, False), (1, True)])
+def test_empty_tmall_list_is_valid_only_when_total_is_zero(total, raises):
+    source = ShipmentSource("TMALL", SimpleNamespace(execute_read=lambda *a, **k: {
+        "trades_sold_increment_get_response": {"total_results": total, "trades": {}},
+    }))
+    if raises:
+        with pytest.raises(ValueError, match="总数与列表"):
+            list(source.list_window(NOW-timedelta(minutes=30), NOW))
+    else:
+        assert list(source.list_window(NOW-timedelta(minutes=30), NOW)) == [[]]
+
+
+def test_changed_parcel_during_owner_lookup_is_not_sent(setup):
+    watch, session, order, source, state, parcel = setup
+    def resolve(sn):
+        source.refresh = lambda sn: [replace(parcel, tracking_number="new-tracking")]
+        return SimpleNamespace(status="matched", sales_owner="业务甲")
+    watch.owners.resolve = resolve
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 0
+
+
+def test_separate_parcels_get_separate_reminders(setup):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "TMALL"
+    source.refresh = lambda sn: [parcel, replace(parcel, tracking_number="second-tracking")]
+    # 分别核验正确任务的请求前状态。
+    original = watch.todo_factory
+    def factory(before):
+        client = original(before)
+        def create(request):
+            before()
+            assert session.scalar(select(Notice).where(Notice.status == "SUBMITTING"))
+            state.posts += 1
+            return SimpleNamespace(todo_id=f"todo-{state.posts}", created=True)
+        client.create_todo = create
+        return client
+    watch.todo_factory = factory
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 2
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 2

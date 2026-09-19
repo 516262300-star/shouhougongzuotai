@@ -30,7 +30,7 @@ class Parcel:
 
 
 def _rows(node, key):
-    if node is None:
+    if node is None or node == {}:
         return []
     value = node.get(key) if isinstance(node, dict) else None
     if not isinstance(value, list) or any(not isinstance(x, dict) for x in value):
@@ -67,6 +67,8 @@ class ShipmentSource:
                 total = body.get("total_results")
             if not isinstance(total, int) or total < 0:
                 raise ValueError("订单增量缺少总数，不能确认分页完整")
+            if (total > 0 and not rows) or (total == 0 and rows):
+                raise ValueError("订单增量总数与列表不一致")
             fingerprint = tuple(str(r.get("order_sn") or r.get("tid") or "") for r in rows)
             if rows and (not all(fingerprint) or fingerprint in seen):
                 raise ValueError("订单增量分页重复或缺少订单号")
@@ -81,10 +83,14 @@ class ShipmentSource:
     def candidate(self, row):
         sn = str(row.get("order_sn") if self.platform == "PDD" else row.get("tid") or "")
         if self.platform == "PDD":
+            if not isinstance(row.get("order_status"), int):
+                raise ValueError("拼多多订单状态缺失或未识别")
             if row.get("order_status") != 2 or row.get("refund_status") == 4:
                 return None
             shipped = row.get("shipping_time")
         else:
+            if not row.get("status"):
+                raise ValueError("天猫订单状态缺失")
             if row.get("status") not in {"WAIT_BUYER_CONFIRM_GOODS", "SELLER_CONSIGNED_PART"}:
                 return None
             times = [row.get("consign_time")]
