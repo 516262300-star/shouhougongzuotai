@@ -57,6 +57,7 @@ def setup():
                 state.posts += 1
                 assert session.scalar(select(Notice)).status == "SUBMITTING"
                 state.content = request.content
+                state.request = request
                 if state.unknown:
                     raise TimeoutError("断线")
                 return SimpleNamespace(todo_id="todo-1", created=True)
@@ -91,6 +92,37 @@ def test_sent_reminder_is_not_repeated_after_owner_change(setup):
     watch.check_order(order, source, "店铺", publish=True)
     assert state.posts == 1
     assert session.scalar(select(Notice)).assignee == "业务甲"
+
+
+def test_shipment_text_has_no_internal_code_but_keeps_legacy_deduplication(setup):
+    watch, session, order, source, state, parcel = setup
+    watch.check_order(order, source, "店铺", publish=True)
+    notice = session.scalar(select(Notice))
+    assert state.content.startswith("【揽收提醒】 店铺，订单order-1，运单tracking-1")
+    assert notice.notice_key[:24] not in state.content and "【揽收提醒:" not in state.content
+    assert state.request.marker in state.content
+    assert state.request.legacy_markers == (f"【揽收提醒:{notice.notice_key[:24]}】",)
+
+
+def test_unknown_shipment_reconciles_old_and_clean_business_text_without_resending(setup):
+    watch, session, order, source, state, parcel = setup
+    state.unknown = True
+    watch.check_order(order, source, "店铺", publish=True)
+    notice = session.scalar(select(Notice))
+    public = notice.payload["marker"]
+    notice.payload = {**notice.payload, "marker": notice.payload["legacy_markers"][0],
+                      "legacy_markers": []}
+    session.commit()
+    queried = []
+
+    def find(owner, marker):
+        queried.append(marker)
+        return "existing-clean-todo" if marker == public else None
+
+    watch.todo_factory = lambda before: SimpleNamespace(find_existing=find, close=lambda: None)
+    watch.check_order(order, source, "店铺", publish=True)
+    assert notice.status == "SENT" and notice.todo_id == "existing-clean-todo"
+    assert queried == [notice.payload["marker"], public] and state.posts == 1
 
 
 def test_trace_seen_cancels_pending_and_latches(setup):

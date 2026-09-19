@@ -114,6 +114,18 @@ def test_shipment_reminder_is_searchable_without_fabricating_aftersales_or_write
     assert list(db.execute(select(Notice.__table__)).mappings()) == before
 
 
+def test_old_shipment_code_is_hidden_without_changing_original_sent_content(records):
+    service, db = records
+    notice = db.get(Notice, "sent")
+    business = "测试店，订单ordinary-sent，运单track-sent。请催揽收。"
+    raw = f"【揽收提醒:0123456789abcdef01234567】 {business}"
+    notice.payload = {**notice.payload, "content": raw}
+    db.commit()
+    result = service.list_manual_todos(page=1, page_size=15, keyword="ordinary-sent")
+    assert result["items"][0]["content"] == f"【揽收提醒】 {business}"
+    assert notice.payload["content"] == raw and notice.todo_id == "new-remote"
+
+
 def test_unknown_states_are_never_reported_as_sent_and_trace_only_rows_are_hidden(records):
     service, db = records
     result = service.list_manual_todos(page=1, page_size=20)

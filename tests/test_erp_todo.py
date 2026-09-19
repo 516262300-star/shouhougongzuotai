@@ -179,3 +179,45 @@ def test_erp_todo_client_rejects_unconfirmed_save() -> None:
     with pytest.raises(ErpTodoPublishError, match="保存成功凭证"):
         client.create_todo(_request())
     client.close()
+
+
+@pytest.mark.parametrize("existing", ["legacy", "clean", None])
+def test_shipment_business_marker_confirms_clean_body_and_preserves_old_dedup(existing):
+    from urllib.parse import parse_qs
+
+    marker = "【揽收提醒】 测试店，订单order-1，运单track-1（384）。"
+    legacy = "【揽收提醒:0123456789abcdef01234567】"
+    request = ErpTodoRequest(assignee="业务甲", started_at="2026-09-19 17:00:00",
+                             content=f"{marker}请联系仓库催揽收。", marker=marker,
+                             legacy_markers=(legacy,))
+    posts = []
+
+    def handler(req):
+        path = req.url.path
+        if path.endswith("loginpage"):
+            return httpx.Response(200, text="登录")
+        if path.endswith("loginact"):
+            return httpx.Response(200, json={"code": 2})
+        if path.endswith("stdview/ptlhykd"):
+            text = (
+                legacy if existing == "legacy" else marker if existing == "clean" or posts else ""
+            )
+            return httpx.Response(200, text=_row(text) if text else "<table></table>")
+        if path.endswith("newview"):
+            return httpx.Response(200, text="发布待办")
+        if path.endswith("stdnew"):
+            data = parse_qs(req.content.decode())
+            assert data["sx"] == [request.content] and legacy not in req.content.decode()
+            posts.append(data)
+            return httpx.Response(200, text="保存成功")
+        raise AssertionError(path)
+
+    client = ErpTodoClient(base_url="https://ldswj.test", username="test", password="test",
+                           http_client=httpx.Client(base_url="https://ldswj.test",
+                           transport=httpx.MockTransport(handler)))
+    try:
+        result = client.create_todo(request)
+        assert result.todo_id == "7791069" and result.created == (existing is None)
+        assert len(posts) == int(existing is None)
+    finally:
+        client.close()

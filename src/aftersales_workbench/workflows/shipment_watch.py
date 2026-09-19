@@ -11,6 +11,7 @@ from aftersales_workbench.services.manual_todo_control import (
     ManualTodoPublishingPaused,
     require_publish_enabled,
 )
+from aftersales_workbench.services.shipment_todo_text import shipment_business_marker
 from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentNoTraceNotice as Notice,
@@ -115,7 +116,18 @@ class ShipmentWatch:
             return
         client = self.todo_factory(None)
         try:
-            todo_id = client.find_existing(notice.assignee, notice.payload["marker"])
+            payload = notice.payload
+            markers = [payload["marker"], *payload.get("legacy_markers", ())]
+            if payload.get("shop_name") and payload.get("carrier"):
+                markers.append(shipment_business_marker(
+                    payload["shop_name"], notice.order_sn, notice.tracking_number,
+                    payload["carrier"],
+                ))
+            todo_id = None
+            for candidate in dict.fromkeys(markers):
+                todo_id = client.find_existing(notice.assignee, candidate)
+                if todo_id:
+                    break
             notice.status = "SENT" if todo_id else "UNKNOWN"
             notice.todo_id = todo_id
             notice.last_error = None if todo_id else "原请求结果待核实，只读回查，不重新发布"
@@ -160,9 +172,13 @@ class ShipmentWatch:
                 self.session.commit()
                 continue
             deadline = parcel.shipped_at + REFERENCE_DEADLINE
-            marker = f"【揽收提醒:{key[:24]}】"
+            marker = shipment_business_marker(
+                shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
+            )
+            legacy_markers = (f"【揽收提醒:{key[:24]}】",)
             notice.payload = {
                 "marker": marker, "source": source.platform, "shop_name": shop_name,
+                "legacy_markers": list(legacy_markers),
                 "shipped_at": parcel.shipped_at.isoformat(), "deadline": deadline.isoformat(),
                 "checked_at": now.isoformat(), "evidence": evidence,
                 "reason": "发货满20小时仍无物流信息", "carrier": parcel.carrier,
@@ -197,8 +213,7 @@ class ShipmentWatch:
             minutes_left = max(0, int((deadline - checked_at).total_seconds() / 60))
             timing = "已超过发货后24小时" if overdue else f"距发货后24小时约{minutes_left}分钟"
             content = (
-                f"{marker} {shop_name}，订单{order.order_sn}，运单{parcel.tracking_number}"
-                f"（{parcel.carrier}）。发货时间：{platform_time(parcel.shipped_at)}；"
+                f"{marker}发货时间：{platform_time(parcel.shipped_at)}；"
                 f"发货满20小时仍未查到物流信息，{timing}。"
                 "请联系仓库或快递核实是否交运、催促实际揽收并回传轨迹。"
             )
@@ -228,6 +243,7 @@ class ShipmentWatch:
                 receipt = client.create_todo(ErpTodoRequest(
                     assignee=notice.assignee, started_at=platform_time(checked_at),
                     marker=marker, content=content,
+                    legacy_markers=legacy_markers,
                 ))
                 notice.status, notice.todo_id = "SENT", receipt.todo_id
                 notice.last_error = None

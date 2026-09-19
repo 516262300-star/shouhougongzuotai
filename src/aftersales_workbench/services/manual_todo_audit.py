@@ -7,6 +7,7 @@ from sqlalchemy import String, case, cast, func, inspect, literal, or_, select, 
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder, Shop
 from aftersales_workbench.services.return_todo_policy import return_problem_state
+from aftersales_workbench.services.shipment_todo_text import visible_shipment_text
 from aftersales_workbench.workflows.shipment_watch_models import ShipmentNoTraceNotice as Notice
 
 
@@ -111,7 +112,8 @@ def _shipment_item(notice, shop):
         "origin_label": "发货20小时无物流提醒",
         "reason_code": "SHIPMENT_NO_TRACE_20H",
         "reason": reason,
-        "content": payload.get("content") or "尚未形成可发布内容，等待核验物流和原销售业务员",
+        "content": visible_shipment_text(payload.get("content") or "")
+        or "尚未形成可发布内容，等待核验物流和原销售业务员",
         "tracking_number": notice.tracking_number,
         "shipped_at": _utc_iso(payload.get("shipped_at")),
         "deadline_at": _utc_iso(payload.get("deadline")),
