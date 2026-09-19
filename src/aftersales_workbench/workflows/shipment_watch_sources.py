@@ -86,7 +86,8 @@ class ShipmentSource:
         if self.platform == "PDD":
             if not isinstance(row.get("order_status"), int):
                 raise ValueError("拼多多订单状态缺失或未识别")
-            if row.get("order_status") != 2 or row.get("refund_status") == 4:
+            # 退款状态不能区分部分退款；仍在履约的已发货单继续监控。
+            if row.get("order_status") != 2:
                 return None
             shipped = row.get("shipping_time")
         else:

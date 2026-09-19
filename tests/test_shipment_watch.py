@@ -187,6 +187,12 @@ def test_timezone_is_china_not_host_local():
     assert utc_time("2026-09-19 16:00:00") == NOW
 
 
+def test_refund_label_does_not_hide_a_still_shipped_order():
+    source = ShipmentSource("PDD", None)
+    assert source.candidate({"order_sn": "1", "order_status": 2, "refund_status": 4,
+                             "shipping_time": "2026-09-18 20:00:00"}) is not None
+
+
 @pytest.mark.parametrize("total,raises", [(0, False), (1, True)])
 def test_empty_tmall_list_is_valid_only_when_total_is_zero(total, raises):
     source = ShipmentSource("TMALL", SimpleNamespace(execute_read=lambda *a, **k: {
