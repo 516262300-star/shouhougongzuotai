@@ -55,12 +55,12 @@ def setup():
                 if before:
                     before()
                 state.posts += 1
-                assert session.scalar(select(Notice)).status == "SUBMITTING"
+                assert session.scalar(select(Notice).where(Notice.status == "SUBMITTING"))
                 state.content = request.content
                 state.request = request
                 if state.unknown:
                     raise TimeoutError("断线")
-                return SimpleNamespace(todo_id="todo-1", created=True)
+                return SimpleNamespace(todo_id=f"todo-{state.posts}", created=True)
             return SimpleNamespace(create_todo=create, close=lambda: None,
                                    find_existing=lambda a, m: state.found)
 
@@ -101,7 +101,8 @@ def test_shipment_text_has_no_internal_code_but_keeps_legacy_deduplication(setup
     assert state.content.startswith("【揽收提醒】 店铺，订单order-1，运单tracking-1")
     assert notice.notice_key[:24] not in state.content and "【揽收提醒:" not in state.content
     assert state.request.marker in state.content
-    assert state.request.legacy_markers == (f"【揽收提醒:{notice.notice_key[:24]}】",)
+    assert f"【揽收提醒:{notice.notice_key[:24]}】" in state.request.legacy_markers
+    assert any("（zhongtong）" in m for m in state.request.legacy_markers)
 
 
 def test_unknown_shipment_reconciles_old_and_clean_business_text_without_resending(setup):
@@ -293,7 +294,7 @@ def test_separate_parcels_get_separate_reminders(setup):
     assert state.posts == 2
 
 
-@pytest.mark.parametrize("refund_on_call", [1, 2, 3])
+@pytest.mark.parametrize("refund_on_call", [1, 2, 3, 4, 5])
 def test_full_refund_blocks_initial_check_owner_recheck_and_final_submission(setup, refund_on_call):
     watch, session, order, source, state, parcel = setup
     calls = 0
@@ -331,3 +332,98 @@ def test_full_refund_keeps_sent_receipt_and_unknown_submission_audit(setup):
     session.commit()
     watch.check_order(order, source, "店铺", publish=True)
     assert notice.status == "UNKNOWN" and state.posts == 1
+
+def package_orders(setup, *, second_carrier=None):
+    watch, session, order, source, state, parcel = setup
+    second = replace(parcel, order_sn="order-2", carrier=second_carrier or parcel.carrier)
+    parcels = {parcel.order_sn: parcel, second.order_sn: second}
+    source.refresh = lambda sn: [parcels[sn]]
+    other = Order(shop_code=order.shop_code, order_sn=second.order_sn,
+                  shipped_at=second.shipped_at, next_check_at=NOW, checks=0)
+    session.add(other)
+    session.commit()
+    return other, parcels
+
+
+def test_same_package_batch_sends_one_todo_with_all_orders(setup):
+    watch, session, order, source, state, parcel = setup
+    package_orders(setup, second_carrier="中通")
+    result = watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
+    assert result == {"checked": 2, "created": 1, "failed": 0}
+    assert state.posts == 1 and "相关订单：order-1、order-2" in state.content
+    rows = list(session.scalars(select(Notice)))
+    primary = next(n for n in rows if n.status == "SENT")
+    alias = next(n for n in rows if n.status == "MERGED")
+    assert alias.payload["merged_into"] == primary.notice_key
+    assert alias.todo_id == primary.todo_id == "todo-1"
+    assert primary.payload["package_order_sns"] == ["order-1", "order-2"]
+    assert any("order-2" in m for m in state.request.legacy_markers)
+
+
+@pytest.mark.parametrize("unknown", [False, True])
+def test_later_order_reuses_sent_or_uncertain_package_without_new_post(setup, unknown):
+    watch, session, order, source, state, parcel = setup
+    other, parcels = package_orders(setup)
+    state.unknown = unknown
+    watch.check_order(order, source, "店铺", publish=True)
+    watch.check_order(other, source, "店铺", publish=True)
+    assert state.posts == 1
+    primary = session.scalar(select(Notice).where(Notice.order_sn == "order-1"))
+    assert primary.status == ("UNKNOWN" if unknown else "SENT")
+    assert primary.payload["package_order_sns"] == ["order-1", "order-2"]
+    if unknown:
+        state.found = "recovered-id"
+        watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
+        assert primary.status == "SENT" and state.posts == 1
+        alias = session.scalar(select(Notice).where(Notice.order_sn == "order-2"))
+        assert alias.todo_id == "recovered-id"
+
+
+@pytest.mark.parametrize("different", ["owner", "carrier"])
+def test_same_tracking_with_different_owner_or_carrier_stays_separate(setup, different):
+    watch, session, order, source, state, parcel = setup
+    package_orders(setup, second_carrier="shentong" if different == "carrier" else None)
+    if different == "owner":
+        watch.owners.resolve = lambda sn: SimpleNamespace(status="matched", sales_owner=sn)
+    watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
+    assert state.posts == 2
+    assert all(n.status == "SENT" and not n.payload.get("merged_into")
+               for n in session.scalars(select(Notice)))
+
+
+def test_platform_carrier_code_is_not_in_business_text(setup):
+    watch, session, order, source, state, parcel = setup
+    watch.settings.kuaidi100_carrier_map = {"384": "jtexpress"}
+    source.refresh = lambda sn: [replace(parcel, carrier="384")]
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 1 and "384" not in state.content
+    assert any("（384）" in m for m in state.request.legacy_markers)
+
+
+def test_full_refund_of_primary_preserves_other_package_order(setup):
+    watch, session, order, source, state, parcel = setup
+    other, parcels = package_orders(setup)
+    watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
+    primary = session.scalar(select(Notice).where(Notice.status == "SENT"))
+    source.refresh = lambda sn: (ShipmentSnapshot(full_refund={"order_sn": sn})
+                                 if sn == primary.order_sn else [parcels[sn]])
+    watch.check_order(order, source, "店铺", publish=True)
+    assert primary.payload["package_order_sns"] == ["order-2"]
+    assert primary.payload["package_active_count"] == 1
+    source.refresh = lambda sn: ShipmentSnapshot(full_refund={"order_sn": sn})
+    watch.check_order(other, source, "店铺", publish=True)
+    assert primary.payload["package_active_count"] == 0 and state.posts == 1
+
+
+def test_trace_appearing_in_final_package_check_blocks_entire_group(setup):
+    watch, session, order, source, state, parcel = setup
+    package_orders(setup)
+    original = watch.todo_factory
+    def factory(before):
+        if before:
+            state.trace = True
+        return original(before)
+    watch.todo_factory = factory
+    watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
+    assert state.posts == 0
+    assert all(n.status == "TRACE_SEEN" for n in session.scalars(select(Notice)))

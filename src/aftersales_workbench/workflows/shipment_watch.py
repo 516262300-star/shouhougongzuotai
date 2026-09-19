@@ -11,7 +11,11 @@ from aftersales_workbench.services.manual_todo_control import (
     ManualTodoPublishingPaused,
     require_publish_enabled,
 )
-from aftersales_workbench.services.shipment_todo_text import shipment_business_marker
+from aftersales_workbench.services.shipment_todo_text import (
+    legacy_shipment_marker,
+    shipment_business_marker,
+)
+from aftersales_workbench.workflows import shipment_packages
 from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentNoTraceNotice as Notice,
@@ -119,10 +123,9 @@ class ShipmentWatch:
             payload = notice.payload
             markers = [payload["marker"], *payload.get("legacy_markers", ())]
             if payload.get("shop_name") and payload.get("carrier"):
-                markers.append(shipment_business_marker(
-                    payload["shop_name"], notice.order_sn, notice.tracking_number,
-                    payload["carrier"],
-                ))
+                for formatter in (shipment_business_marker, legacy_shipment_marker):
+                    markers.append(formatter(payload["shop_name"], notice.order_sn,
+                                             notice.tracking_number, payload["carrier"]))
             todo_id = None
             for candidate in dict.fromkeys(markers):
                 todo_id = client.find_existing(notice.assignee, candidate)
@@ -132,11 +135,12 @@ class ShipmentWatch:
             notice.todo_id = todo_id
             notice.last_error = None if todo_id else "原请求结果待核实，只读回查，不重新发布"
             notice.updated_at = self.now()
+            shipment_packages.refresh_merged(self.session, notice, self.now())
             self.session.commit()
         finally:
             client.close()
 
-    def check_order(self, order, source, shop_name, *, publish=False):
+    def check_order(self, order, source, shop_name, *, publish=False, sources=None):
         parcels = source.refresh(order.order_sn)
         now = self.now()
         sent = 0
@@ -156,7 +160,7 @@ class ShipmentWatch:
             if notice and notice.status in {"SUBMITTING", "UNKNOWN"}:
                 self._reconcile(notice)
                 continue
-            if notice and notice.status in {"SENT", "TRACE_SEEN", "REFUNDED"}:
+            if notice and notice.status in {"SENT", "TRACE_SEEN", "REFUNDED", "MERGED"}:
                 continue
             evidence = self._trace_absent(parcel)
             if notice is None:
@@ -175,7 +179,9 @@ class ShipmentWatch:
             marker = shipment_business_marker(
                 shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
             )
-            legacy_markers = (f"【揽收提醒:{key[:24]}】",)
+            legacy_markers = (f"【揽收提醒:{key[:24]}】", legacy_shipment_marker(
+                shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
+            ))
             notice.payload = {
                 "marker": marker, "source": source.platform, "shop_name": shop_name,
                 "legacy_markers": list(legacy_markers),
@@ -195,6 +201,15 @@ class ShipmentWatch:
             if not publish:
                 continue
             require_publish_enabled(self.session, self.settings)
+            siblings = shipment_packages.members(self.session, notice, self.settings)
+            anchor = shipment_packages.existing_anchor(siblings)
+            if anchor:
+                shipment_packages.merge(self.session, anchor, siblings, self.now())
+                self.session.commit()
+                continue
+            sources = sources or {order.shop_code: (source, shop_name)}
+            group = [n for n in siblings if n.status == "PENDING"
+                     and not n.payload.get("full_refund") and n.shop_code in sources]
             # 归属查询期间可能已出现物流或退款/换单，发布前重新核对。
             fresh = source.refresh(order.order_sn)
             if self._record_full_refund(order, fresh):
@@ -209,25 +224,49 @@ class ShipmentWatch:
                 self.session.commit()
                 continue
             checked_at = self.now()
+            # 同批已准备好的订单逐笔确认包裹和归属，再合成一个业务员待办。
+            try:
+                self._verify_package(group, sources, notice.assignee)
+            except ManualTodoPublishingPaused as exc:
+                notice.last_error = str(exc)
+                self.session.commit()
+                continue
+            earliest = min(datetime.fromisoformat(n.payload["shipped_at"]) for n in group)
+            deadline = earliest + REFERENCE_DEADLINE
+            legacy_markers = tuple(dict.fromkeys(
+                m for n in group
+                for m in [n.payload["marker"], *n.payload.get("legacy_markers", ())]
+                if m != marker
+            ))
             overdue = checked_at >= deadline
             minutes_left = max(0, int((deadline - checked_at).total_seconds() / 60))
             timing = "已超过发货后24小时" if overdue else f"距发货后24小时约{minutes_left}分钟"
             content = (
-                f"{marker}发货时间：{platform_time(parcel.shipped_at)}；"
+                f"{marker}{'最早' if len(group) > 1 else ''}发货时间：{platform_time(earliest)}；"
+                + (f"相关订单：{'、'.join(sorted({n.order_sn for n in group}))}。"
+                   if len(group) > 1 else "") +
                 f"发货满20小时仍未查到物流信息，{timing}。"
                 "请联系仓库或快递核实是否交运、催促实际揽收并回传轨迹。"
             )
             notice.payload = {**notice.payload, "content": content,
+                              "legacy_markers": list(legacy_markers),
                               "checked_at": checked_at.isoformat(), "evidence": evidence}
             self.session.commit()
 
-            def before_publish(key=key, checked_at=checked_at, parcel=parcel):
+            def before_publish(key=key, checked_at=checked_at, parcel=parcel, group=group,
+                               notice=notice, sources=sources):
                 require_publish_enabled(self.session, self.settings)
                 final = source.refresh(order.order_sn)
                 if self._record_full_refund(order, final):
                     raise ManualTodoPublishingPaused("订单已全额退款成功，不再催揽收")
                 if parcel not in final:
                     raise ManualTodoPublishingPaused("提交前订单或包裹已变化，留待重新核验")
+                self._verify_package(group, sources, notice.assignee)
+                if self._trace_absent(parcel) is None:
+                    for member in group:
+                        member.status, member.last_error = "TRACE_SEEN", None
+                    self.session.commit()
+                    raise ManualTodoPublishingPaused("提交前已发现物流轨迹，不再催揽收")
                 if self.now() - checked_at > timedelta(seconds=120):
                     raise ManualTodoPublishingPaused("物流核验已超过120秒，留待下轮重查")
                 changed = self.session.execute(update(Notice).where(
@@ -236,6 +275,7 @@ class ShipmentWatch:
                 if changed.rowcount != 1:
                     self.session.rollback()
                     raise ManualTodoPublishingPaused("提醒已被领取或处理，禁止重复发布")
+                shipment_packages.merge(self.session, notice, group, self.now())
                 self.session.commit()  # 写请求之前持久化，崩溃后只能回查。
 
             client = self.todo_factory(before_publish)
@@ -247,6 +287,7 @@ class ShipmentWatch:
                 ))
                 notice.status, notice.todo_id = "SENT", receipt.todo_id
                 notice.last_error = None
+                shipment_packages.merge(self.session, notice, group, self.now())
                 sent += int(receipt.created)
             except Exception as exc:
                 self.session.refresh(notice)
@@ -286,8 +327,31 @@ class ShipmentWatch:
                 notice.last_error = None
                 notice.updated_at = self.now()
             # 已发送/结果不明保留原状态、远端ID和确认时间；不能伪称远端已撤回。
+            shipment_packages.refresh_merged(self.session, notice, self.now())
         self.session.commit()
         return True
+
+    def _verify_package(self, group, sources, assignee):
+        if not group:
+            raise ManualTodoPublishingPaused("没有可核验的包裹订单")
+        for member in group:
+            source, _ = sources[member.shop_code]
+            snapshot = source.refresh(member.order_sn)
+            watched = self.session.get(Order, (member.shop_code, member.order_sn))
+            if watched is None:
+                raise ManualTodoPublishingPaused("缺少订单监控记录，等待重新核验")
+            if self._record_full_refund(watched, snapshot):
+                raise ManualTodoPublishingPaused("同包裹订单已全额退款，重新整理提醒范围")
+            matching = [p for p in snapshot if p.tracking_number == member.tracking_number
+                        and resolve_logistics_carrier(
+                            p.carrier, self.settings.kuaidi100_carrier_map)
+                        == shipment_packages.carrier_code(member, self.settings)]
+            if (len(matching) != 1 or self.now() - matching[0].shipped_at < REMIND_AFTER
+                    or matching[0].shipped_at.isoformat() != member.payload.get("shipped_at")):
+                raise ManualTodoPublishingPaused("同包裹订单发货信息已变化，等待重新核验")
+            owner = self.owners.resolve(member.order_sn)
+            if owner.status != "matched" or owner.sales_owner != assignee:
+                raise ManualTodoPublishingPaused("同包裹订单业务员已变化，等待重新核验")
 
     def check_due(self, sources, *, publish=False, limit=200):
         # 即使订单关闭或运单被替换，原未知请求也只能独立回查，不能失去审计。
@@ -315,10 +379,16 @@ class ShipmentWatch:
         ).order_by(urgent, Order.next_check_at, Order.shop_code, Order.order_sn)
             .limit(limit)).all()
         result = {"checked": 0, "created": 0, "failed": 0}
+        prepared = []
         for order in orders:
             source, name = sources[order.shop_code]
             try:
-                result["created"] += self.check_order(order, source, name, publish=publish)
+                self.check_order(order, source, name, publish=False)
+                if self.session.scalar(select(Notice.notice_key).where(
+                    Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
+                    Notice.status == "PENDING", Notice.assignee.is_not(None),
+                ).limit(1)):
+                    prepared.append(order)
             except Exception as exc:
                 self.session.rollback()
                 order.last_error = f"{type(exc).__name__}: {str(exc)[:350]}"
@@ -326,4 +396,16 @@ class ShipmentWatch:
                 self.session.commit()
                 result["failed"] += 1
             result["checked"] += 1
+        if publish:
+            for order in prepared:
+                source, name = sources[order.shop_code]
+                try:
+                    result["created"] += self.check_order(order, source, name, publish=True,
+                                                          sources=sources)
+                except Exception as exc:
+                    self.session.rollback()
+                    order.last_error = f"{type(exc).__name__}: {str(exc)[:350]}"
+                    order.next_check_at = self.now() + timedelta(minutes=5)
+                    self.session.commit()
+                    result["failed"] += 1
         return result

@@ -68,8 +68,9 @@ def _index(session):
             ),
             Notice.assignee,
             literal("shipment_reminder"),
-            Notice.payload["content"].as_string(),
-            Notice.order_sn,
+            func.coalesce(Notice.payload["package_search_text"].as_string(),
+                          Notice.payload["content"].as_string()),
+            func.coalesce(Notice.payload["package_first_order_sn"].as_string(), Notice.order_sn),
             literal(None),
             func.coalesce(Shop.shop_name, Notice.shop_code),
             Notice.tracking_number,
@@ -79,9 +80,11 @@ def _index(session):
         .outerjoin(Shop, Shop.shop_code == Notice.shop_code)
         .where(
             # 已发现轨迹、未发布的提醒只保留后台核验记录，不进入人工待办及统计。
-            Notice.status.not_in(("TRACE_SEEN", "REFUNDED")),
+            Notice.status.not_in(("TRACE_SEEN", "REFUNDED", "MERGED")),
+            Notice.payload["merged_into"].as_string().is_(None),
             or_(
                 Notice.payload["full_refund"]["order_sn"].as_string().is_(None),
+                Notice.payload["package_active_count"].as_integer() > 0,
                 Notice.status.in_(("SUBMITTING", "UNKNOWN")),
             ),
         )
@@ -99,13 +102,16 @@ def _shipment_item(notice, shop):
     if sent:
         status, label, tone = "SUCCEEDED", "已发送", "success"
     reason = payload.get("reason") or "发货满20小时仍无物流信息"
-    if payload.get("full_refund"):
+    if payload.get("full_refund") and not payload.get("package_active_count"):
         reason = "已全额退款，不再催揽收；原提醒发送结果待确认"
+    order_sns = payload.get("package_order_sns") or [notice.order_sn]
+    todo_ids = payload.get("package_todo_ids") or ([notice.todo_id] if notice.todo_id else [])
     return {
         "task_id": f"shipment:{notice.notice_key}",
         "source": "shipment_reminder",
         "after_sales_sn": None,
-        "platform_order_sn": notice.order_sn,
+        "platform_order_sn": "、".join(order_sns),
+        "related_order_sns": order_sns,
         "shop_name": shop.shop_name if shop else notice.shop_code,
         "assignee": notice.assignee or "未匹配业务员",
         "origin": "shipment_reminder",
@@ -125,6 +131,8 @@ def _shipment_item(notice, shop):
         "sent_at": _utc_iso(notice.updated_at) if sent else None,
         "sent_time_label": "发送确认时间",
         "external_todo_id": notice.todo_id,
+        "external_todo_ids": todo_ids,
+        "sent_messages": payload.get("package_sent_messages") or [],
         # 旧提醒账本没有单独保存首次创建时间和尝试次数，禁止补造。
         "created_at": None,
         "attempts": None,
@@ -133,7 +141,9 @@ def _shipment_item(notice, shop):
         "last_error": notice.last_error,
         "cancel_reason": "发现物流轨迹，取消无物流提醒" if status == "CANCELLED" else None,
         "audit_note": "普通订单提醒，无需先有售后单；日期筛选按最近核验或发送确认时间。"
-        "首次创建时间和尝试次数未单独记录。",
+        "首次创建时间和尝试次数未单独记录。"
+        + (f"同包裹合并展示；历史已发送{len(todo_ids)}条，原ERP记录保留。"
+           if len(todo_ids) > 1 else ""),
     }
 
 

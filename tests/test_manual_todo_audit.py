@@ -252,3 +252,37 @@ def test_manual_todo_api_accepts_reminder_origin_and_unknown_outcome():
     assert result.status_code == 200
     assert received["origin"] == "shipment_reminder"
     assert received["task_status"] == "UNKNOWN"
+
+def test_historical_same_package_groups_search_and_preserves_all_receipts(records):
+    from aftersales_workbench.workflows import shipment_packages
+    service, db = records
+    primary, duplicate = db.get(Notice, "sent"), db.get(Notice, "pending")
+    duplicate.tracking_number = primary.tracking_number
+    duplicate.status, duplicate.todo_id = "SENT", "second-remote"
+    raw = "【揽收提醒:0123456789abcdef01234567】 测试店，运单track-sent（384）。请催揽收。"
+    primary.payload = {**primary.payload, "content": raw}
+    sent_at = primary.updated_at
+    shipment_packages.merge(db, primary, [primary, duplicate], datetime(2026, 9, 19, 9))
+    db.commit()
+    for keyword in (primary.order_sn, duplicate.order_sn, primary.tracking_number):
+        result = service.list_manual_todos(page=1, page_size=1, keyword=keyword)
+        assert result["pagination"]["total"] == 1
+        item = result["items"][0]
+        assert set(item["related_order_sns"]) == {primary.order_sn, duplicate.order_sn}
+        assert item["external_todo_ids"] == ["new-remote", "second-remote"]
+        assert len(item["sent_messages"]) == 2
+        assert "384" not in item["content"] and "揽收提醒:" not in item["content"]
+        assert "历史已发送2条" in item["audit_note"]
+    assert primary.payload["content"] == raw and primary.updated_at == sent_at
+    assert duplicate.status == "SENT" and duplicate.todo_id == "second-remote"
+    primary.payload = {**primary.payload, "full_refund": {"order_sn": primary.order_sn}}
+    shipment_packages.refresh_merged(db, primary, datetime(2026, 9, 19, 10))
+    db.commit()
+    assert service.list_manual_todos(page=1, page_size=15, keyword=primary.order_sn)["items"] == []
+    item = service.list_manual_todos(page=1, page_size=15, keyword=duplicate.order_sn)["items"][0]
+    assert item["related_order_sns"] == [duplicate.order_sn] and item["sent_to_assignee"]
+    duplicate.payload = {**duplicate.payload, "full_refund": {"order_sn": duplicate.order_sn}}
+    shipment_packages.refresh_merged(db, duplicate, datetime(2026, 9, 19, 10))
+    db.commit()
+    result = service.list_manual_todos(page=1, page_size=15, keyword=duplicate.order_sn)
+    assert result["items"] == []
