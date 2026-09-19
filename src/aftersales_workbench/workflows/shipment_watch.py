@@ -3,7 +3,7 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 
 from aftersales_workbench.integrations.erp.todo import ErpTodoRequest
 from aftersales_workbench.integrations.logistics.kuaidi100 import Kuaidi100NoTraceError
@@ -253,9 +253,17 @@ class ShipmentWatch:
                 notice.last_error = f"回查失败：{type(exc).__name__}"
                 notice.updated_at = self.now()
                 self.session.commit()
+        now = self.now()
+        # 首次历史回溯不能挤占尚有处理窗口的订单：20—24小时优先，
+        # 组内按应检查时间轮转；已超24小时的订单仍持续补查、补提醒。
+        urgent = case((
+            (Order.shipped_at > now - REFERENCE_DEADLINE)
+            & (Order.shipped_at <= now - REMIND_AFTER), 0,
+        ), else_=1)
         orders = self.session.scalars(select(Order).where(
-            Order.next_check_at <= self.now(), Order.shop_code.in_(sources),
-        ).order_by(Order.next_check_at, Order.shop_code, Order.order_sn).limit(limit)).all()
+            Order.next_check_at <= now, Order.shop_code.in_(sources),
+        ).order_by(urgent, Order.next_check_at, Order.shop_code, Order.order_sn)
+            .limit(limit)).all()
         result = {"checked": 0, "created": 0, "failed": 0}
         for order in orders:
             source, name = sources[order.shop_code]

@@ -37,6 +37,8 @@
 
 计划任务 `Leedis Shipment No Trace Reminder` 每5分钟触发，复用正式守护账户的登录身份，通过 `pythonw.exe` 无窗口运行。运行中不启动第二份实例，数据库命名锁也禁止跨进程/机器并发。单轮平台限流、追赶积压或接口耗时会延后提醒，不能承诺精确到20小时整。
 
+巡检队列优先处理已发货满20小时、尚未满24小时的订单；组内按应检查时间轮转，接口失败重试不会清掉其他订单的排队时间。超过24小时的历史订单继续补查。正式入口每轮最多核验200笔，降低历史大批次占用时间；历史回溯完成不等于每笔物流已检查，不得用“游标已追平”替代待检查队列是否及时的判断。
+
 运行输出：`.runtime/shipment-watch.log`、`shipment-watch-status.json`、`shipment-watch-error.log`。`lagging_shops` 表示增量落后超过10分钟；`sync_errors`、`order_errors` 必须处理，不能当作无待办。首次72小时回溯完成前不代表覆盖已追平。
 
 数据库新增 `shipment_watch_cursors`、`shipment_watch_orders`、`shipment_no_trace_notices` 三张表；原数据库完整备份自动包含这些表。备份及代码打包脚本同时保存独立发布指针和对应代码；迁移恢复必须保留这三张表及原待办ID。回退只关闭独立任务或指向兼容代码，不删表、不清游标、不覆盖业务数据。

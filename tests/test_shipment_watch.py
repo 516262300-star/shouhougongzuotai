@@ -169,6 +169,29 @@ def test_sync_failed_page_does_not_advance_cursor(setup):
     assert session.get(Order, ("pdd-1", "new-order")) is None
 
 
+def test_deadline_window_is_checked_before_historical_backlog_without_losing_old_orders(setup):
+    watch, session, order, source, state, parcel = setup
+    parcels = {order.order_sn: parcel}
+    for sn, hours in (("historical", 48), ("urgent", 23), ("not-yet-due", 19)):
+        shipped = NOW - timedelta(hours=hours)
+        session.add(Order(shop_code="pdd-1", order_sn=sn, shipped_at=shipped,
+                          next_check_at=shipped + timedelta(hours=20), checks=0))
+        parcels[sn] = replace(parcel, order_sn=sn, tracking_number=f"tracking-{sn}",
+                              shipped_at=shipped)
+    session.commit()
+    checked = []
+
+    def refresh(sn):
+        checked.append(sn)
+        return [parcels[sn]]
+
+    source.refresh = refresh
+    for _ in range(3):
+        assert watch.check_due({"pdd-1": (source, "店铺")}, limit=1)["checked"] == 1
+    assert checked == ["urgent", "order-1", "historical"]
+    assert session.get(Order, ("pdd-1", "not-yet-due")).checks == 0
+
+
 def test_order_source_does_not_filter_to_aftersales():
     calls = []
     def read(method, **params):

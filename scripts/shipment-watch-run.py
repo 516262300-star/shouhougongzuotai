@@ -23,7 +23,8 @@ def main():
     from aftersales_workbench.core.config import get_settings
     from aftersales_workbench.workflows.shipment_watch_cli import run
 
-    result = run(get_settings(), publish=True, max_windows=16, limit=1000)
+    # 缩短单轮核验，避免旧批次占用十余分钟导致新到20小时的订单迟迟不能入队。
+    result = run(get_settings(), publish=True, max_windows=16, limit=200)
     result["completed_at"] = datetime.now().isoformat()
     line = json.dumps(result, ensure_ascii=False)
     with (runtime / "shipment-watch.log").open("a", encoding="utf-8") as stream:
