@@ -21,7 +21,7 @@
 
 ## 运行、配置与恢复
 
-入口：`python -m aftersales_workbench.workflows.shipment_watch_cli`。不带 `--publish` 只进行平台/物流/ERP归属只读查询及本地记账；带 `--publish` 才尝试发布。`--status` 只读取游标、数量和错误；`--max-windows` 控制每店追赶窗口数，`--limit` 控制单轮核验数。
+入口：`python -m aftersales_workbench.workflows.shipment_watch_cli`。不带 `--publish` 只进行平台/物流/ERP归属只读查询及本地记账；带 `--publish` 才尝试发布。`--status` 只读取游标、数量和错误；`--max-windows` 控制每店追赶窗口数，`--limit` 控制单轮核验数。拼多多窗口28分钟加2分钟重叠，天猫窗口20小时加2分钟重叠，均完整分页后才推进。
 
 沿用已有拼多多七店、天猫六店、快递100与ERP凭据，无需新增密钥。正式运行机独立发布指针 `.runtime/shipment-watch-release.json` 需要 `enabled: true` 及限定在 `.runtime/releases/<版本>/src` 的 `source_path`。开发机不启用。
 

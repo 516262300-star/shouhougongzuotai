@@ -56,7 +56,8 @@ class ShipmentWatch:
         count = 0
         for _ in range(max_windows):
             start = cursor.updated_through - timedelta(minutes=2)
-            end = min(cursor.updated_through + WINDOW, now - timedelta(minutes=1))
+            end = min(cursor.updated_through + getattr(source, "window", WINDOW),
+                      now - timedelta(minutes=1))
             if end <= cursor.updated_through:
                 break
             try:

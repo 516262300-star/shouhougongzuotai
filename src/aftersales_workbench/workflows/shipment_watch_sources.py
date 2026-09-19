@@ -41,6 +41,7 @@ def _rows(node, key):
 class ShipmentSource:
     def __init__(self, platform, client):
         self.platform, self.client = platform, client
+        self.window = timedelta(hours=20) if platform == "TMALL" else WINDOW
 
     def list_window(self, start, end):
         """固定窗口、完整分页；任何页失败，调用方不得推进游标。"""
