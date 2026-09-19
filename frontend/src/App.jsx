@@ -999,6 +999,32 @@ function CapabilityCell({ value }) {
   );
 }
 
+function ShipmentReminderStatus({ data }) {
+  if (!data) return null;
+  const counts = data.counts;
+  return (
+    <section className="shipment-reminder-status" aria-label="发货20小时无物流提醒">
+      <header>
+        <div><h2>发货20小时无物流提醒</h2><p>拼多多、天猫 · 截止前4小时提醒 · 每5分钟巡检</p></div>
+        <StatusTag tone={capabilityTone(data.state)}>{data.label}</StatusTag>
+      </header>
+      <div className="shipment-reminder-metrics">
+        <span>已开启店铺<strong>{data.enabled_shop_count} / {data.registered_shop_count}</strong></span>
+        <span>监控订单<strong>{counts?.watched_orders ?? "—"}</strong></span>
+        <span>已确认发送<strong>{counts?.sent ?? "—"}</strong></span>
+        <span>待发送<strong>{counts?.pending ?? "—"}</strong></span>
+        <span>结果待确认<strong>{counts?.unknown ?? "—"}</strong></span>
+        <span>核验异常订单<strong>{counts?.order_errors ?? "—"}</strong></span>
+        <span>同步异常店铺<strong>{counts?.sync_errors ?? "—"}</strong></span>
+      </div>
+      <footer>
+        <span>最近进度：{data.last_progress_at ? formatDateTime(data.last_progress_at, true) : "暂无记录"} · 最近完成巡检：{data.last_completed_at ? formatDateTime(data.last_completed_at, true) : "尚无完整周期"}</span>
+        <span>提醒发送至原管理系统中对应业务员的待办事项。{!data.publish_enabled && "人工待办发布当前关闭。"}{data.detail}</span>
+      </footer>
+    </section>
+  );
+}
+
 function IntegrationWorkspace() {
   const [data, setData] = useState(null);
   const [platform, setPlatform] = useState("");
@@ -1043,6 +1069,7 @@ function IntegrationWorkspace() {
           <article><span>平台退款已开</span><strong className="monitor-good">{summary.refund_enabled_shop_count ?? "—"}</strong><small>具备退款凭证与写开关</small></article>
           <article><span>模块全开店铺</span><strong className="monitor-good">{summary.full_module_shop_count ?? "—"}</strong><small>模块 1/2/3 与退回平账齐全</small></article>
         </section>
+        <ShipmentReminderStatus data={data?.shipment_reminder} />
         <section className="integration-toolbar">
           <div className="integration-platform-filter" role="tablist" aria-label="平台筛选">
             <button type="button" className={!platform ? "active" : ""} onClick={() => setPlatform("")}>全部平台</button>

@@ -30,6 +30,7 @@ PLATFORM_META: dict[Platform, tuple[str, str]] = {
 
 CAPABILITY_DEFINITIONS = (
     ("sync", "售后同步", "持续同步平台售后单及退款状态"),
+    ("shipment_reminder", "发货20小时无物流提醒", "发货满20小时无物流信息，提醒原销售业务员"),
     ("attribution", "售后归因", "平台、店铺、型号及原因归因"),
     ("financial", "退款统计", "申请金额与实际退款成功金额"),
     ("refund_permission", "退款权限", "平台退款写入凭证与总开关"),
@@ -233,6 +234,7 @@ def _shop_capabilities(
     if not supports_modules:
         return {
             "sync": sync,
+            "shipment_reminder": _unsupported("当前仅接入拼多多、天猫普通发货订单"),
             "attribution": attribution,
             "financial": financial,
             "refund_permission": _unsupported("当前接入为只读同步，不调用平台退款接口"),
@@ -365,6 +367,7 @@ def _shop_capabilities(
             module3['label'] = '有限开启·未发货平账'
     return {
         "sync": sync,
+        "shipment_reminder": _disabled("等待核对独立提醒任务及人工待办发布状态"),
         "attribution": attribution,
         "financial": financial,
         "refund_permission": refund_permission,
@@ -479,7 +482,7 @@ def build_integration_capabilities(
     return {
         "checked_at": (checked_at or datetime.now(UTC)).isoformat(),
         "source_note": (
-            "状态来自当前运行配置、店铺凭证是否存在及本地店铺登记；"
+            "状态来自当前运行配置、店铺登记和独立提醒任务的巡检账本；"
             "页面不返回 AppSecret、SessionKey 或 AccessToken。"
         ),
         "capability_definitions": [
@@ -554,6 +557,13 @@ class IntegrationCapabilityService:
             for row in rows
         ]
         from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
+        from aftersales_workbench.services.shipment_watch_status import (
+            decorate_shipment_capabilities,
+        )
 
-        return decorate_capabilities(build_integration_capabilities(self.settings, snapshots),
-                                     self.settings)
+        payload = decorate_capabilities(
+            build_integration_capabilities(self.settings, snapshots), self.settings,
+        )
+        return decorate_shipment_capabilities(
+            payload, self.settings, self.session, snapshots,
+        )
