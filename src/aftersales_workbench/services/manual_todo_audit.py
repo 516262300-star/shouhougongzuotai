@@ -77,8 +77,8 @@ def _index(session):
         )
         .outerjoin(Shop, Shop.shop_code == Notice.shop_code)
         .where(
-            # 已有轨迹且从未形成提醒的普通订单不是人工待办；曾形成提醒后取消则保留审计。
-            or_(Notice.status != "TRACE_SEEN", Notice.payload["marker"].as_string().is_not(None)),
+            # 已发现轨迹、未发布的提醒只保留后台核验记录，不进入人工待办及统计。
+            Notice.status != "TRACE_SEEN",
         )
     )
     return union_all(aftersales, reminder).subquery(), True

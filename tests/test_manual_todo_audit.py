@@ -121,9 +121,9 @@ def test_unknown_states_are_never_reported_as_sent_and_trace_only_rows_are_hidde
         "waiting": 1,
         "sent": 2,
         "failed": 0,
-        "cancelled": 1,
+        "cancelled": 0,
         "unknown": 3,
-        "total": 7,
+        "total": 6,
     }
     result = service.list_manual_todos(page=1, page_size=20, task_status="UNKNOWN")
     assert result["pagination"]["total"] == 3
@@ -131,13 +131,42 @@ def test_unknown_states_are_never_reported_as_sent_and_trace_only_rows_are_hidde
     assert all(row["task_id"] != "shipment:seen" for row in result["items"])
 
 
+def test_cancelled_shipment_checks_are_hidden_without_deleting_audit_records(records):
+    service, db = records
+    db.get(Notice, "cancelled").assignee = "仅有取消提醒的业务员"
+    db.commit()
+    before = list(db.execute(select(Notice.__table__)).mappings())
+    for filters in (
+        {"keyword": "ordinary-cancelled"},
+        {"origin": "shipment_reminder", "task_status": "CANCELLED"},
+        {"assignee": "仅有取消提醒的业务员"},
+    ):
+        result = service.list_manual_todos(page=1, page_size=20, **filters)
+        assert result["pagination"]["total"] == 0 and result["items"] == []
+        assert "仅有取消提醒的业务员" not in result["assignees"]
+    visible = service.list_manual_todos(page=1, page_size=20)
+    assert {row["task_id"] for row in visible["items"]}.isdisjoint(
+        {"shipment:seen", "shipment:cancelled"}
+    )
+    assert list(db.execute(select(Notice.__table__)).mappings()) == before
+
+
+def test_existing_aftersales_cancelled_tasks_remain_visible(records):
+    service, db = records
+    db.get(Task, 1).action_status = "CANCELLED"
+    db.commit()
+    result = service.list_manual_todos(page=1, page_size=20, task_status="CANCELLED")
+    assert result["pagination"]["total"] == result["summary"]["cancelled"] == 1
+    assert result["items"][0]["source"] == "aftersales"
+
+
 def test_mixed_pagination_orders_by_china_time_without_duplicates(records):
     service, db = records
-    pages = [service.list_manual_todos(page=p, page_size=2) for p in range(1, 5)]
+    pages = [service.list_manual_todos(page=p, page_size=2) for p in range(1, 4)]
     ids = [item["task_id"] for p in pages for item in p["items"]]
-    assert len(ids) == len(set(ids)) == 7
+    assert len(ids) == len(set(ids)) == 6
     assert ids[-1] == 1  # 15:20旧任务早于07:50 UTC（15:50）的新提醒
-    assert all(p["pagination"]["total"] == 7 for p in pages)
+    assert all(p["pagination"]["total"] == 6 for p in pages)
 
 
 def test_filters_cover_origin_assignee_tracking_number_and_china_midnight(records):
