@@ -316,7 +316,9 @@ class ErpWebSalesOwnerResolver:
                         http_client=self._client,
                     )
                     source._logged_in = True
-                    sales = source.read(order_sn, only_order=True, customer_payload=payload)
+                    sales = source.read(
+                        order_sn, only_order=True, customer_payload=payload, for_owner_lookup=True,
+                    )
                     return _aggregate_lookup(
                         {str(row.get("sales_owner") or "").strip() for row in sales.rows},
                         {sales.customer_name}, matched_message="已从 ERP 发货销售订单逐笔匹配",

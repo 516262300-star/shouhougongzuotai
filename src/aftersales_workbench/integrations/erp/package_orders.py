@@ -2,7 +2,7 @@
 
 import re
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from aftersales_workbench.integrations.erp.return_match import (
     ErpWebReturnMatcher,
@@ -30,7 +30,11 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
         super().__init__(**kwargs)
         self.platform = platform
 
-    def read(self, order_sn: str, *, only_order=False, customer_payload=None) -> CustomerSales:
+    def read(
+        self, order_sn: str, *, only_order=False, customer_payload=None, for_owner_lookup=False,
+    ) -> CustomerSales:
+        if for_owner_lookup and not only_order:
+            raise ValueError("业务员查询必须限定目标订单，不能用于整包裹数量核验")
         payload = customer_payload if customer_payload is not None else self._get_response(
             "/leedis2/public/customer/GetCustomerName", params={"keyword": order_sn}
         ).json()
@@ -97,8 +101,13 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                 pattern = r"\d{6}-\d{15}" if self.platform == "PDD" else r"\d{15,22}"
                 if not only_order and not re.fullmatch(pattern, sn):
                     raise ValueError("原销售订单号格式不符或含其他平台，不能跳过")
-                quantity = Decimal(row["入库化只"])
-                if not quantity.is_finite() or quantity <= 0 or not row["订单编号"].isdigit():
+                try:
+                    quantity = Decimal(row["入库化只"])
+                except InvalidOperation as exc:
+                    raise ValueError("ERP 原销售数量格式无效") from exc
+                if (not quantity.is_finite() or quantity < 0
+                        or (quantity == 0 and not for_owner_lookup)
+                        or not row["订单编号"].isdigit()):
                     raise ValueError("ERP 原销售关联或数量无效")
                 all_rows.append(
                     {
@@ -121,6 +130,10 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                 raise ValueError("取数期间原销售记录改变，需重新读取完整分页")
         if order_sn not in {row["order_sn"] for row in all_rows}:
             raise ValueError("ERP 全部分页未找到目标原销售订单，不能判断包裹范围")
+        if for_owner_lookup and not any(
+            row["order_sn"] == order_sn and Decimal(row["quantity"]) > 0 for row in all_rows
+        ):
+            raise ValueError("ERP 目标订单没有正数销售商品行，不能确认发货销售归属")
         owners = {row["sales_owner"] for row in all_rows if row["order_sn"] == order_sn}
         owner = next(iter(owners)) if len(owners) == 1 and "" not in owners else ""
         return CustomerSales(customer_id, name, owner, tuple(all_rows), expected_pages)
