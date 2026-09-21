@@ -1,4 +1,4 @@
-"""拼多多、天猫桌面拦截发送前核验整包裹；不调用退款或消息发送接口。"""
+"""所有平台拦截发送前核验整包裹；未适配完整核验的平台转人工，不直接放行。"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -54,9 +54,8 @@ class NoticePackageGuard:
         shop = self.session.get(Shop, order.shop_id) if order else None
         if shop is None:
             raise ValueError("拦截任务未匹配订单或店铺")
-        if shop.platform not in {"PDD", "TMALL"}:
-            return True  # 其他平台保持既有路径；本核验器不猜测跨平台订单关系。
         if (task.action_type != "QYWX_INTERCEPT_NOTIFY"
+                or not order.forward_tracking_number or not order.carrier_code
                 or order.after_sales_sn != plan.after_sales_sn
                 or order.platform_order_sn != plan.platform_order_sn
                 or order.forward_tracking_number != plan.tracking_number
@@ -65,18 +64,33 @@ class NoticePackageGuard:
         if has_shared_package_hold(self.session, order):
             self._hold(order, None)
             return False
+        if shop.platform not in {"PDD", "TMALL", "TAOBAO"}:
+            # 本地只有售后单，不能证明包裹没有其他正常订单。
+            # 此证据仅表示待人工核实，绝不能写成已确认部分退款。
+            evidence = {
+                "platform": str(shop.platform), "result": "REVIEW_REQUIRED",
+                "phase": "before_notice", "started_at": self.now().isoformat(),
+                "customer_id": "unverified-parcel",
+                "sales_rows": [], "blockers": [],
+                "package_orders": [{"order_sn": order.platform_order_sn,
+                                    "refund_requested": True}],
+                "message": "该平台尚未具备完整同包裹核验，停止自动拦截，请业务员核实",
+            }
+            self._hold(order, evidence)
+            return False
         previous = (task.payload or {}).get(KEY) or {}
         if previous.get("retry_after"):
             if datetime.fromisoformat(previous["retry_after"]) > self.now():
                 return False
         snapshot = order_snapshot(order)
         try:
-            if shop.platform == "TMALL":
+            if shop.platform in {"TMALL", "TAOBAO"}:
                 from aftersales_workbench.workflows.tmall_notice_package import (
                     TmallNoticePackageVerifier,
                 )
-                verifier = getattr(self, "tmall_verifier", None) or TmallNoticePackageVerifier(
-                    self.session, self.settings, now=self.now)
+                verifier = getattr(self, shop.platform.lower() + "_verifier", None)
+                verifier = verifier or TmallNoticePackageVerifier(
+                    self.session, self.settings, now=self.now, platform=shop.platform)
                 evidence = verifier.inspect(order, shop)
             else:
                 with self.client_factory(shop) as client:
@@ -165,7 +179,7 @@ class NoticePackageGuard:
 
     def validate_before_input(self, task_id):
         if task_id not in self.approvals:
-            return
+            raise ValueError("缺少发送前完整包裹核验证据，禁止输入或发送")
         task = self.session.get(Task, task_id, populate_existing=True)
         if task is None or task.action_status != "PENDING":
             raise ValueError("发送前任务状态变化")
@@ -185,14 +199,23 @@ class NoticePackageGuard:
                 Task.action_status == "PENDING",
                 Order.forward_tracking_number == order.forward_tracking_number,
                 Order.carrier_code == order.carrier_code).with_for_update()).all()
+        review = evidence and evidence.get("result") == "REVIEW_REQUIRED"
+        if review:
+            evidence = {**evidence, "package_orders": [
+                {"order_sn": sn, "refund_requested": True}
+                for sn in sorted({order.platform_order_sn}
+                                 | {s.platform_order_sn for _, s in rows})
+            ]}
         for task, sibling in rows:
             task.action_status = "CANCELLED"
-            task.last_error = "同包裹部分订单未申请退款，不自动拦截，已转业务员核实"
+            task.last_error = (evidence["message"] if review else
+                               "同包裹部分订单未申请退款，不自动拦截，已转业务员核实")
             task.payload = {**(task.payload or {}), KEY: evidence or {"result": "HELD"}}
             sibling.workflow_status = "MANUAL_PROCESSING"
-            sibling.exception_type = (
+            sibling.exception_type = (evidence["message"] if review else (
                 "同包裹仅部分订单退款，已停止自动拦截，请业务员核实"
-                if evidence and evidence.get("platform") == "TMALL" else HOLD_REASON)
+                if evidence and evidence.get("platform") in {"TMALL", "TAOBAO"}
+                else HOLD_REASON if evidence else sibling.exception_type or HOLD_REASON))
         if evidence is not None:
             self.verifier._enqueue_todo(order, evidence)
         self.session.commit()

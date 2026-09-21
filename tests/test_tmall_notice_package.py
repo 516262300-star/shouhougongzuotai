@@ -31,16 +31,18 @@ def notice_guard(case):
     sales = CustomerSales("C1", "测试客户", "测试业务员", rows, 1)
     case.source = Mock(read=Mock(return_value=sales))
     verifier = TmallNoticePackageVerifier(case.db, case.cfg,
-        source_factory=lambda: case.source, client_factory=lambda shop: nullcontext(case.client))
+        source_factory=lambda: case.source, client_factory=lambda shop: nullcontext(case.client),
+        platform=case.shop.platform)
     guard = NoticePackageGuard(case.db, case.cfg)
-    guard.tmall_verifier = verifier
+    setattr(guard, case.shop.platform.lower() + "_verifier", verifier)
     guard.trade_inspector = case.inspector
     return guard
 
 
-@pytest.fixture
-def case(db):
+@pytest.fixture(params=["TMALL", "TAOBAO"])
+def case(db, request):
     x = base.case.__wrapped__(db)
+    x.shop.platform = request.param
     db.delete(x.orders.pop())
     x.trade['orders']['order'] = x.trade['orders']['order'][:1]
     x.trade['payment'] = '20.00'
@@ -108,6 +110,21 @@ def test_all_parcel_orders_refunded_allows_existing_flow(case):
     assert case.task.payload[KEY]['result'] == 'PASS'
     case.guard.validate_before_input(case.task.id)
     assert todos(case.db) == []
+
+
+def test_alternative_sender_also_blocks_partial_parcel(case):
+    from aftersales_workbench.db.models import AutomationActionType
+    from aftersales_workbench.workflows.actions import ExternalActionExecutor, ExternalTaskSnapshot
+
+    task = ExternalTaskSnapshot(case.task.id, case.task.after_sales_sn,
+        AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+        {"tracking_number": case.plan.tracking_number, "carrier_code": case.plan.carrier_id},
+        case.plan.platform_order_sn, case.shop.shop_code)
+    executor = ExternalActionExecutor(case.db, case.cfg)
+    executor.notice_package_guard = case.guard
+    assert not executor._notice_package_ready(task)
+    assert case.task.action_status == "CANCELLED" and case.task.attempts == 0
+    assert todos(case.db)[0].payload["assignee"] == "测试业务员"
 
 
 def test_same_customer_other_parcel_does_not_block(case):

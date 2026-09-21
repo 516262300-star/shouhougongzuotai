@@ -551,6 +551,7 @@ class ExternalActionExecutor:
         self.pdd_shop_codes = pdd_shop_codes
         self.package_verifier = package_verifier
         self.todo_owner_router = todo_owner_router
+        self.notice_package_guard = None
 
     def run(
         self,
@@ -759,6 +760,21 @@ class ExternalActionExecutor:
                     if accounting_reason:
                         routed = {**routed, "reason_text": accounting_reason}
                     task = replace(task, payload=routed)
+                if task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
+                    try:
+                        notice_ready = self._notice_package_ready(task)
+                    except ValueError as exc:
+                        self.session.rollback()
+                        self.session.execute(update(AftersalesActionTask).where(
+                            AftersalesActionTask.id == task.id,
+                            AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                        ).values(last_error=(
+                            "发送前包裹身份或证据未通过，尚未发送：" + str(exc)[:300])))
+                        self.session.commit()
+                        notice_ready = False
+                    if not notice_ready:
+                        result.skipped += 1
+                        continue
                 if not self._claim(task.id):
                     result.skipped += 1
                     continue
@@ -939,6 +955,25 @@ class ExternalActionExecutor:
                 continue
             ready.append(task)
         return ready, blocked
+
+    def _notice_package_ready(self, task):
+        """备用 webhook 入口也必须经过与桌面相同的包裹核验，先核验再认领。"""
+        from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlan
+        from aftersales_workbench.workflows.notice_package_guard import NoticePackageGuard
+
+        if self.notice_package_guard is None:
+            self.notice_package_guard = NoticePackageGuard(self.session, self.settings)
+        plan = DesktopNoticePlan(
+            task_id=task.id, target_group="webhook", message="",
+            after_sales_sn=task.after_sales_sn,
+            platform_order_sn=task.platform_order_sn,
+            tracking_number=str(task.payload.get("tracking_number") or ""),
+            carrier_id=str(task.payload.get("carrier_code") or ""),
+        )
+        if not self.notice_package_guard.check(plan):
+            return False
+        self.notice_package_guard.validate_before_input(task.id)
+        return True
 
     def _refresh_module1_refund_gates(self, after_sales_sns: tuple[str, ...]) -> None:
         from aftersales_workbench.workflows.no_trace_risk import NoTraceRiskVerifier

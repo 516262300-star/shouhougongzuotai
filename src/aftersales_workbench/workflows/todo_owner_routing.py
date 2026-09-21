@@ -96,7 +96,9 @@ def enqueue_shared_owner_todos(session, order, evidence):
     seed = dict(
         origin="module1",
         task_scope="shared_package",
-        reason_code="SHARED_PACKAGE_UNREFUNDED_ORDERS",
+        reason_code=("PACKAGE_NOTICE_REVIEW_REQUIRED"
+                     if evidence.get("result") == "REVIEW_REQUIRED"
+                     else "SHARED_PACKAGE_UNREFUNDED_ORDERS"),
         reason_text=order.exception_type,
         started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         shop_name=shop.shop_name,

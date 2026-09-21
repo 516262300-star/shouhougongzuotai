@@ -1,4 +1,4 @@
-"""天猫发群前逐笔核对客户原销售对应的完整发货包裹；不执行退款。"""
+"""天猫、淘宝发群前逐笔核对客户原销售对应的完整发货包裹；不执行退款。"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -101,14 +101,27 @@ def shipment_identity(client, sn):
 
 
 class TmallNoticePackageVerifier:
-    def __init__(self, session, settings, *, source_factory=None, client_factory=None, now=None):
+    def __init__(self, session, settings, *, source_factory=None, client_factory=None, now=None,
+                 platform="TMALL"):
+        if platform not in {"TMALL", "TAOBAO"}:
+            raise ValueError("淘系包裹核验不支持该平台")
         self.session, self.settings = session, settings
+        self.platform = platform
         self.source_factory = source_factory or (
-            lambda: build_package_source(settings, platform="TMALL"))
-        self.client_factory = client_factory or TradeInspector(session, settings).client_factory
+            lambda: build_package_source(settings, platform=platform))
+        self.client_factory = client_factory or self._client
         self.now = now or (lambda: datetime.now(UTC))
 
+    def _client(self, shop):
+        if self.platform == "TAOBAO":
+            from aftersales_workbench.workflows.taobao_preview import build_preview_client
+
+            return build_preview_client(self.settings, shop)
+        return TradeInspector(self.session, self.settings).client_factory(shop)
+
     def inspect(self, order, shop):
+        if shop.platform != self.platform or order.shop_id != shop.shop_id:
+            raise ValueError("包裹核验平台或店铺不一致")
         started, snapshot = self.now(), order_snapshot(order)
         source = self.source_factory()
         try:
@@ -157,7 +170,8 @@ class TmallNoticePackageVerifier:
             raise ValueError("目标天猫售后身份、金额或发货运单已变化")
         if self.now() - started > timedelta(seconds=75):
             raise ValueError("天猫整包裹核验超时，不能使用过期证据")
-        return {"version": 1, "platform": "TMALL", "result": "BLOCKED" if blockers else "PASS",
+        return {"version": 1, "platform": self.platform,
+                "result": "BLOCKED" if blockers else "PASS",
                 "snapshot": snapshot, "started_at": started.isoformat(),
                 "checked_at": self.now().isoformat(), "customer_id": sales.customer_id,
                 "customer_name": sales.customer_name, "assignee": sales.sales_owner,

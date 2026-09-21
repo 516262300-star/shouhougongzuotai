@@ -78,11 +78,15 @@ def prepare_manual_todo(
         related = list(dict.fromkeys(
             str(sn) for sn in related if sn and str(sn) != platform_order_sn
         ))
-        notice_only = evidence.get("platform") == "TMALL"
+        notice_only = evidence.get("platform") not in {None, "PDD"}
+        review = evidence.get("result") == "REVIEW_REQUIRED"
         content = f"{marker} 店铺：{shop}；" + (
+            "发货包裹的订单及退款范围尚未核实，已停止自动拦截。" if review else
             "同包裹仅部分订单退款，需人工协调处理。" if notice_only
             else "整包裹退款条件未满足，已暂停自动退款。")
-        if evidence.get("phase") == "before_notice":
+        if review:
+            content += "请核对同一发货包裹的全部订单；仅部分订单退款时，请联系客户协调处理。"
+        elif evidence.get("phase") == "before_notice":
             content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
         elif evidence.get("phase") == "after_notice":
             content += (
