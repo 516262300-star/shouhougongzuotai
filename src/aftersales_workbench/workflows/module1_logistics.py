@@ -535,13 +535,15 @@ class Module1LogisticsGateService:
             try:
                 platform = self._get_order_platform(order)
                 carrier_code = self._resolve_carrier(str(order.carrier_code))
-                events = query_logistics_cached(
-                    self.query,
-                    query_cache,
-                    carrier_code=carrier_code,
-                    tracking_number=str(order.forward_tracking_number),
-                    phone=self.default_phone,
-                )
+                events = self._trade_notice_events(order, platform)
+                if events is None or classify_logistics_trace(events) is LogisticsState.UNKNOWN:
+                    events = query_logistics_cached(
+                        self.query,
+                        query_cache,
+                        carrier_code=carrier_code,
+                        tracking_number=str(order.forward_tracking_number),
+                        phone=self.default_phone,
+                    )
                 state = classify_logistics_trace(events)
                 auto_evidence = None
                 if (
@@ -861,6 +863,21 @@ class Module1LogisticsGateService:
         )
         self._cancel_pending_refund(order.after_sales_sn)
 
+    def _trade_notice_events(self, order, platform):
+        if platform is not Platform.TMALL:
+            return None
+        from aftersales_workbench.workflows.tmall_trade_intercept import KEY, TradeInspector
+
+        proof = self.session.scalar(select(AftersalesActionTask.id).where(
+            AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+            AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+            AftersalesActionTask.payload[KEY]["result"].as_string() == "FULL_TRADE_ONLY_REFUND",
+        ).limit(1))
+        if proof is None:
+            return None
+        inspector = getattr(self, "trade_inspector", None) or TradeInspector(self.session)
+        return inspector.trace_events(order)
+
     def _route_platform_refund(
         self,
         order: AfterSalesOrder,
@@ -869,6 +886,10 @@ class Module1LogisticsGateService:
     ) -> None:
         order.workflow_status = WorkflowStatus.INTERCEPT_CONFIRMED
         if platform is Platform.TMALL:
+            if (getattr(order, "refund_amount", None)
+                    != getattr(order, "platform_order_amount", None)):
+                order.exception_type = "多子单已合并拦截，退款须逐笔核验"
+                return
             if not self._tmall_refund_enabled(order):
                 order.exception_type = "天猫试运行：该店未配置退款子账号，等待人工审核"
                 return

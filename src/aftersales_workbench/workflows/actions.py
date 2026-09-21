@@ -764,6 +764,10 @@ class ExternalActionExecutor:
                     continue
                 try:
                     if task.action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
+                        from aftersales_workbench.workflows.tmall_trade_intercept import KEY
+                        if task.payload.get(KEY):
+                            # 合并任务须走包裹永久账本、实时整单核验及输入前检查。
+                            raise WorkflowTransitionError("整单合并拦截须使用已有企微桌面发送通道")
                         self._send_qywx(qywx_client, task)
                         result_payload = None
                     elif task.action_type in {

@@ -47,15 +47,29 @@ def reconcile_refund_scope(session: Session, order: AfterSalesOrder) -> RefundSc
     scope = classify_refund_scope(order.refund_amount, order.platform_order_amount)
     current = WorkflowStatus(order.workflow_status)
 
+    # 多子单整单证据仅保留拦截通知资格；原始逐笔金额及资金分类保持不变。
+    aggregate_notice = False
+    if scope is RefundScope.PARTIAL:
+        from aftersales_workbench.workflows.tmall_trade_intercept import evidence_for
+        if getattr(order, "shop_id", None) is not None:
+            notices = session.scalars(select(AftersalesActionTask).where(
+                AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+                AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+            )).all()
+            aggregate_notice = evidence_for(order, notices) is not None
+
     if scope is RefundScope.PARTIAL:
         # 金额分类不能覆盖人工接管、等待退回或资金执行后的状态。
-        if current in {WorkflowStatus.PENDING_CHECK, WorkflowStatus.PARTIAL_REFUND_EXCLUDED}:
+        if not aggregate_notice and current in {
+            WorkflowStatus.PENDING_CHECK, WorkflowStatus.PARTIAL_REFUND_EXCLUDED,
+        }:
             order.workflow_status = WorkflowStatus.PARTIAL_REFUND_EXCLUDED
             order.exception_type = PARTIAL_REFUND_NOTE
         _cancel_pending_module1_tasks(
             session,
             order.after_sales_sn,
             reason=PARTIAL_REFUND_NOTE,
+            preserve_aggregate_notice=aggregate_notice,
         )
     elif scope is RefundScope.FULL:
         if current is WorkflowStatus.PARTIAL_REFUND_EXCLUDED:
@@ -85,6 +99,7 @@ def _cancel_pending_module1_tasks(
     after_sales_sn: str,
     *,
     reason: str,
+    preserve_aggregate_notice: bool = False,
 ) -> None:
     tasks = session.scalars(
         select(AftersalesActionTask).where(
@@ -96,6 +111,8 @@ def _cancel_pending_module1_tasks(
         if (task.payload or {}).get("task_scope") == "shared_package":
             continue  # 单笔金额/闭环变化不代表其他同包裹订单已处理。
         action_type = AutomationActionType(task.action_type)
+        if preserve_aggregate_notice and action_type is AutomationActionType.QYWX_INTERCEPT_NOTIFY:
+            continue
         is_module1_refund = (
             action_type
             in {

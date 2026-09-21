@@ -51,6 +51,9 @@ class FakeSession:
     def execute(self, _statement):
         return _ExecuteResult(self.existing_task)
 
+    def scalar(self, _statement):
+        return None  # 本替身没有天猫多子单合并拦截凭证。
+
     def add(self, value):
         self.added.append(value)
 
@@ -85,6 +88,7 @@ def _order(*, platform_refunded=False, platform=Platform.PDD):
         shop_code="tmall-shop-06" if platform is Platform.TMALL else "pdd-shop-01",
         after_sales_type="ONLY_REFUND",
         refund_amount=Decimal("10.00"),
+        platform_order_amount=Decimal("10.00"),
         items=[],
         workflow_status=WorkflowStatus.INTERCEPT_CONFIRMED,
         forward_tracking_number="YT123",

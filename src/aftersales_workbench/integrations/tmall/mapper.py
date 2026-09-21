@@ -185,6 +185,8 @@ def normalize_refund(
     quantity = merged.get("num") or trade_order.get("num") or 1
     special_refund_type = _nonempty(merged.get("special_refund_type"))
     forward_tracking, forward_carrier = normalize_forward_logistics(logistics)
+    children = trade.get("orders", {}).get("order", [])
+    multi_child = isinstance(children, list) and len(children) > 1
     return NormalizedTmallRefund(
         after_sales_sn=refund_id,
         platform_order_sn=tid,
@@ -193,6 +195,7 @@ def normalize_refund(
         ),
         refund_amount=refund_amount,  # type: ignore[arg-type]
         platform_order_amount=(
+            _money(trade.get("payment"), field="trade.payment") if multi_child else
             (
                 _money(merged.get("total_fee"), field="total_fee")
                 if special_refund_type

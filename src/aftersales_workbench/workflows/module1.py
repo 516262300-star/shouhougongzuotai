@@ -29,6 +29,7 @@ class Module1Candidate:
     carrier_code: str | None
     platform: Platform = Platform.PDD
     platform_refund_completed: bool = False
+    trade_proof: dict[str, Any] | None = None
 
 
 @dataclass(slots=True)
@@ -37,6 +38,7 @@ class Module1RunResult:
     scanned: int = 0
     tasks_created: int = 0
     tasks_existing: int = 0
+    trade_check_errors: list[dict[str, str]] | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,34 +136,72 @@ class SqlAlchemyModule1Repository:
         ]
 
     def enqueue_notice(self, candidate: Module1Candidate) -> bool:
+        from aftersales_workbench.workflows.tmall_trade_intercept import KEY, PARTIAL_NOTE
+
         idempotency_key = (
             f"module1:{candidate.after_sales_sn}:"
             f"{AutomationActionType.QYWX_INTERCEPT_NOTIFY.value}"
         )
+        identity = (
+            and_(AftersalesActionTask.after_sales_sn == candidate.after_sales_sn,
+                 AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY)
+            if candidate.trade_proof else AftersalesActionTask.idempotency_key == idempotency_key
+        )
         existing = self.session.execute(
-            select(AftersalesActionTask.id).where(
-                AftersalesActionTask.idempotency_key == idempotency_key
+            select(AftersalesActionTask).where(
+                identity
             )
         ).scalar_one_or_none()
-        if existing is not None:
+        reopening = bool(candidate.trade_proof and existing is not None
+                         and existing.action_status == "CANCELLED"
+                         and existing.last_error == PARTIAL_NOTE and not existing.attempts)
+        if existing is not None and not reopening:
             return False
+        if candidate.trade_proof:
+            order = self.session.scalar(select(AfterSalesOrder).where(
+                AfterSalesOrder.after_sales_sn == candidate.after_sales_sn).with_for_update())
+            if order is None or order.workflow_status not in {
+                "PENDING_CHECK", "PARTIAL_REFUND_EXCLUDED",
+            }:
+                raise ValueError("整单核验后售后处理状态已变化")
+            if (order.forward_tracking_number
+                    and order.forward_tracking_number != candidate.tracking_number):
+                raise ValueError("整单核验后运单已变化")
+            order.forward_tracking_number = candidate.tracking_number
+            order.carrier_code = candidate.carrier_code
+            order.order_shipping_status = ShippingStatus.IN_TRANSIT
+            from aftersales_workbench.workflows.tmall_trade_intercept import matches_order
+            if not matches_order(order, candidate.trade_proof):
+                raise ValueError("整单核验后退款金额或身份已变化")
+            order.workflow_status = WorkflowStatus.PENDING_CHECK
+            if order.exception_type == PARTIAL_NOTE:
+                order.exception_type = None
+        payload = {
+            "platform_order_sn": candidate.platform_order_sn, "shop_name": candidate.shop_name,
+            "tracking_number": candidate.tracking_number, "carrier_code": candidate.carrier_code,
+            "platform": candidate.platform.value,
+            **({KEY: candidate.trade_proof} if candidate.trade_proof else {}),
+        }
+        if reopening:
+            existing.action_status, existing.last_error = AutomationTaskStatus.PENDING, None
+            existing.payload = {**(existing.payload or {}), **payload}
+            return True
         self.session.add(
             AftersalesActionTask(
                 after_sales_sn=candidate.after_sales_sn,
                 action_type=AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                 action_status=AutomationTaskStatus.PENDING,
                 idempotency_key=idempotency_key,
-                payload={
-                    "platform_order_sn": candidate.platform_order_sn,
-                    "shop_name": candidate.shop_name,
-                    "tracking_number": candidate.tracking_number,
-                    "carrier_code": candidate.carrier_code,
-                    "platform": candidate.platform.value,
-                },
+                payload=payload,
                 attempts=0,
             )
         )
         return True
+
+    def list_trade_candidates(self, *, shop_codes, min_order_id, limit, dry_run=True):
+        from aftersales_workbench.workflows.tmall_trade_intercept import collect_candidates
+        return collect_candidates(self.session, shop_codes=shop_codes,
+                                  min_order_id=min_order_id, limit=limit, dry_run=dry_run)
 
     def commit(self) -> None:
         self.session.commit()
@@ -194,6 +234,14 @@ class Module1InterceptService:
                     tmall_min_order_id=tmall_min_order_id,
                 )
             candidates = self.repository.list_candidates(**query)
+            if include_tmall and hasattr(self.repository, "list_trade_candidates"):
+                extra, errors = self.repository.list_trade_candidates(
+                    shop_codes=shop_codes, min_order_id=tmall_min_order_id,
+                    limit=max(0, limit - len(candidates)),
+                    dry_run=dry_run,
+                )
+                candidates.extend(extra)
+                result.trade_check_errors = errors
             result.scanned = len(candidates)
             if dry_run:
                 return result

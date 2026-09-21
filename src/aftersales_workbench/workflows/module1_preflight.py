@@ -165,7 +165,11 @@ class Module1NotificationPreflightService:
                         )
                     continue
                 try:
-                    state, latest_context, events = self._inspect(order, query_cache)
+                    from aftersales_workbench.workflows.tmall_trade_intercept import KEY
+                    if (task.payload or {}).get(KEY):
+                        state, latest_context, events = self._inspect_full_trade(order, query_cache)
+                    else:
+                        state, latest_context, events = self._inspect(order, query_cache)
                 except Exception as exc:
                     no_trace = is_kuaidi100_no_trace_error(exc)
                     if no_trace:
@@ -226,6 +230,17 @@ class Module1NotificationPreflightService:
             phone=self.default_phone,
         )
         return classify_logistics_trace(events), events[0].context, events
+
+    def _inspect_full_trade(self, order, query_cache):
+        from aftersales_workbench.workflows.tmall_trade_intercept import TradeInspector
+
+        inspector = getattr(self, "trade_inspector", None) or TradeInspector(self.session)
+        events = inspector.trace_events(order)
+        state = classify_logistics_trace(events)
+        if state is LogisticsState.UNKNOWN:
+            # 待揽收文字不授予资金资格，仍须原物流接口核验；查询失败不能放行。
+            return self._inspect(order, query_cache)
+        return state, events[0].context, events
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:
@@ -353,6 +368,10 @@ class Module1NotificationPreflightService:
         state: LogisticsState,
     ) -> None:
         if platform is Platform.TMALL:
+            if (getattr(order, "refund_amount", None)
+                    != getattr(order, "platform_order_amount", None)):
+                order.exception_type = "多子单已合并拦截，退款须逐笔核验"
+                return
             if not self._tmall_refund_enabled(order):
                 order.exception_type = "天猫试运行：该店未配置退款子账号，等待人工审核"
                 return

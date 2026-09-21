@@ -54,6 +54,9 @@ class NoticePackageGuard:
         shop = self.session.get(Shop, order.shop_id) if order else None
         if shop is None:
             raise ValueError("拦截任务未匹配订单或店铺")
+        from aftersales_workbench.workflows.tmall_trade_intercept import KEY as TRADE_KEY
+        if shop.platform == "TMALL" and (task.payload or {}).get(TRADE_KEY):
+            return self._check_tmall_trade(task, order, shop, plan)
         if shop.platform != "PDD":
             return True  # 其他平台保持既有路径；本核验器不猜测跨平台订单关系。
         if (task.action_type != "QYWX_INTERCEPT_NOTIFY"
@@ -105,6 +108,50 @@ class NoticePackageGuard:
         self.session.commit()
         self.approvals[task.id] = (snapshot, evidence["started_at"])
         return True
+
+    def _check_tmall_trade(self, task, order, shop, plan):
+        from aftersales_workbench.workflows.tmall_trade_intercept import (
+            KEY as TRADE_KEY,
+        )
+        from aftersales_workbench.workflows.tmall_trade_intercept import (
+            TradeInspector,
+            matches_order,
+        )
+
+        if (task.action_type != "QYWX_INTERCEPT_NOTIFY"
+                or order.after_sales_sn != plan.after_sales_sn
+                or order.platform_order_sn != plan.platform_order_sn
+                or order.forward_tracking_number != plan.tracking_number
+                or order.carrier_code != plan.carrier_id):
+            raise ValueError("天猫整单发送计划与当前售后身份不一致")
+        snapshot = order_snapshot(order)
+        try:
+            inspector = getattr(self, "trade_inspector", None) or TradeInspector(
+                self.session, self.settings)
+            proof = inspector.inspect(shop, order.platform_order_sn)
+            self.session.refresh(order)
+            self.session.refresh(task)
+            if (task.action_status != "PENDING" or order_snapshot(order) != snapshot
+                    or not matches_order(order, proof)
+                    or {r["refund_id"] for r in proof["refunds"]}
+                    != {r["refund_id"] for r in task.payload[TRADE_KEY]["refunds"]}
+                    or has_shared_package_hold(self.session, order)):
+                raise ValueError("发送前整单退款范围或包裹发生变化，停止发送")
+            age = self.now() - datetime.fromisoformat(proof["started_at"])
+            if not timedelta(0) <= age <= timedelta(seconds=80):
+                raise ValueError("发送前整单退款证据已过期")
+            task.payload = {**task.payload, TRADE_KEY: proof}
+            task.last_error = None
+            self.session.commit()
+            self.approvals[task.id] = (snapshot, proof["started_at"])
+            return True
+        except Exception as exc:
+            self.session.rollback()
+            task = self.session.get(Task, task.id, populate_existing=True)
+            if task and task.action_status == "PENDING":
+                task.last_error = "发送前整单退款核验未通过：" + str(exc)[:300]
+                self.session.commit()
+            return False
 
     def validate_before_input(self, task_id):
         if task_id not in self.approvals:

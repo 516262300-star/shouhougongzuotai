@@ -538,8 +538,8 @@ class AftersalesRecordService:
                 else None
             ),
             "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
-            "refund_scope": self._refund_scope(order),
-            "refund_scope_reason": self._refund_scope_reason(order),
+            "refund_scope": self._refund_scope(order, tasks),
+            "refund_scope_reason": self._refund_scope_reason(order, tasks),
             "platform_refund": refund,
             "product_name": product_name,
             "buyer_name": "平台未返回",
@@ -681,8 +681,8 @@ class AftersalesRecordService:
                 else None
             ),
             "has_platform_coupon": (order.platform_discount_amount or 0) > 0,
-            "refund_scope": self._refund_scope(order),
-            "refund_scope_reason": self._refund_scope_reason(order),
+            "refund_scope": self._refund_scope(order, tasks),
+            "refund_scope_reason": self._refund_scope_reason(order, tasks),
             "tracking_number": order.forward_tracking_number or "—",
             "carrier_name": self._carrier_name(order.carrier_code),
             "logistics_state": logistics,
@@ -1151,7 +1151,12 @@ class AftersalesRecordService:
             AfterSalesOrder.forward_tracking_number != "",
         )
         return and_(
-            cls._full_refund_filter(),
+            or_(cls._full_refund_filter(), exists().where(
+                AftersalesActionTask.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                AftersalesActionTask.action_type == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
+                AftersalesActionTask.payload["tmall_full_trade_intercept"]["result"].as_string()
+                == "FULL_TRADE_ONLY_REFUND",
+            ).correlate(AfterSalesOrder)),
             or_(
                 candidate,
                 cls._task_exists(AutomationActionType.QYWX_INTERCEPT_NOTIFY),
@@ -1715,7 +1720,10 @@ class AftersalesRecordService:
         return "系统将根据售后状态和物流轨迹继续推进。"
 
     @staticmethod
-    def _refund_scope(order: AfterSalesOrder) -> str:
+    def _refund_scope(order: AfterSalesOrder, tasks=()) -> str:
+        from aftersales_workbench.workflows.tmall_trade_intercept import evidence_for
+        if evidence_for(order, tasks):
+            return "多笔合计全额退款"
         if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
             return "不适用（补寄/维修）"
         return {
@@ -1726,7 +1734,10 @@ class AftersalesRecordService:
         }[classify_refund_scope(order.refund_amount, order.platform_order_amount)]
 
     @staticmethod
-    def _refund_scope_reason(order: AfterSalesOrder) -> str:
+    def _refund_scope_reason(order: AfterSalesOrder, tasks=()) -> str:
+        from aftersales_workbench.workflows.tmall_trade_intercept import evidence_for
+        if evidence_for(order, tasks):
+            return "已核对全部子单、商品数量与有效仅退款，合计等于整单实付；逐笔金额保留原值。"
         if order.after_sales_type in RECORD_ONLY_AFTERSALES_TYPES:
             return "金额为平台接口原始字段，不是退款申请或实际退款金额。"
         return {
