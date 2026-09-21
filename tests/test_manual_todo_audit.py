@@ -286,3 +286,17 @@ def test_historical_same_package_groups_search_and_preserves_all_receipts(record
     db.commit()
     result = service.list_manual_todos(page=1, page_size=15, keyword=duplicate.order_sn)
     assert result["items"] == []
+
+def test_resolved_shipment_is_hidden_but_sent_and_unknown_audit_is_preserved(records):
+    service, db = records
+    for key in ("sent", "unknown"):
+        notice = db.get(Notice, key)
+        notice.payload = {**notice.payload, "trace_resolved": {
+            "tracking_number": notice.tracking_number, "result": "HAS_TRACE",
+        }}
+    db.commit()
+    assert service.list_manual_todos(page=1, page_size=15, keyword="ordinary-sent")["items"] == []
+    item = service.list_manual_todos(page=1, page_size=15, keyword="ordinary-unknown")["items"][0]
+    assert "无需催揽收" in item["reason"] and item["task_status"] == "UNKNOWN"
+    assert db.get(Notice, "sent").status == "SENT"
+    assert db.get(Notice, "sent").todo_id == "new-remote"

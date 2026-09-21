@@ -275,6 +275,7 @@ def test_changed_parcel_during_owner_lookup_is_not_sent(setup):
 def test_separate_parcels_get_separate_reminders(setup):
     watch, session, order, source, state, parcel = setup
     source.platform = "TMALL"
+    source.trace_evidence = lambda *args: {"result": "NO_TRACE"}
     source.refresh = lambda sn: [parcel, replace(parcel, tracking_number="second-tracking")]
     # 分别核验正确任务的请求前状态。
     original = watch.todo_factory
@@ -427,3 +428,54 @@ def test_trace_appearing_in_final_package_check_blocks_entire_group(setup):
     watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
     assert state.posts == 0
     assert all(n.status == "TRACE_SEEN" for n in session.scalars(select(Notice)))
+
+@pytest.mark.parametrize("carrier", ["shunfeng", "zhongtong"])
+def test_tmall_platform_history_prevents_false_no_trace_todo(setup, carrier):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "TMALL"
+    source.refresh = lambda sn: [replace(parcel, carrier=carrier)]
+    source.trace_evidence = lambda *args: {"result": "HAS_TRACE"}
+    def vendor_must_not_override(**kwargs):
+        raise AssertionError("平台已有轨迹，不应再以第三方无结果判断未揽收")
+    watch.logistics.query = vendor_must_not_override
+    watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 0 and session.scalar(select(Notice)).status == "TRACE_SEEN"
+
+
+def test_sf_vendor_absence_with_global_default_phone_is_not_uncollected_proof(setup):
+    watch, session, order, source, state, parcel = setup
+    source.refresh = lambda sn: [replace(parcel, carrier="shunfeng")]
+    with pytest.raises(ValueError, match="电话验证"):
+        watch.check_order(order, source, "店铺", publish=True)
+    assert state.posts == 0
+
+
+def test_tmall_final_submission_rechecks_native_trace(setup):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "TMALL"
+    calls = 0
+    def proof(*args):
+        nonlocal calls
+        calls += 1
+        return {"result": "HAS_TRACE" if calls >= 3 else "NO_TRACE"}
+    source.trace_evidence = proof
+    watch.check_order(order, source, "店铺", publish=True)
+    assert calls == 3 and state.posts == 0
+    assert session.scalar(select(Notice)).status == "TRACE_SEEN"
+
+
+def test_sent_tmall_reminder_is_resolved_even_after_trade_closed_without_erasing_receipt(setup):
+    watch, session, order, source, state, parcel = setup
+    watch.check_order(order, source, "店铺", publish=True)
+    notice = session.scalar(select(Notice))
+    before = (notice.status, notice.todo_id, notice.updated_at, notice.payload["content"])
+    source.platform = "TMALL"
+    source.refresh = lambda sn: []
+    source.trace_evidence = lambda *args: {
+        "result": "HAS_TRACE", "tracking_number": parcel.tracking_number,
+        "order_sn": order.order_sn, "event_count": 2,
+    }
+    watch.check_order(order, source, "店铺", publish=True)
+    assert notice.payload["trace_resolved"]["event_count"] == 2
+    assert before == (notice.status, notice.todo_id, notice.updated_at, notice.payload["content"])
+    assert notice.payload["package_active_count"] == 0 and state.posts == 1

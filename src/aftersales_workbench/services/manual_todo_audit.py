@@ -87,6 +87,11 @@ def _index(session):
                 Notice.payload["package_active_count"].as_integer() > 0,
                 Notice.status.in_(("SUBMITTING", "UNKNOWN")),
             ),
+            or_(
+                Notice.payload["trace_resolved"]["tracking_number"].as_string().is_(None),
+                Notice.payload["package_active_count"].as_integer() > 0,
+                Notice.status.in_(("SUBMITTING", "UNKNOWN")),
+            ),
         )
     )
     return union_all(aftersales, reminder).subquery(), True
@@ -104,6 +109,8 @@ def _shipment_item(notice, shop):
     reason = payload.get("reason") or "发货满20小时仍无物流信息"
     if payload.get("full_refund") and not payload.get("package_active_count"):
         reason = "已全额退款，不再催揽收；原提醒发送结果待确认"
+    if payload.get("trace_resolved") and not payload.get("package_active_count"):
+        reason = "已核实物流轨迹，无需催揽收；原提醒发送结果待确认"
     order_sns = payload.get("package_order_sns") or [notice.order_sn]
     todo_ids = payload.get("package_todo_ids") or ([notice.todo_id] if notice.todo_id else [])
     return {

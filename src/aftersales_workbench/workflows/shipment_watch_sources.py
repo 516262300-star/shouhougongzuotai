@@ -9,6 +9,7 @@ from aftersales_workbench.workflows.shipment_refund import (
     pdd_full_refund,
     tmall_full_refund,
 )
+from aftersales_workbench.workflows.shipment_trace import tmall_trace_evidence
 
 CN = ZoneInfo("Asia/Shanghai")
 
@@ -33,6 +34,7 @@ class Parcel:
     tracking_number: str
     carrier: str
     shipped_at: datetime
+    sub_order_ids: tuple[str, ...] = ()
 
 
 def _rows(node, key):
@@ -48,6 +50,11 @@ class ShipmentSource:
     def __init__(self, platform, client):
         self.platform, self.client = platform, client
         self.window = timedelta(hours=20) if platform == "TMALL" else WINDOW
+
+    def trace_evidence(self, parcel, carrier_map):
+        if self.platform != "TMALL":
+            raise ValueError("本轨迹接口只适用于天猫")
+        return tmall_trace_evidence(self.client, parcel, carrier_map)
 
     def list_window(self, start, end):
         """固定窗口、完整分页；任何页失败，调用方不得推进游标。"""
@@ -135,7 +142,8 @@ class ShipmentSource:
                 return []
             body = self.client.execute_read(
                 "taobao.logistics.orders.get", tid=int(sn),
-                fields="tid,out_sid,company_name,status,created,sub_tids", page_no=1, page_size=100,
+                fields="tid,out_sid,company_name,status,created,sub_tids,is_split,mails",
+                page_no=1, page_size=100,
             )["logistics_orders_get_response"]
             rows = _rows(body.get("shippings"), "shipping")
             if len(rows) >= 100 or not rows:
@@ -147,11 +155,19 @@ class ShipmentSource:
                     raise ValueError("天猫包裹订单号不匹配")
                 if row.get("status") in {"CANCELLED", "CLOSED"}:
                     continue
+                mails = _rows(row.get("mails"), "mail")
+                if any((m.get("out_sid"), m.get("company_name") or row.get("company_name"))
+                       != (row.get("out_sid"), row.get("company_name")) for m in mails):
+                    raise ValueError("天猫嵌套多运单与主运单不一致，需逐包裹核验")
+                split = len(rows) > 1 or str(row.get("is_split")).lower() in {"1", "true"}
+                sub_ids = row.get("sub_tids", {}).get("string", []) if split else []
+                if not isinstance(sub_ids, list) or any(not str(x).isdigit() for x in sub_ids):
+                    raise ValueError("天猫拆单子订单身份不完整")
+                sub_ids = [str(x) for x in sub_ids]
                 # 多包裹必须使用对应子单的发货时间，不借用其他包裹的时钟。
-                if len(rows) == 1:
+                if not split:
                     shipped = candidate[1]
                 else:
-                    sub_ids = row.get("sub_tids", {}).get("string", [])
                     matching = [r for r in orders if str(r.get("oid")) in sub_ids]
                     times = {r.get("consign_time") for r in matching}
                     if (not sub_ids or len(matching) != len(sub_ids)
@@ -159,7 +175,7 @@ class ShipmentSource:
                         raise ValueError("天猫多包裹缺少唯一对应的子单发货时间")
                     shipped = utc_time(next(iter(times)))
                 parcels.append(Parcel(sn, str(row.get("out_sid") or ""),
-                                      str(row.get("company_name") or ""), shipped))
+                                      str(row.get("company_name") or ""), shipped, tuple(sub_ids)))
         if any(not p.tracking_number or not p.carrier for p in parcels):
             raise ValueError("订单缺少运单或物流公司")
         if len({p.tracking_number for p in parcels}) != len(parcels):

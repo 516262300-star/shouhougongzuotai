@@ -26,7 +26,7 @@ from aftersales_workbench.workflows.shipment_watch_models import (
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentWatchOrder as Order,
 )
-from aftersales_workbench.workflows.shipment_watch_sources import WINDOW, platform_time
+from aftersales_workbench.workflows.shipment_watch_sources import WINDOW, Parcel, platform_time
 
 REMIND_AFTER = timedelta(hours=20)
 REFERENCE_DEADLINE = timedelta(hours=24)
@@ -95,8 +95,15 @@ class ShipmentWatch:
                 raise
         return count
 
-    def _trace_absent(self, parcel):
+    def _trace_absent(self, parcel, source):
         carrier = resolve_logistics_carrier(parcel.carrier, self.settings.kuaidi100_carrier_map)
+        platform_proof = None
+        if source.platform == "TMALL":
+            platform_proof = source.trace_evidence(parcel, self.settings.kuaidi100_carrier_map)
+            if platform_proof["result"] == "HAS_TRACE":
+                return None
+            if platform_proof["result"] != "NO_TRACE":
+                raise ValueError("天猫物流证据未明确，不能催揽收")
         phone = self.settings.kuaidi100_default_phone
         try:
             events = self.logistics.query(
@@ -110,7 +117,11 @@ class ShipmentWatch:
             if (exc.evidence.get("tracking_number") != parcel.tracking_number
                     or exc.evidence.get("carrier_code") != carrier):
                 raise ValueError("物流证据身份不匹配") from exc
-            return dict(exc.evidence)
+            if carrier in {"shunfeng", "shunfengkuaiyun"}:
+                # 默认电话未绑定具体运单；顺丰无结果不能证明尚未揽收。
+                raise ValueError("顺丰查询无结果，需核实运单电话验证条件，不发送催揽收") from exc
+            return {**exc.evidence,
+                    **({"platform_trace": platform_proof} if platform_proof else {})}
         if not events:
             raise ValueError("物流查询返回空列表，未验证为正常无轨迹")
         return None
@@ -150,6 +161,7 @@ class ShipmentWatch:
             order.next_check_at = now + timedelta(days=1)
             self.session.commit()
             return 0
+        self._resolve_sent_traces(order, source)
         for parcel in parcels:
             if parcel.shipped_at > now:
                 raise ValueError("发货时间来自未来")
@@ -162,7 +174,7 @@ class ShipmentWatch:
                 continue
             if notice and notice.status in {"SENT", "TRACE_SEEN", "REFUNDED", "MERGED"}:
                 continue
-            evidence = self._trace_absent(parcel)
+            evidence = self._trace_absent(parcel, source)
             if notice is None:
                 notice = Notice(
                     notice_key=key, shop_code=order.shop_code, order_sn=order.order_sn,
@@ -188,6 +200,7 @@ class ShipmentWatch:
                 "shipped_at": parcel.shipped_at.isoformat(), "deadline": deadline.isoformat(),
                 "checked_at": now.isoformat(), "evidence": evidence,
                 "reason": "发货满20小时仍无物流信息", "carrier": parcel.carrier,
+                "sub_order_ids": list(parcel.sub_order_ids),
             }
             notice.updated_at = now
             lookup = self.owners.resolve(order.order_sn)
@@ -218,7 +231,7 @@ class ShipmentWatch:
                 notice.last_error = "发布前订单或包裹已变化，等待下一轮核对"
                 self.session.commit()
                 continue
-            evidence = self._trace_absent(parcel)
+            evidence = self._trace_absent(parcel, source)
             if evidence is None:
                 notice.status = "TRACE_SEEN"
                 self.session.commit()
@@ -262,7 +275,7 @@ class ShipmentWatch:
                 if parcel not in final:
                     raise ManualTodoPublishingPaused("提交前订单或包裹已变化，留待重新核验")
                 self._verify_package(group, sources, notice.assignee)
-                if self._trace_absent(parcel) is None:
+                if self._trace_absent(parcel, source) is None:
                     for member in group:
                         member.status, member.last_error = "TRACE_SEEN", None
                     self.session.commit()
@@ -310,6 +323,28 @@ class ShipmentWatch:
         self.session.commit()
         return sent
 
+    def _resolve_sent_traces(self, order, source):
+        if source.platform != "TMALL":
+            return
+        for notice in self.session.scalars(select(Notice).where(
+            Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
+            Notice.status.in_(("SENT", "MERGED")),
+        )):
+            p = notice.payload
+            if p.get("trace_resolved"):
+                continue
+            parcel = Parcel(notice.order_sn, notice.tracking_number, p["carrier"],
+                            datetime.fromisoformat(p["shipped_at"]),
+                            tuple(p.get("sub_order_ids", ())))
+            proof = source.trace_evidence(parcel, self.settings.kuaidi100_carrier_map)
+            if proof["result"] == "HAS_TRACE":
+                # 保留真实发送凭证，不将远端待办伪标为撤回/完成。
+                notice.payload = {**p, "trace_resolved": {
+                    **proof, "checked_at": self.now().isoformat(),
+                }}
+                shipment_packages.refresh_merged(self.session, notice, self.now())
+        self.session.commit()
+
     def _record_full_refund(self, order, snapshot):
         evidence = getattr(snapshot, "full_refund", None)
         if not evidence:
@@ -347,7 +382,8 @@ class ShipmentWatch:
                             p.carrier, self.settings.kuaidi100_carrier_map)
                         == shipment_packages.carrier_code(member, self.settings)]
             if (len(matching) != 1 or self.now() - matching[0].shipped_at < REMIND_AFTER
-                    or matching[0].shipped_at.isoformat() != member.payload.get("shipped_at")):
+                    or matching[0].shipped_at.isoformat() != member.payload.get("shipped_at")
+                    or matching[0].sub_order_ids != tuple(member.payload.get("sub_order_ids", ()))):
                 raise ManualTodoPublishingPaused("同包裹订单发货信息已变化，等待重新核验")
             owner = self.owners.resolve(member.order_sn)
             if owner.status != "matched" or owner.sales_owner != assignee:
