@@ -27,7 +27,6 @@ from aftersales_workbench.workflows.module1 import (
     SqlAlchemyModule1Repository,
 )
 from aftersales_workbench.workflows.module1_preflight import Module1NotificationPreflightService
-from aftersales_workbench.workflows.notice_package_guard import NoticePackageGuard
 from aftersales_workbench.workflows.tmall_trade_intercept import (
     KEY,
     TradeInspector,
@@ -241,8 +240,8 @@ def plan_for(case, task):
 def test_send_rechecks_all_refunds_and_same_parcel_sends_once(case, tmp_path):
     tasks = prepare(case)
     preflight(case)[0].run(dry_run=False)
-    guard = NoticePackageGuard(case.db, case.cfg)
-    guard.trade_inspector = case.inspector
+    from tests.test_tmall_notice_package import notice_guard
+    guard = notice_guard(case)
     def send(plan, hooks):
         hooks.paste_started()
         hooks.send_pressed()
@@ -261,8 +260,8 @@ def test_withdrawal_before_send_does_not_touch_wecom(case, tmp_path):
     tasks = prepare(case)
     preflight(case)[0].run(dry_run=False)
     case.refunds['9002']['status'] = 'CLOSED'
-    guard = NoticePackageGuard(case.db, case.cfg)
-    guard.trade_inspector = case.inspector
+    from tests.test_tmall_notice_package import notice_guard
+    guard = notice_guard(case)
     gateway = Mock()
     sender = DesktopNoticeSendService(case.db, gateway, DesktopNoticeLedger(tmp_path/'ledger'))
     sender.package_guard = guard
@@ -273,8 +272,8 @@ def test_withdrawal_before_send_does_not_touch_wecom(case, tmp_path):
 
 def test_expiry_or_change_before_typing_is_blocked(case):
     tasks = prepare(case)
-    guard = NoticePackageGuard(case.db, case.cfg)
-    guard.trade_inspector = case.inspector
+    from tests.test_tmall_notice_package import notice_guard
+    guard = notice_guard(case)
     assert guard.check(plan_for(case, tasks[0]))
     guard.now = lambda: datetime.now(UTC) + timedelta(seconds=81)
     with pytest.raises(ValueError):

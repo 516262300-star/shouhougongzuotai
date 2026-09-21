@@ -1,4 +1,4 @@
-"""拼多多桌面拦截发送前核验整包裹；不调用退款或消息发送接口。"""
+"""拼多多、天猫桌面拦截发送前核验整包裹；不调用退款或消息发送接口。"""
 
 from datetime import UTC, datetime, timedelta
 
@@ -54,10 +54,7 @@ class NoticePackageGuard:
         shop = self.session.get(Shop, order.shop_id) if order else None
         if shop is None:
             raise ValueError("拦截任务未匹配订单或店铺")
-        from aftersales_workbench.workflows.tmall_trade_intercept import KEY as TRADE_KEY
-        if shop.platform == "TMALL" and (task.payload or {}).get(TRADE_KEY):
-            return self._check_tmall_trade(task, order, shop, plan)
-        if shop.platform != "PDD":
+        if shop.platform not in {"PDD", "TMALL"}:
             return True  # 其他平台保持既有路径；本核验器不猜测跨平台订单关系。
         if (task.action_type != "QYWX_INTERCEPT_NOTIFY"
                 or order.after_sales_sn != plan.after_sales_sn
@@ -74,8 +71,16 @@ class NoticePackageGuard:
                 return False
         snapshot = order_snapshot(order)
         try:
-            with self.client_factory(shop) as client:
-                evidence = self.verifier.inspect(order, client)
+            if shop.platform == "TMALL":
+                from aftersales_workbench.workflows.tmall_notice_package import (
+                    TmallNoticePackageVerifier,
+                )
+                verifier = getattr(self, "tmall_verifier", None) or TmallNoticePackageVerifier(
+                    self.session, self.settings, now=self.now)
+                evidence = verifier.inspect(order, shop)
+            else:
+                with self.client_factory(shop) as client:
+                    evidence = self.verifier.inspect(order, client)
             self.session.refresh(task, with_for_update=True)
             self.session.refresh(order, with_for_update=True)
             if task.action_status != "PENDING":
@@ -103,6 +108,11 @@ class NoticePackageGuard:
         if evidence["blockers"]:
             self._hold(order, evidence)
             return False
+        # 多子单合计全额路径同样先核对其他独立交易，不能只检查本交易。
+        from aftersales_workbench.workflows.tmall_trade_intercept import KEY as TRADE_KEY
+        if shop.platform == "TMALL" and (task.payload or {}).get(TRADE_KEY):
+            if not self._check_tmall_trade(task, order, shop, plan):
+                return False
         task.payload = {**(task.payload or {}), KEY: evidence}
         task.last_error = None
         self.session.commit()
@@ -180,7 +190,9 @@ class NoticePackageGuard:
             task.last_error = "同包裹部分订单未申请退款，不自动拦截，已转业务员核实"
             task.payload = {**(task.payload or {}), KEY: evidence or {"result": "HELD"}}
             sibling.workflow_status = "MANUAL_PROCESSING"
-            sibling.exception_type = HOLD_REASON
+            sibling.exception_type = (
+                "同包裹仅部分订单退款，已停止自动拦截，请业务员核实"
+                if evidence and evidence.get("platform") == "TMALL" else HOLD_REASON)
         if evidence is not None:
             self.verifier._enqueue_todo(order, evidence)
         self.session.commit()

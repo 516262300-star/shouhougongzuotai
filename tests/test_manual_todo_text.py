@@ -76,6 +76,20 @@ def test_shared_package_keeps_all_distinct_order_numbers_not_product_list():
     assert prepare(result) == result
 
 
+def test_tmall_historical_misrouted_notice_requests_coordination_without_claiming_recall():
+    result = prepare({
+        "origin": "module1", "task_scope": "shared_package", "shop_name": "示例店",
+        "tracking_number": "TRACK-SYNTHETIC", "related_order_sns": ["order-B"],
+        "package_evidence": {"platform": "TMALL", "phase": "after_notice"},
+    })
+    assert "此前已发出快递拦截通知" in result["content"]
+    assert "协调快递撤销" in result["content"]
+    assert "已撤销" not in result["content"] and "已暂停自动退款" not in result["content"]
+    assert "已退款订单勿重复退款" in result["content"]
+    assert "order-B" in result["content"] and "TRACK-SYNTHETIC" in result["content"]
+    assert prepare(result) == result
+
+
 def test_return_mismatch_summary_keeps_both_missing_and_extra():
     payload = {
         "origin": "module2", "marker": "平台订单号：order-A", "content": "旧文案",

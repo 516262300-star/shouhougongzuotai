@@ -78,18 +78,31 @@ def prepare_manual_todo(
         related = list(dict.fromkeys(
             str(sn) for sn in related if sn and str(sn) != platform_order_sn
         ))
-        content = f"{marker} 店铺：{shop}；整包裹退款条件未满足，已暂停自动退款。"
+        notice_only = evidence.get("platform") == "TMALL"
+        content = f"{marker} 店铺：{shop}；" + (
+            "同包裹仅部分订单退款，需人工协调处理。" if notice_only
+            else "整包裹退款条件未满足，已暂停自动退款。")
         if evidence.get("phase") == "before_notice":
             content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
+        elif evidence.get("phase") == "after_notice":
+            content += (
+                "该包裹此前已发出快递拦截通知，请先核实快递处理进度；"
+                "如其他订单仍需正常收货，请及时协调快递撤销整包裹拦截。")
+        if notice_only and payload.get("tracking_number"):
+            content += f"发货运单：{payload['tracking_number']}。"
         if payload.get("assigned_order_sns"):
             content += f"您负责的退款申请订单：{'、'.join(payload['assigned_order_sns'])}。"
         if related:
             # 只删商品清单，不省略业务员需要联系处理的关联订单。
             content += f"关联订单：{'、'.join(related)}。"
-        content += (
-            "请联系客户确认商品是否仍需要：不需要则协助申请退款；"
-            "仍需要则协调保留收货或部分退货，核实后人工处理本笔退款。明细见售后工作台。"
-        )
+        if notice_only:
+            content += ("请联系客户确认保留收货或部分退货方案；"
+                        "已退款订单勿重复退款。明细见售后工作台。")
+        else:
+            content += (
+                "请联系客户确认商品是否仍需要：不需要则协助申请退款；"
+                "仍需要则协调保留收货或部分退货，核实后人工处理本笔退款。明细见售后工作台。"
+            )
     elif origin == "module1":
         marker, content, legacy = concise_module1_todo(
             content=old_content, marker=old_marker,

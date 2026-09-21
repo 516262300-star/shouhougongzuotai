@@ -30,7 +30,7 @@ def requested_orders(evidence, fallback):
         {
             r["order_sn"]
             for r in evidence.get("package_orders", [])
-            if r.get("after_sales_status") in {2, 3}
+            if r.get("after_sales_status") in {2, 3} or r.get("refund_requested") is True
         }
         | {fallback}
     )
