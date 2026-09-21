@@ -301,6 +301,7 @@ def test_bad_group_existing_draft_or_wrong_typed_text_never_press_send(
     monkeypatch, group, empty, draft, expected,
 ):
     gateway = object.__new__(WindowsWeComGateway)
+    monkeypatch.setattr(gateway, '_leave_global_search_if_needed', lambda *args: args)
     gateway.user32 = SimpleNamespace(GetForegroundWindow=lambda: 99)
     for name in ['_raise_if_security_window', '_raise_if_escape', '_hotkey', '_tap',
                  '_sleep_range', '_snapshot', '_open_group_search', '_wait_for_change',

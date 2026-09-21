@@ -116,6 +116,7 @@ def test_visual_change_requires_message_receipt(monkeypatch, receipt_ok, previou
         visual_checks += 1
 
     monkeypatch.setattr(gateway, "_activate_wecom_foreground", lambda: (11, 101))
+    monkeypatch.setattr(gateway, "_leave_global_search_if_needed", lambda *args: args)
     monkeypatch.setattr(gateway, "_require_wecom_foreground", require_foreground)
     monkeypatch.setattr(gateway, "_raise_if_security_window", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway, "_raise_if_escape", lambda *args, **kwargs: None)

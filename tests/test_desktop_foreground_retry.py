@@ -42,7 +42,8 @@ def setup_sender(tmp_path, monkeypatch, failure, after_paste=False):
 
 @pytest.mark.parametrize('error_type', [sender.DesktopForegroundUnavailableError,
                                        sender.DesktopSearchUnavailableError,
-                                       sender.DesktopGroupUnavailableError])
+                                       sender.DesktopGroupUnavailableError,
+                                       sender.DesktopReceiptUnavailableError])
 def test_activation_failure_retries_only_after_cooldown(tmp_path, monkeypatch, error_type):
     session, ledger, service, plan = setup_sender(
         tmp_path, monkeypatch, error_type('未就绪'),
@@ -81,7 +82,8 @@ def test_other_failures_never_get_automatic_retry(tmp_path, monkeypatch, failure
 
 
 @pytest.mark.parametrize('error_type', [sender.DesktopForegroundUnavailableError,
-                                       sender.DesktopSearchUnavailableError])
+                                       sender.DesktopSearchUnavailableError,
+                                       sender.DesktopReceiptUnavailableError])
 def test_foreground_error_after_paste_cannot_be_downgraded(tmp_path, monkeypatch, error_type):
     session, ledger, service, plan = setup_sender(
         tmp_path, monkeypatch, error_type('未就绪'), True,

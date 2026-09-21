@@ -18,6 +18,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopBeforePasteError,
     DesktopForegroundUnavailableError,
     DesktopGroupUnavailableError,
+    DesktopReceiptUnavailableError,
     DesktopSearchUnavailableError,
     DesktopSendHooks,
 )
@@ -64,7 +65,7 @@ def _select_wecom_window(
     """选择唯一最大的企业微信主窗口，避免把输入发到弹窗或小工具窗。"""
 
     if not candidates:
-        raise DesktopBeforePasteError("未找到可见的企业微信主窗口")
+        raise DesktopForegroundUnavailableError("未找到可见的企业微信主窗口")
     ordered = sorted(candidates, key=lambda item: item.area, reverse=True)
     if len(ordered) > 1 and ordered[0].area == ordered[1].area:
         raise DesktopBeforePasteError("检测到多个同尺寸企业微信窗口，禁止自动选择")
@@ -239,6 +240,7 @@ class WindowsWeComGateway:
             self._target_process_id = process_id
             self._raise_if_security_window(process_id)
 
+            hwnd, process_id = self._leave_global_search_if_needed(hwnd, process_id)
             self._hotkey(VK_CONTROL, VK_1)
             self._sleep_range(120, 260)
             self._sleep_range(320, 620)
@@ -646,8 +648,26 @@ class WindowsWeComGateway:
                 raise DesktopAmbiguousSendError(error)
             raise DesktopBeforePasteError(error)
 
+    def _leave_global_search_if_needed(self, hwnd: int, process_id: int) -> tuple[int, int]:
+        """仅关闭明确识别的全局搜索页；不清空草稿、不点击历史搜索结果。"""
+        snapshot = self._full_snapshot(hwnd)
+        try:
+            search_page = self.receipt_reader.is_global_search_page(snapshot)
+        except Exception as exc:
+            raise DesktopReceiptUnavailableError("暂时无法核验企业微信当前页面") from exc
+        if not search_page:
+            return hwnd, process_id
+        self._raise_if_security_window(process_id)
+        self._tap(VK_ESCAPE)
+        self._sleep_range(320, 620)
+        # 搜索页可能是独立窗口，退出后必须重新选择并核验主窗口。
+        hwnd, process_id = self._activate_wecom_foreground()
+        self._target_hwnd, self._target_process_id = hwnd, process_id
+        self._raise_if_security_window(process_id)
+        return hwnd, process_id
+
     def _read_receipt(self, hwnd: int, plan: DesktopNoticePlan, *, ambiguous: bool = False):
-        error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
+        error_type = DesktopAmbiguousSendError if ambiguous else DesktopReceiptUnavailableError
         self._raise_if_escape(ambiguous=ambiguous)
         process_id = getattr(self, "_target_process_id", None)
         if process_id is not None:
@@ -785,13 +805,16 @@ class WindowsWeComGateway:
 
     def _full_snapshot(self, hwnd: int, *, ambiguous: bool = False) -> Image:
         self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        error_type = DesktopAmbiguousSendError if ambiguous else DesktopReceiptUnavailableError
         rect = wintypes.RECT()
         if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
-            error_type = DesktopAmbiguousSendError if ambiguous else DesktopBeforePasteError
             raise error_type("无法读取企业微信窗口区域")
-        image = self.ImageGrab.grab(
-            bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True,
-        ).convert("RGB")
+        try:
+            image = self.ImageGrab.grab(
+                bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True,
+            ).convert("RGB")
+        except Exception as exc:
+            raise error_type("暂时无法读取企业微信画面") from exc
         self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
         return image
 

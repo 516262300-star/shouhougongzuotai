@@ -118,6 +118,19 @@ class WeComReceiptReader:
     def __init__(self, ocr=None) -> None:
         self.ocr = ocr or _local_ocr()
 
+    def is_global_search_page(self, image: Image) -> bool:
+        # 必须同时具备顶部分类栏及底部关闭搜索窗口提示。不能根据聊天
+        # 正文或目标群名猜测页面，更不能把搜索结果当作目标群。
+        w, h = image.size
+        if w < 800 or h < 550:
+            return False
+        read = getattr(self.ocr, "read_title", self.ocr.read)
+        tabs = group_key(read(image.crop((0, int(h * .09), w, int(h * .20)))))
+        if not all(label in tabs for label in ("联系人", "群聊", "聊天记录")):
+            return False
+        footer = group_key(read(image.crop((0, int(h * .94), w, h)))).lower()
+        return "esc关闭窗口" in footer and "ctrl+tab" in footer
+
     @staticmethod
     def _input_panel_bounds(rgb: Image) -> tuple[int, int]:
         w, h = rgb.size

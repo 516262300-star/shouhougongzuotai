@@ -107,6 +107,20 @@ def test_monitor_does_not_offer_retry_for_cancelled_task(tmp_path) -> None:
     assert "不会再次发送" in state["message"]
 
 
+@pytest.mark.parametrize("retry_after,automatic", [
+    ("2026-09-21T08:00:00+00:00", True),
+    ("2026-09-21T08:00:00", False), ("bad", False), (None, False),
+])
+def test_monitor_distinguishes_automatic_retry(tmp_path, retry_after, automatic):
+    ledger = _append_blocking_entry(tmp_path, DesktopLedgerState.PAUSED_BEFORE_PASTE)
+    ledger.append(task_id=823, state=DesktopLedgerState.PAUSED_BEFORE_PASTE,
+                  plan_hash="a" * 64, retry_after=retry_after)
+    state = RuntimeMonitorService(_FakeSession(), settings=_settings(),
+                                  project_root=tmp_path)._desktop_notification_recovery()
+    assert state["automatic_retry"] is automatic
+    assert ("无需手动点击" in state["message"]) is automatic
+
+
 def test_retry_discards_cancelled_task_paused_before_paste(tmp_path) -> None:
     ledger = _append_blocking_entry(tmp_path, DesktopLedgerState.PAUSED_BEFORE_PASTE)
     service = DesktopNoticeRecoveryService(

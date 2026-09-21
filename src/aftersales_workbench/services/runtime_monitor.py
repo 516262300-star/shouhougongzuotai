@@ -279,13 +279,23 @@ class RuntimeMonitorService:
         )
         can_retry = paused_before_paste and task_is_pending_notice
         stale_before_paste = paused_before_paste and not task_is_pending_notice
+        automatic_retry = False
+        if can_retry and blocking.retry_after:
+            try:
+                automatic_retry = datetime.fromisoformat(blocking.retry_after).tzinfo is not None
+            except ValueError:
+                pass
         return {
             "blocking_task_id": blocking.task_id,
             "blocking_state": blocking.state.value,
             "can_retry": can_retry,
+            "automatic_retry": automatic_retry,
+            "retry_after": blocking.retry_after if automatic_retry else None,
             "requires_manual_verification": not paused_before_paste,
             "message": (
-                "发送前失败，确认企业微信可用后可以安全重试"
+                ("尚未输入消息，已安排后台自动重试；"
+                 "冷却 60 秒后在下一发送周期重新核验，无需手动点击"
+                 if automatic_retry else "发送前失败，确认企业微信可用后可以安全重试")
                 if can_retry
                 else (
                     "动作任务已取消、完成或不存在，后台将安全解除旧发送阻塞，不会再次发送"
