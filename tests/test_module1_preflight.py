@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from aftersales_workbench.db.models import (
     AutomationActionType,
     AutomationTaskStatus,
@@ -157,50 +159,50 @@ def test_no_trace_keeps_notice_and_freezes_refund_before_threshold() -> None:
     assert order.logistics_last_error == "no trace"
     assert order.logistics_next_check_at > order.logistics_checked_at
     assert task.payload["manual_check_required"] is False
-    assert "等待自动重试" in task.last_error
+    assert "保留拦截通知" in task.last_error
 
 
-def test_sixth_no_trace_text_marks_task_for_manual_review() -> None:
-    task = _task()
-    order = _order()
-    order.logistics_query_failures = 5
+@pytest.mark.parametrize('failures', [5, 6, 20])
+@pytest.mark.parametrize('error', [
+    RuntimeError("查询无结果，请隔段时间再查"),
+    Kuaidi100NoTraceError("查询无结果，请隔段时间再查"),
+])
+def test_repeated_no_trace_keeps_intercept_without_enabling_refund(failures, error):
+    task, order = _task(), _order()
+    order.logistics_query_failures = failures
+    order.logistics_last_error = "查询无结果，请隔段时间再查"
+    session, result = _run(task, order, FakeQuery(error=error))
+    assert result.logistics_no_trace == result.unknown_ready == 1
+    assert result.manual_review_required == 0
+    assert task.action_status is AutomationTaskStatus.PENDING
+    assert order.workflow_status is WorkflowStatus.PENDING_CHECK
+    assert order.logistics_query_failures == failures + 1
+    assert order.logistics_next_check_at > order.logistics_checked_at
+    assert task.payload['refund_gate'] == 'HOLD'
+    assert task.payload['manual_check_required'] is False
+    assert notification_preflight_ready(task.payload)
+    assert session.added == []
 
-    _session, result = _run(
-        task,
-        order,
-        FakeQuery(error=RuntimeError("查询无结果，请隔段时间再查")),
-    )
 
-    assert result.manual_review_required == 1
-    assert order.logistics_query_failures == 6
-    assert task.payload["manual_check_required"] is True
-    assert task.action_status is AutomationTaskStatus.CANCELLED
-    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
-    assert "需人工核对" in task.last_error
+@pytest.mark.parametrize('failures', [0, 6])
+def test_network_error_cannot_authorize_intercept_as_no_trace(failures):
+    task, order = _task(), _order()
+    order.logistics_query_failures = failures
+    session, result = _run(task, order, FakeQuery(error=TimeoutError('network timeout')))
+    assert result.logistics_query_failed == 1 and result.notices_ready == 0
+    assert task.action_status is AutomationTaskStatus.PENDING
+    assert not notification_preflight_ready(task.payload)
+    assert task.payload['refund_gate'] == 'HOLD' and session.added == []
 
 
-def test_sixth_no_trace_cancels_notice_and_routes_manual() -> None:
-    task = _task()
-    order = _order()
-    order.logistics_query_failures = 5
-
-    _session, result = _run(
-        task,
-        order,
-        FakeQuery(error=Kuaidi100NoTraceError("查询无结果，请隔段时间再查")),
-    )
-
-    assert result.logistics_query_failed == 0
-    assert result.logistics_no_trace == 1
-    assert result.logistics_no_trace_packages == 1
-    assert result.manual_review_required == 1
-    assert task.action_status is AutomationTaskStatus.CANCELLED
-    assert task.payload["refund_gate"] == "HOLD"
-    assert task.payload["manual_check_required"] is True
-    assert order.workflow_status is WorkflowStatus.MANUAL_PROCESSING
-    assert order.logistics_next_check_at is None
-    assert "已停止自动查询" in task.last_error
-    assert "需人工核对" in task.last_error
+@pytest.mark.parametrize('state', ['DELIVERED', 'RETURNING', 'RETURNED'])
+def test_no_trace_does_not_erase_terminal_logistics_history(state):
+    task, order = _task(), _order()
+    order.logistics_state = state
+    session, result = _run(task, order, FakeQuery(error=Kuaidi100NoTraceError('查询无结果')))
+    assert not notification_preflight_ready(task.payload)
+    assert result.notices_ready == 0 and order.logistics_state == state
+    assert session.added == []
 
 
 def test_success_resets_query_failure_audit() -> None:

@@ -24,12 +24,10 @@ from aftersales_workbench.workflows.module1_logistics import (
     LogisticsQueryCache,
     LogisticsState,
     classify_logistics_trace,
-    logistics_no_trace_manual_required,
     query_logistics_cached,
     record_logistics_query_failure,
     record_logistics_query_success,
     resolve_logistics_carrier,
-    route_logistics_no_trace_to_manual,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 from aftersales_workbench.workflows.sync_safety import sync_safe_order_filter
@@ -69,7 +67,8 @@ def notification_preflight_ready(payload: dict[str, object] | None) -> bool:
     state = str(values.get("preflight_state") or "")
     gate = str(values.get("refund_gate") or "")
     checked_at = str(values.get("preflight_checked_at") or "")
-    if not checked_at:
+    if (not checked_at or values.get("manual_check_required")
+            or values.get("preflight_query_result") == "UNAVAILABLE"):
         return False
     if state in {LogisticsState.IN_TRANSIT.value, LogisticsState.UNCOLLECTED.value}:
         return gate == "ALLOW_AFTER_NOTICE"
@@ -142,28 +141,6 @@ class Module1NotificationPreflightService:
         no_trace_packages: set[tuple[str, str, str | None]] = set()
         try:
             for task, order in rows:
-                if logistics_no_trace_manual_required(
-                    order,
-                    policy=self.polling_policy,
-                ):
-                    result.logistics_no_trace += 1
-                    no_trace_packages.add(
-                        (
-                            str(order.carrier_code or "").strip(),
-                            str(order.forward_tracking_number or "").strip(),
-                            self.default_phone,
-                        )
-                    )
-                    result.manual_review_required += 1
-                    if not dry_run:
-                        self._route_no_trace_manual(
-                            task,
-                            order,
-                            failures=int(order.logistics_query_failures or 0),
-                            error_text=str(order.logistics_last_error or ""),
-                            checked_at=now,
-                        )
-                    continue
                 try:
                     from aftersales_workbench.workflows.tmall_trade_intercept import KEY
                     if (task.payload or {}).get(KEY):
@@ -183,15 +160,16 @@ class Module1NotificationPreflightService:
                         )
                     else:
                         result.logistics_query_failed += 1
-                    self._count(result, order, LogisticsState.UNKNOWN, task.payload)
+                    if no_trace and not self._terminal_history(order):
+                        self._count(result, order, LogisticsState.UNKNOWN, task.payload)
                     if not dry_run:
-                        failures = self._apply_query_failure(
+                        self._apply_query_failure(
                             task,
                             order,
                             exc,
                             no_trace=no_trace,
                         )
-                        if failures >= self.polling_policy.manual_after_failures:
+                        if (task.payload or {}).get("manual_check_required"):
                             result.manual_review_required += 1
                     continue
                 self._count(result, order, state, task.payload)
@@ -314,6 +292,7 @@ class Module1NotificationPreflightService:
                 "logistics_last_error": None,
                 "logistics_next_check_at": order.logistics_next_check_at.isoformat(),
                 "manual_check_required": False,
+                "preflight_query_result": "TRACE",
             }
         )
         task.payload = payload
@@ -414,16 +393,13 @@ class Module1NotificationPreflightService:
             checked_at=checked_at,
             policy=self.polling_policy,
         )
-        manual_required = failures >= self.polling_policy.manual_after_failures
-        if no_trace and manual_required:
-            self._route_no_trace_manual(
-                task,
-                order,
-                failures=failures,
-                error_text=error_text,
-                checked_at=checked_at,
-            )
-            return failures
+        # 无轨迹是拦截通知的有效候选，不因重查次数取消；退款仍为 HOLD。
+        # 已知签收/退回证据不能被本次空结果冲掉，技术错误也不能充当无轨迹。
+        notice_allowed = no_trace and not self._terminal_history(order)
+        manual_required = not notice_allowed and (
+            self._terminal_history(order)
+            or failures >= self.polling_policy.manual_after_failures
+        )
         retry_at = order.logistics_next_check_at
         payload = dict(task.payload or {})
         payload.update(
@@ -435,40 +411,24 @@ class Module1NotificationPreflightService:
                 "logistics_last_error": error_text[:500],
                 "logistics_next_check_at": retry_at.isoformat() if retry_at else None,
                 "manual_check_required": manual_required,
+                "preflight_query_result": "NO_TRACE" if notice_allowed else "UNAVAILABLE",
             }
         )
         task.payload = payload
-        prefix = "需人工核对" if manual_required else "等待自动重试"
-        task.last_error = (f"快递100连续{failures}次查询失败（{prefix}）：{error_text}")[:1000]
+        if notice_allowed:
+            task.last_error = (f"快递100连续{failures}次无轨迹，保留拦截通知，退款待核验："
+                               f"{error_text}")[:1000]
+        else:
+            prefix = "需人工核对" if manual_required else "等待自动重试"
+            task.last_error = (f"快递100连续{failures}次查询失败（{prefix}）：{error_text}")[:1000]
         return failures
 
     @staticmethod
-    def _route_no_trace_manual(
-        task: AftersalesActionTask,
-        order: AfterSalesOrder,
-        *,
-        failures: int,
-        error_text: str,
-        checked_at: datetime,
-    ) -> None:
-        route_logistics_no_trace_to_manual(order, failures=failures)
-        task.action_status = AutomationTaskStatus.CANCELLED
-        payload = dict(task.payload or {})
-        payload.update(
-            {
-                "preflight_state": LogisticsState.UNKNOWN.value,
-                "preflight_checked_at": checked_at.isoformat(),
-                "refund_gate": "HOLD",
-                "logistics_query_failures": failures,
-                "logistics_last_error": error_text[:500],
-                "logistics_next_check_at": None,
-                "manual_check_required": True,
-            }
-        )
-        task.payload = payload
-        task.last_error = (
-            f"快递100连续{failures}次查询无轨迹，已停止自动查询，需人工核对"
-        )[:1000]
+    def _terminal_history(order: AfterSalesOrder) -> bool:
+        return (getattr(order, "logistics_state", None) in {
+            LogisticsState.DELIVERED.value, LogisticsState.RETURNING.value,
+            LogisticsState.RETURNED.value,
+        } or getattr(order, "logistics_return_detected_at", None) is not None)
 
     @staticmethod
     def _cancellation_reason(state: LogisticsState) -> str:
