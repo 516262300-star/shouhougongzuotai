@@ -82,8 +82,8 @@ def test_normal_send_wait_does_not_scroll(gateway):
     assert not gateway.scrolls
 
 
-@pytest.mark.parametrize('changed', [False, True])
-def test_scroll_rechecks_group_and_only_emits_wheel_not_keyboard(changed):
+@pytest.mark.parametrize('changed,moved', [(False, False), (True, False), (False, True)])
+def test_scroll_rechecks_group_and_only_emits_wheel_not_keyboard(changed, moved):
     g = object.__new__(module.WindowsWeComGateway)
     g._target_process_id = 101
     g._last_receipt_snapshot = scene()
@@ -109,7 +109,10 @@ def test_scroll_rechecks_group_and_only_emits_wheel_not_keyboard(changed):
         sent.append((event.type, event.mi.dwFlags, event.mi.mouseData))
         return 1
     def dispatch(*a, **kw):
-        assert cursor == [780, round(857 * .45)] and sent == [(0, 0x0800, 360)]
+        assert cursor == [780, round(857 * .45)]
+        assert 1 <= len(sent) <= 3 and sent == [(0, 0x0800, 120)] * len(sent)
+        if moved:
+            cursor[:] = [40, 50]
     g._sleep_range = dispatch
     g.user32 = NS(GetWindowRect=rect, GetCursorPos=get_cursor, SetCursorPos=set_cursor,
                   SendInput=send)
@@ -117,7 +120,12 @@ def test_scroll_rechecks_group_and_only_emits_wheel_not_keyboard(changed):
         with pytest.raises(DesktopAmbiguousSendError):
             g._scroll_receipt_history(11, NS())
         assert sent == []
+    elif moved:
+        with pytest.raises(DesktopAmbiguousSendError, match='鼠标位置已变化'):
+            g._scroll_receipt_history(11, NS())
+        assert sent == [(0, 0x0800, 120)] and cursor == [40, 50]
     else:
         assert g._scroll_receipt_history(11, NS())
-        assert sent == [(0, 0x0800, 360)]
-    assert cursor == [20, 30]
+        assert sent == [(0, 0x0800, 120)] * 3
+    if not moved:
+        assert cursor == [20, 30]

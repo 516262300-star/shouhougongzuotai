@@ -747,16 +747,20 @@ class WindowsWeComGateway:
         if not self.user32.SetCursorPos(x, y):
             raise DesktopAmbiguousSendError("无法定位目标群聊天区域，未滚动")
         try:
-            self._require_target_foreground(hwnd=hwnd, ambiguous=True)
-            self._raise_if_escape(ambiguous=True)
-            # 每次三格，保留相邻画面的重叠，避免整条消息被跳过。
-            event = _INPUT(type=0)
-            event.mi = _MOUSEINPUT(0, 0, 360, 0x0800, 0, 0)  # MOUSEEVENTF_WHEEL
-            if self.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT)) != 1:
-                raise DesktopAmbiguousSendError("历史回看滚轮未成功，消息状态仍待核实")
-            # SendInput 只确认事件入队；鼠标立即复位可能使滚轮落到原位置窗口。
-            # 保持在聊天正文内等待派发，再按当前鼠标位置决定是否恢复。
-            self._sleep_range(500, 800, ambiguous=True)
+            # 企微可能把单个大 delta 只处理成一步；分三次各滚一格，保留重叠。
+            # SendInput 只确认入队，每步保持鼠标位置等待派发，不立即复位。
+            for _ in range(3):
+                self._require_target_foreground(hwnd=hwnd, ambiguous=True)
+                self._raise_if_escape(ambiguous=True)
+                current = wintypes.POINT()
+                if (not self.user32.GetCursorPos(ctypes.byref(current))
+                        or (current.x, current.y) != (x, y)):
+                    raise DesktopAmbiguousSendError("鼠标位置已变化，停止历史回看")
+                event = _INPUT(type=0)
+                event.mi = _MOUSEINPUT(0, 0, 120, 0x0800, 0, 0)  # MOUSEEVENTF_WHEEL
+                if self.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT)) != 1:
+                    raise DesktopAmbiguousSendError("历史回看滚轮未成功，消息状态仍待核实")
+                self._sleep_range(170, 260, ambiguous=True)
         finally:
             current = wintypes.POINT()
             if (self.user32.GetCursorPos(ctypes.byref(current))
