@@ -14,6 +14,8 @@ from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder as Order
 from aftersales_workbench.db.models import Shop
+from aftersales_workbench.integrations.logistics.kuaidi100 import Kuaidi100NoTraceError
+from aftersales_workbench.integrations.tmall.client import TmallApiError
 from aftersales_workbench.integrations.tmall.mapper import normalize_refund
 from aftersales_workbench.services.aftersales_records import AftersalesRecordService
 from aftersales_workbench.services.refund_scope import PARTIAL_REFUND_NOTE, reconcile_refund_scope
@@ -219,6 +221,89 @@ def test_top_level_signed_placeholder_never_cancels_transit_notice(case):
     result = service.run(dry_run=False)
     assert result.in_transit_ready == 2
     assert all(t.action_status == 'PENDING' for t in tasks)
+    query.query.assert_not_called()
+
+
+@pytest.mark.parametrize("native", ["empty", "isv.order-no-trace", "isp.order-no-trace",
+                                   "waiting_pickup"])
+def test_full_trade_no_native_trace_uses_common_policy_and_sends_once(case, tmp_path, native):
+    tasks = prepare(case)
+    for order in case.orders:
+        order.logistics_query_failures = 20
+    case.db.commit()
+    if native == "empty":
+        case.steps.clear()
+    elif native == "waiting_pickup":
+        case.steps[0]["status_desc"] = "包裹正在等待揽收"
+    else:
+        case.client.execute_read.side_effect = TmallApiError(
+            code=15, message="synthetic", sub_code=native)
+    service, query = preflight(case)
+    query.query.side_effect = Kuaidi100NoTraceError("查询无结果")
+    result = service.run(dry_run=False)
+    assert result.notices_ready == result.unknown_ready == 2
+    assert result.notices_cancelled == 0
+    assert all(t.action_status == "PENDING" and t.payload["refund_gate"] == "HOLD"
+               and t.payload["preflight_query_result"] == "NO_TRACE" for t in tasks)
+    assert query.query.call_count == 1  # 同包裹共用一次物流查询。
+    from tests.test_tmall_notice_package import notice_guard
+
+    def send(plan, hooks):
+        hooks.paste_started()
+        hooks.send_pressed()
+        hooks.sent()
+
+    gateway = Mock(send=Mock(side_effect=send))
+    sender = DesktopNoticeSendService(case.db, gateway, DesktopNoticeLedger(tmp_path / "ledger"))
+    sender.package_guard = notice_guard(case)
+    assert sender.run([plan_for(case, t) for t in tasks]).sent == 1
+    gateway.send.assert_called_once()
+    assert all(t.action_status == "SUCCEEDED" for t in tasks)
+    case.client.agree_refund.assert_not_called()
+    assert len(list(case.db.scalars(select(Task)))) == 2
+
+
+@pytest.mark.parametrize("native", ["empty", "isv.order-no-trace", "isp.order-no-trace"])
+def test_financial_trace_lookup_does_not_inherit_notice_only_empty_fallback(case, native):
+    prepare(case)
+    if native == "empty":
+        case.steps.clear()
+    else:
+        case.client.execute_read.side_effect = TmallApiError(
+            code=15, message="synthetic", sub_code=native)
+    with pytest.raises((ValueError, TmallApiError)):
+        case.inspector.trace_events(case.orders[0])
+
+
+@pytest.mark.parametrize("fault", ["network", "auth", "identity", "missing_list",
+                                  "invalid_node", "missing_body"])
+def test_full_trade_invalid_native_response_cannot_become_empty_trace(case, fault):
+    tasks = prepare(case)
+    if fault == "network":
+        case.client.execute_read.side_effect = TimeoutError("synthetic")
+    elif fault == "auth":
+        case.client.execute_read.side_effect = TmallApiError(
+            code=27, message="synthetic", sub_code="isv.invalid-sessionkey")
+    else:
+        body = case.client.execute_read("taobao.logistics.trace.search", tid=8001)
+        node = body["logistics_trace_search_response"]
+        if fault == "identity":
+            node["out_sid"] = "OTHER"
+            node["trace_list"]["transit_step_info"] = []
+        elif fault == "missing_list":
+            node.pop("trace_list")
+        elif fault == "invalid_node":
+            node["trace_list"]["transit_step_info"] = [{}]
+        else:
+            body["logistics_trace_search_response"] = None
+        case.client.execute_read.side_effect = None
+        case.client.execute_read.return_value = body
+    service, query = preflight(case)
+    query.query.side_effect = Kuaidi100NoTraceError("查询无结果")
+    result = service.run(dry_run=False)
+    assert result.notices_ready == 0 and result.logistics_query_failed == 2
+    assert all(t.action_status == "PENDING" and t.payload["preflight_query_result"] == "UNAVAILABLE"
+               for t in tasks)
     query.query.assert_not_called()
 
 

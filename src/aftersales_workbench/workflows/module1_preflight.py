@@ -213,7 +213,7 @@ class Module1NotificationPreflightService:
         from aftersales_workbench.workflows.tmall_trade_intercept import TradeInspector
 
         inspector = getattr(self, "trade_inspector", None) or TradeInspector(self.session)
-        events = inspector.trace_events(order)
+        events = inspector.trace_events(order, allow_empty_for_notice=True)
         state = classify_logistics_trace(events)
         if state is LogisticsState.UNKNOWN:
             # 待揽收文字不授予资金资格，仍须原物流接口核验；查询失败不能放行。

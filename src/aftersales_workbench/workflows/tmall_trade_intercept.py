@@ -10,7 +10,7 @@ from aftersales_workbench.core.config import get_settings
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder as Order
 from aftersales_workbench.db.models import Platform, Shop
-from aftersales_workbench.integrations.tmall.client import TmallClient
+from aftersales_workbench.integrations.tmall.client import TmallApiError, TmallClient
 from aftersales_workbench.integrations.tmall.mapper import (
     normalize_forward_logistics,
     unwrap_refund,
@@ -139,21 +139,34 @@ class TradeInspector:
                 raise ValueError("整单退款核验店铺授权身份不符")
             return {**inspect_trade(client, order_sn), "shop_id": shop.shop_id}
 
-    def trace_events(self, order):
+    def trace_events(self, order, *, allow_empty_for_notice=False):
         from aftersales_workbench.integrations.logistics.kuaidi100 import LogisticsEvent
         from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
 
         shop = self.session.get(Shop, order.shop_id)
-        with self.client_factory(shop) as client:
-            body = client.execute_read("taobao.logistics.trace.search", tid=int(
-                order.platform_order_sn)).get("logistics_trace_search_response", {})
+        try:
+            with self.client_factory(shop) as client:
+                body = client.execute_read("taobao.logistics.trace.search", tid=int(
+                    order.platform_order_sn)).get("logistics_trace_search_response", {})
+        except TmallApiError as exc:
+            if (allow_empty_for_notice
+                    and exc.sub_code in {"isv.order-no-trace", "isp.order-no-trace"}):
+                # 仅发送前允许继续第三方查询；不把平台无记录当作资金资格。
+                return []
+            raise
+        if not isinstance(body, dict):
+            raise ValueError("天猫物流轨迹响应格式无效")
         carrier = resolve_logistics_carrier(order.carrier_code, self.settings.kuaidi100_carrier_map)
         if (str(body.get("tid")) != order.platform_order_sn
                 or str(body.get("out_sid")) != order.forward_tracking_number
                 or resolve_logistics_carrier(body.get("company_name"),
                                              self.settings.kuaidi100_carrier_map) != carrier):
             raise ValueError("天猫实时轨迹与拦截运单身份不一致")
-        steps = body.get("trace_list", {}).get("transit_step_info")
+        node = body.get("trace_list")
+        steps = node.get("transit_step_info") if isinstance(node, dict) else None
+        if allow_empty_for_notice and isinstance(steps, list) and not steps:
+            # 已确认交易、运单、快递公司一致的空列表，交给统一通知预检。
+            return []
         if not isinstance(steps, list) or not steps:
             raise ValueError("天猫未返回有效物流节点，不能把顶层状态当作已签收")
         events = []
