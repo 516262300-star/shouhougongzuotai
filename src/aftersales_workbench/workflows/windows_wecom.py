@@ -685,7 +685,7 @@ class WindowsWeComGateway:
         return result
 
     def verify_existing_receipt(self, plan: DesktopNoticePlan) -> dict:
-        """只查看当前群的原消息；不搜索、不输入消息、不按发送键。"""
+        """只回看当前目标群的原消息；允许有限滚动，不搜索或输入消息。"""
         self._restore_hwnd = int(self.user32.GetForegroundWindow() or 0)
         self._target_hwnd = None
         self._target_process_id = None
@@ -695,7 +695,7 @@ class WindowsWeComGateway:
             hwnd, process_id = self._activate_wecom_foreground()
             self._target_hwnd, self._target_process_id = hwnd, process_id
             self._raise_if_security_window(process_id, ambiguous=True)
-            self._wait_for_receipt(hwnd, plan)
+            self._wait_for_receipt(hwnd, plan, allow_history=True)
             return self._receipt_report
         finally:
             self._restore_after_send()
@@ -723,7 +723,46 @@ class WindowsWeComGateway:
         self._raise_if_security_window(process_id.value, ambiguous=True)
         self._require_target_foreground(hwnd=hwnd, ambiguous=True)
 
-    def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan) -> None:
+    def _scroll_receipt_history(self, hwnd, plan):
+        """滚轮仅发往已核对目标群的聊天正文区域，不点击、不按键。"""
+        observed = self._read_receipt(hwnd, plan, ambiguous=True)
+        if not observed.group_matches or not observed.input_empty or observed.draft_matches:
+            raise DesktopAmbiguousSendError("历史回看时群名变化或出现草稿，停止滚动")
+        if observed.matching_bubbles:
+            return False  # 最新截图已经找到候选，必须先核验，不能滚走。
+        snapshot = self._last_receipt_snapshot
+        left, right = self.receipt_reader._input_panel_bounds(snapshot.convert('RGB'))
+        rect = wintypes.RECT()
+        if (not self.user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                or (rect.right - rect.left, rect.bottom - rect.top) != snapshot.size):
+            raise DesktopAmbiguousSendError("历史回看期间窗口位置或尺寸无法核实")
+        x = rect.left + (left + right) // 2
+        y = rect.top + round(snapshot.height * .45)
+        previous = wintypes.POINT()
+        if not self.user32.GetCursorPos(ctypes.byref(previous)):
+            raise DesktopAmbiguousSendError("无法保存历史回看前的鼠标位置")
+        self._require_target_foreground(hwnd=hwnd, ambiguous=True)
+        self._raise_if_security_window(self._target_process_id, ambiguous=True)
+        self._raise_if_escape(ambiguous=True)
+        if not self.user32.SetCursorPos(x, y):
+            raise DesktopAmbiguousSendError("无法定位目标群聊天区域，未滚动")
+        try:
+            self._require_target_foreground(hwnd=hwnd, ambiguous=True)
+            self._raise_if_escape(ambiguous=True)
+            # 每次三格，保留相邻画面的重叠，避免整条消息被跳过。
+            event = _INPUT(type=0)
+            event.mi = _MOUSEINPUT(0, 0, 360, 0x0800, 0, 0)  # MOUSEEVENTF_WHEEL
+            if self.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT)) != 1:
+                raise DesktopAmbiguousSendError("历史回看滚轮未成功，消息状态仍待核实")
+        finally:
+            current = wintypes.POINT()
+            if (self.user32.GetCursorPos(ctypes.byref(current))
+                    and (current.x, current.y) == (x, y)):
+                self.user32.SetCursorPos(previous.x, previous.y)
+        self._sleep_range(500, 800, ambiguous=True)
+        return True
+
+    def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan, *, allow_history=False) -> None:
         # 三次完整 OCR 在忙碌/高分屏机器上可能超过原来的 12 秒。
         # 只增加读取预算，仍要求连续三次、至少两秒的严格全文和状态核验。
         started = time.monotonic()
@@ -732,7 +771,7 @@ class WindowsWeComGateway:
         verified = False
         failure = None
         try:
-            self._poll_receipt(hwnd, plan, started, samples)
+            self._poll_receipt(hwnd, plan, started, samples, allow_history=allow_history)
             verified = True
         except Exception as exc:
             failure = str(exc)
@@ -742,6 +781,7 @@ class WindowsWeComGateway:
                 'task_id': getattr(plan, 'task_id', None), 'verified': verified, 'error': failure,
                 'checked_at': datetime.now(UTC).isoformat(),
                 'duration_seconds': round(time.monotonic() - started, 3), 'samples': samples,
+                'history_scrolls': sum(s.get('event') == 'history_scroll_up' for s in samples),
             }
             audit = getattr(self, 'receipt_audit_root', None)
             if audit is not None:
@@ -758,9 +798,11 @@ class WindowsWeComGateway:
                         json.dumps(self._receipt_report, ensure_ascii=False, indent=2),
                         encoding='utf-8')
 
-    def _poll_receipt(self, hwnd, plan, started, samples):
-        deadline = started + 45.0
+    def _poll_receipt(self, hwnd, plan, started, samples, *, allow_history=False):
+        budget = 90.0 if allow_history else 45.0
+        deadline = started + budget
         stable_since, confirmations, recovered_focus = None, 0, False
+        missing_since, missing_reads, scrolls = None, 0, 0
         while time.monotonic() < deadline:
             sample_start = time.monotonic()
             try:
@@ -781,7 +823,8 @@ class WindowsWeComGateway:
                     ) from recovery_error
                 # 丢弃失焦前观测，只用恢复后的连续新截图判断；仅延长一次。
                 stable_since, confirmations = None, 0
-                deadline = time.monotonic() + 45.0
+                missing_since, missing_reads = None, 0
+                deadline = time.monotonic() + budget
                 continue
             samples.append({'elapsed': round(time.monotonic() - started, 3),
                             'read_seconds': round(time.monotonic() - sample_start, 3),
@@ -789,6 +832,7 @@ class WindowsWeComGateway:
                                 'group_matches', 'input_empty', 'draft_matches',
                                 'matching_bubbles', 'status_clear')}})
             if observation.sent_visible:
+                missing_since, missing_reads = None, 0
                 confirmations += 1
                 if stable_since is None:
                     stable_since = time.monotonic()
@@ -797,6 +841,24 @@ class WindowsWeComGateway:
             else:
                 stable_since = None
                 confirmations = 0
+                if allow_history:
+                    if (not observation.group_matches or not observation.input_empty
+                            or observation.draft_matches or not observation.status_clear
+                            or observation.matching_bubbles > 1):
+                        raise DesktopAmbiguousSendError(
+                            "历史回看群名、草稿或发送状态不明确，保持暂停，禁止重发")
+                    missing_reads += 1
+                    if missing_since is None:
+                        missing_since = time.monotonic()
+                    if missing_reads >= 2 and time.monotonic() - missing_since >= 2:
+                        if scrolls >= 8:
+                            raise DesktopAmbiguousSendError(
+                                "限定历史范围内未找到原完整消息，保留发送凭证等待核实")
+                        if self._scroll_receipt_history(hwnd, plan):
+                            scrolls += 1
+                            samples.append({'elapsed': round(time.monotonic() - started, 3),
+                                            'event': 'history_scroll_up', 'count': scrolls})
+                        missing_since, missing_reads = None, 0
             self._sleep_range(350, 500, ambiguous=True)
         raise DesktopAmbiguousSendError(
             "已按发送键，但目标群完整消息、空输入框或发送状态未通过连续核验；"
