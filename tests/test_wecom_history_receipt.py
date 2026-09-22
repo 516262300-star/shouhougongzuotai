@@ -108,6 +108,9 @@ def test_scroll_rechecks_group_and_only_emits_wheel_not_keyboard(changed):
         event = ctypes.cast(pointer, ctypes.POINTER(module._INPUT)).contents
         sent.append((event.type, event.mi.dwFlags, event.mi.mouseData))
         return 1
+    def dispatch(*a, **kw):
+        assert cursor == [780, round(857 * .45)] and sent == [(0, 0x0800, 360)]
+    g._sleep_range = dispatch
     g.user32 = NS(GetWindowRect=rect, GetCursorPos=get_cursor, SetCursorPos=set_cursor,
                   SendInput=send)
     if changed:

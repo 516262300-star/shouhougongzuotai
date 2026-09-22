@@ -754,12 +754,14 @@ class WindowsWeComGateway:
             event.mi = _MOUSEINPUT(0, 0, 360, 0x0800, 0, 0)  # MOUSEEVENTF_WHEEL
             if self.user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(_INPUT)) != 1:
                 raise DesktopAmbiguousSendError("历史回看滚轮未成功，消息状态仍待核实")
+            # SendInput 只确认事件入队；鼠标立即复位可能使滚轮落到原位置窗口。
+            # 保持在聊天正文内等待派发，再按当前鼠标位置决定是否恢复。
+            self._sleep_range(500, 800, ambiguous=True)
         finally:
             current = wintypes.POINT()
             if (self.user32.GetCursorPos(ctypes.byref(current))
                     and (current.x, current.y) == (x, y)):
                 self.user32.SetCursorPos(previous.x, previous.y)
-        self._sleep_range(500, 800, ambiguous=True)
         return True
 
     def _wait_for_receipt(self, hwnd: int, plan: DesktopNoticePlan, *, allow_history=False) -> None:
