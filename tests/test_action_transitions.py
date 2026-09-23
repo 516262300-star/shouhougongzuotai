@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from aftersales_workbench.db.models import (
+    AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
     Platform,
@@ -356,3 +357,36 @@ def test_module2_pdd_success_preserves_inspection_pass_and_audit_payload() -> No
     assert coordinator.task.payload["platform_already_refunded"] is False
     assert coordinator.task.payload["platform_request_completed_at"]
     assert coordinator.enqueued == []
+
+
+def test_module2_tmall_success_queues_erp_refund_match() -> None:
+    order = _order()
+    order.platform = Platform.TMALL
+    order.after_sales_type = AfterSalesType.RETURN_AND_REFUND
+    order.return_tracking_number = "RETURN-TRACK"
+    order.workflow_status = WorkflowStatus.RETURN_INSPECTED_PASS
+    coordinator = TestCoordinator(
+        _task(
+            AutomationActionType.TMALL_AGREE_RETURN_REFUND,
+            status=AutomationTaskStatus.RUNNING,
+            origin="module2",
+        ),
+        order,
+    )
+
+    coordinator.record_external_success(
+        1,
+        result_payload={"platform_already_refunded": False},
+    )
+
+    assert order.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    assert coordinator.enqueued == [
+        (
+            AutomationActionType.ERP_MATCH_RETURN_ORDER,
+            {
+                "origin": "module2",
+                "tracking_number": "RETURN-TRACK",
+                "queued_reason": "platform_refunded_waiting_erp_refund_record",
+            },
+        )
+    ]

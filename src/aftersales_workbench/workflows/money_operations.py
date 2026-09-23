@@ -40,6 +40,7 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
     if operation_type == "ERP_REFUND" and platform != "PDD":
         if platform != "TMALL" or erp_adapter not in {
             "tmall_module3_unshipped_v1", "tmall_module1_return_v1",
+            "tmall_module2_grouped_return_v1",
         }:
             raise MoneyOperationBlocked("该平台未适配ERP资金操作")
         from aftersales_workbench.workflows.refund_snapshot import refund_snapshot
@@ -47,9 +48,17 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
 
         task = session.get(AftersalesActionTask, task_id)
         is_return = erp_adapter == 'tmall_module1_return_v1'
-        proof_key = 'tmall_module1_return_evidence' if is_return else 'tmall_module3_evidence'
+        is_grouped_return = erp_adapter == 'tmall_module2_grouped_return_v1'
+        proof_key = (
+            'tmall_grouped_return_evidence' if is_grouped_return
+            else 'tmall_module1_return_evidence' if is_return
+            else 'tmall_module3_evidence'
+        )
         proof = (task.payload or {}).get(proof_key, {}) if task else {}
-        required_action = A.ERP_MATCH_RETURN_ORDER if is_return else A.ERP_CHECK_FULFILLMENT
+        required_action = (
+            A.ERP_MATCH_RETURN_ORDER if is_return or is_grouped_return
+            else A.ERP_CHECK_FULFILLMENT
+        )
         state = module3_state(order)
         if is_return:
             from aftersales_workbench.integrations.erp.closure import platform_closure_error
@@ -61,6 +70,23 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
                     or proof.get('account', {}).get('receipt') != proof.get('receipt')
                     or not proof.get('account', {}).get('return_row')):
                 raise MoneyOperationBlocked('缺少本笔正式退货与原收款核验，不允许ERP补单')
+        elif is_grouped_return:
+            from aftersales_workbench.workflows.tmall_module1_return import grouped_return_state
+
+            state = grouped_return_state(order)
+            account = proof.get('account', {})
+            member = account.get('members', {}).get(order.after_sales_sn, {})
+            if (
+                str(order.after_sales_type) != 'RETURN_AND_REFUND'
+                or order.refund_financial_status != 'SUCCESS'
+                or order.actual_refund_amount != order.refund_amount
+                or member.get('state') != 'ready'
+                or member.get('record_id') != proof.get('erp_record_id')
+                or not proof.get('receipt')
+                or not account.get('return_rows')
+                or order.after_sales_sn not in proof.get('group_after_sales_sns', [])
+            ):
+                raise MoneyOperationBlocked('缺少分组退货、平台成功及逐笔ERP核账证据')
         try:
             age = (datetime.now(UTC) - datetime.fromisoformat(proof["started_at"])).total_seconds()
         except (KeyError, ValueError, TypeError):

@@ -5,7 +5,7 @@ from decimal import Decimal
 from functools import partial
 from hashlib import sha256
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import selectinload
 
 from aftersales_workbench.core.runtime_paths import get_runtime_root
@@ -16,17 +16,18 @@ from aftersales_workbench.db.models import (
     AfterSalesOrder as Order,
 )
 from aftersales_workbench.db.models import (
-    AutomationActionType as Action,
-)
-from aftersales_workbench.db.models import (
-    AutomationTaskStatus as State,
-)
-from aftersales_workbench.db.models import (
+    AfterSalesType,
     MoneyOperation,
     Platform,
     ShippingStatus,
     Shop,
     WorkflowStatus,
+)
+from aftersales_workbench.db.models import (
+    AutomationActionType as Action,
+)
+from aftersales_workbench.db.models import (
+    AutomationTaskStatus as State,
 )
 from aftersales_workbench.integrations.erp.closure import (
     closure_amount,
@@ -39,9 +40,12 @@ from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchSyncService,
     expected_items_from_order,
 )
+from aftersales_workbench.integrations.erp.tmall_grouped_returned import (
+    inspect_grouped_return_account,
+)
 from aftersales_workbench.integrations.erp.tmall_returned import inspect_return_account
 from aftersales_workbench.integrations.erp.tmall_unshipped import amount
-from aftersales_workbench.integrations.tmall.mapper import unwrap_trade
+from aftersales_workbench.integrations.tmall.mapper import unwrap_refund, unwrap_trade
 from aftersales_workbench.workflows.erp_claim_journal import ClaimJournal
 from aftersales_workbench.workflows.erp_return_claim import ErpReturnClaim
 from aftersales_workbench.workflows.money_operations import (
@@ -60,6 +64,7 @@ from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
 from aftersales_workbench.workflows.tmall_single_parcel import TmallSingleParcelVerifier
 
 SCOPE = "tmall_module1_return_v1"
+GROUP_SCOPE = "tmall_module2_grouped_return_v1"
 
 
 def journal_path():
@@ -77,6 +82,20 @@ def module1_state(order):
             "refund_financial_status",
             "workflow_status",
             "order_shipping_status",
+            "erp_customer_name",
+        )
+    }
+
+
+def grouped_return_state(order):
+    return {
+        k: str(getattr(order, k, None))
+        for k in (
+            "after_sales_type",
+            "actual_refund_amount",
+            "refund_financial_status",
+            "workflow_status",
+            "return_tracking_number",
             "erp_customer_name",
         )
     }
@@ -100,6 +119,321 @@ class TmallModule1ReturnService:
         )
         self.verifier = verifier or TmallSingleParcelVerifier(session, settings)
         self.journal = journal
+
+    def _return_group(self, order):
+        return list(
+            self.session.scalars(
+                select(Order)
+                .options(selectinload(Order.items))
+                .where(
+                    Order.shop_id == order.shop_id,
+                    Order.platform_order_sn == order.platform_order_sn,
+                )
+                .order_by(Order.id)
+                .execution_options(populate_existing=True)
+            )
+        )
+
+    @staticmethod
+    def _return_amount(order):
+        expected = order.actual_refund_amount
+        if (
+            not isinstance(expected, Decimal)
+            or not expected.is_finite()
+            or expected <= 0
+            or expected != order.refund_amount
+        ):
+            raise ValueError("平台退货退款成功金额与申请金额不一致")
+        return expected
+
+    def inspect_group(self, task, order):
+        """核实同父订单全部退货退款及共享 ERP 正式退货、余额和流水。"""
+        started = datetime.now(UTC)
+        self.session.refresh(order)
+        self.session.refresh(task)
+        shop = self.session.get(Shop, order.shop_id)
+        if (
+            not shop
+            or shop.platform != Platform.TMALL
+            or not shop.is_active
+            or shop.shop_code not in {f"tmall-shop-{n:02d}" for n in range(1, 7)}
+            or order.id < self.settings.tmall_module123_min_order_id
+            or task.after_sales_sn != order.after_sales_sn
+            or task.action_type != Action.ERP_MATCH_RETURN_ORDER
+            or task.action_status != State.PENDING
+            or (task.attempts or 0) > 0
+        ):
+            raise ValueError("天猫模块2补单的店铺、任务或执行资格不符")
+        group = self._return_group(order)
+        if not 1 <= len(group) <= 20:
+            raise ValueError("同父订单售后数量超出自动核验范围")
+        trackings = {str(member.return_tracking_number or "").strip() for member in group}
+        if (
+            len(trackings) != 1
+            or not next(iter(trackings))
+            or any(
+                member.after_sales_type != AfterSalesType.RETURN_AND_REFUND
+                or member.refund_financial_status != "SUCCESS"
+                or len(member.items) != 1
+                or member.workflow_status
+                not in {
+                    WorkflowStatus.RETURN_INSPECTED_PASS,
+                    WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                    WorkflowStatus.INTERCEPT_SUCCESS,
+                    WorkflowStatus.PENDING_CHECK,
+                }
+                for member in group
+            )
+        ):
+            raise ValueError("同父订单全部售后、退货运单、验货或退款成功状态未完整对应")
+        for member in group:
+            require_sync_safe_order(self.session, member.after_sales_sn)
+        initial = [
+            {
+                "after_sales_sn": member.after_sales_sn,
+                "snapshot": refund_snapshot(member),
+                "state": grouped_return_state(member),
+            }
+            for member in group
+        ]
+        platform = self.platform_client_factory(shop)
+        platform_members = []
+        try:
+            seller = platform.get_seller().get("user_seller_get_response", {}).get("user", {})
+            trade = unwrap_trade(platform.get_trade_fullinfo(tid=int(order.platform_order_sn)))
+            children = trade.get("orders", {}).get("order")
+            if not isinstance(children, list) or not children:
+                raise ValueError("天猫父订单子单明细缺失")
+            child_map = {
+                str(child.get("oid") or ""): child
+                for child in children
+                if isinstance(child, dict) and child.get("oid")
+            }
+            if len(child_map) != len(children):
+                raise ValueError("天猫父订单子单身份缺失或重复")
+            total = Decimal("0")
+            refund_children = set()
+            for member in group:
+                detail = unwrap_refund(platform.get_refund(refund_id=int(member.after_sales_sn)))
+                child_id = str(detail.get("oid") or "")
+                child = child_map.get(child_id)
+                item = member.items[0]
+                expected = self._return_amount(member)
+                quantity = Decimal(item.applied_quantity)
+                sku = str(item.sku_code or "").strip()
+                if item.color and "#" not in sku:
+                    sku = f"{sku}#{str(item.color).strip()}"
+                if (
+                    str(detail.get("refund_id") or "") != member.after_sales_sn
+                    or str(detail.get("tid") or "") != member.platform_order_sn
+                    or detail.get("status") != "SUCCESS"
+                    or detail.get("special_refund_type")
+                    or str(detail.get("has_good_return")).lower() not in {"true", "1"}
+                    or str(detail.get("sid") or "") != member.return_tracking_number
+                    or child is None
+                    or amount(detail.get("refund_fee")) != expected
+                    or Decimal(str(detail.get("num") or 0)) != quantity
+                    or str(child.get("outer_sku_id") or "").strip() != sku
+                    or Decimal(str(child.get("num") or 0)) != quantity
+                    or amount(child.get("payment")) != expected
+                ):
+                    raise ValueError("天猫退货退款与子单SKU、数量、金额或退货运单不一致")
+                product, color = (part.strip() for part in sku.split("#", 1))
+                platform_members.append(
+                    {
+                        "refund_sn": member.after_sales_sn,
+                        "child_id": child_id,
+                        "amount": str(expected),
+                        "product": product,
+                        "color": color,
+                        "quantity": str(quantity),
+                        "tracking": member.return_tracking_number,
+                    }
+                )
+                refund_children.add(child_id)
+                total += expected
+            if (
+                not shop.platform_shop_id
+                or str(seller.get("user_id") or "") != shop.platform_shop_id
+                or not seller.get("nick")
+                or trade.get("seller_nick") != seller["nick"]
+                or str(trade.get("tid") or "") != order.platform_order_sn
+                or set(child_map) != refund_children
+                or amount(trade.get("payment")) != total
+            ):
+                raise ValueError("天猫父订单卖家、全部子单或整单实付金额未完整对应")
+        finally:
+            platform.close()
+        account = inspect_grouped_return_account(
+            self.client,
+            order_sn=order.platform_order_sn,
+            members=platform_members,
+            tolerance=self.settings.erp_return_match_receivable_tolerance,
+        )
+        if any(
+            member.erp_customer_name and member.erp_customer_name != account["customer"]
+            for member in group
+        ):
+            raise ValueError("已登记客户与ERP父订单客户不同")
+        current = self._return_group(order)
+        latest = [
+            {
+                "after_sales_sn": member.after_sales_sn,
+                "snapshot": refund_snapshot(member),
+                "state": grouped_return_state(member),
+            }
+            for member in current
+        ]
+        self.session.refresh(task)
+        if (
+            latest != initial
+            or task.action_status != State.PENDING
+            or (task.attempts or 0) > 0
+            or (datetime.now(UTC) - started).total_seconds() > 75
+        ):
+            raise ValueError("天猫分组退货退款核验证据改变或超时")
+        own = account["members"][order.after_sales_sn]
+        proof = {
+            "scope": GROUP_SCOPE,
+            "snapshot": refund_snapshot(order),
+            "state": grouped_return_state(order),
+            "started_at": started.isoformat(),
+            "expected_amount": str(self._return_amount(order)),
+            "erp_record_id": own["record_id"],
+            "erp_order_sn": account["erp_order"],
+            "receipt": account["receipt"],
+            "group_snapshot": initial,
+            "group_after_sales_sns": [member.after_sales_sn for member in group],
+            "account": account,
+        }
+        return account, proof
+
+    def _write_group_once(self, task, order, approved):
+        account, proof = self.inspect_group(task, order)
+        keys = (
+            "scope", "snapshot", "state", "expected_amount", "erp_record_id",
+            "erp_order_sn", "receipt", "group_snapshot", "group_after_sales_sns",
+        )
+        own = account["members"][order.after_sales_sn]
+        if any(proof[key] != approved[key] for key in keys) or own["state"] != "ready":
+            raise ValueError("ERP补单前的分组退货、余额或平台证据改变")
+        self.client._ensure_logged_in()
+        response = self.client._client.get(
+            "/leedis2/public/1688api/deleteprodlist/" + own["record_id"],
+            params={"actionid": "1"},
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        verified, _ = self.inspect_group(task, order)
+        if verified["members"][order.after_sales_sn]["state"] != "completed":
+            raise ValueError("ERP补单已发起但对应退款流水尚未核实；禁止重发")
+        return verified
+
+    def _record_observed_group_refund(self, task, order, proof):
+        key = operation_key("TMALL", order.shop_id, order.after_sales_sn, "ERP_REFUND")
+        operation = self.session.get(MoneyOperation, key)
+        now = datetime.now(UTC).replace(tzinfo=None)
+        if operation is None:
+            operation = MoneyOperation(
+                operation_key=key,
+                platform="TMALL",
+                shop_id=order.shop_id,
+                after_sales_sn=order.after_sales_sn,
+                operation_type="ERP_REFUND",
+                task_id=task.id,
+                state="CONFIRMED",
+                started_at=now,
+                updated_at=now,
+                snapshot={
+                    "platform_order_sn": order.platform_order_sn,
+                    "refund_amount": str(order.refund_amount),
+                    "erp_adapter": GROUP_SCOPE,
+                    "observed_existing": True,
+                    "erp_evidence": proof,
+                },
+            )
+            self.session.add(operation)
+        else:
+            operation.state = "CONFIRMED"
+            operation.last_error = None
+            operation.updated_at = now
+
+    def _close_group_member(self, task, order, proof, *, observed):
+        own = proof["account"]["members"][order.after_sales_sn]
+        if own["state"] != "completed" or not own["reference"]:
+            raise ValueError("缺少本笔唯一ERP退款流水，不能登记补单闭环")
+        if observed:
+            self._record_observed_group_refund(task, order, proof)
+        else:
+            record_money_reconciled(self.session, order, "ERP_REFUND")
+        task.action_status = State.SUCCEEDED
+        task.last_error = None
+        task.payload = {
+            **(task.payload or {}),
+            "result_code": "RETURN_ORDER_MATCHED",
+            "erp_match_status": "closed_loop",
+            "erp_return_order_sn": proof["receipt"],
+            "erp_refund_reference_sn": own["reference"],
+            "tmall_grouped_return_evidence": proof,
+            "closed_loop_at": datetime.now(UTC).isoformat(),
+        }
+        order.erp_customer_name = proof["account"]["customer"]
+        order.workflow_status = WorkflowStatus.INTERCEPT_SUCCESS
+        order.exception_type = None
+
+    def _ensure_return_refund_tasks(self, *, limit, dry_run, platform_order_sn=None):
+        task_exists = exists().where(
+            Task.after_sales_sn == Order.after_sales_sn,
+            Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
+        )
+        query = (
+            select(Order)
+            .join(Shop, Shop.shop_id == Order.shop_id)
+            .where(
+                sync_safe_order_filter(),
+                Shop.platform == Platform.TMALL,
+                Shop.shop_code.in_([f"tmall-shop-{n:02d}" for n in range(1, 7)]),
+                Shop.is_active == 1,
+                Order.id >= self.settings.tmall_module123_min_order_id,
+                Order.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
+                Order.refund_financial_status == "SUCCESS",
+                Order.workflow_status.in_(
+                    [
+                        WorkflowStatus.PENDING_CHECK,
+                        WorkflowStatus.RETURN_INSPECTED_PASS,
+                        WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                    ]
+                ),
+                ~task_exists,
+            )
+            .order_by(Order.id)
+            .limit(max(20, limit * 10))
+        )
+        if platform_order_sn:
+            query = query.where(Order.platform_order_sn == platform_order_sn)
+        created = 0
+        for order in self.session.scalars(query):
+            created += 1
+            if dry_run:
+                continue
+            self.session.add(
+                Task(
+                    after_sales_sn=order.after_sales_sn,
+                    action_type=Action.ERP_MATCH_RETURN_ORDER,
+                    action_status=State.PENDING,
+                    attempts=0,
+                    idempotency_key=f"workflow:{order.after_sales_sn}:{Action.ERP_MATCH_RETURN_ORDER.value}",
+                    payload={
+                        "origin": "module2",
+                        "queued_reason": "platform_refunded_waiting_erp_refund_record",
+                        "tracking_number": order.return_tracking_number,
+                    },
+                )
+            )
+            order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
+        if not dry_run and created:
+            self.session.flush()
+        return created
 
     def inspect(self, task, order):
         started = datetime.now(UTC)
@@ -356,6 +690,186 @@ class TmallModule1ReturnService:
                 owner, evidence, guard=lambda: False, formal_verified=lambda: True
             )
 
+    def _run_return_refunds(self, *, limit, platform_order_sn, dry_run):
+        created = self._ensure_return_refund_tasks(
+            limit=limit, dry_run=dry_run, platform_order_sn=platform_order_sn,
+        )
+        query = (
+            select(Task, Order)
+            .join(Order, Order.after_sales_sn == Task.after_sales_sn)
+            .join(Shop, Shop.shop_id == Order.shop_id)
+            .options(selectinload(Order.items))
+            .where(
+                sync_safe_order_filter(),
+                Shop.platform == Platform.TMALL,
+                Shop.shop_code.in_([f"tmall-shop-{n:02d}" for n in range(1, 7)]),
+                Shop.is_active == 1,
+                Order.id >= self.settings.tmall_module123_min_order_id,
+                Order.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
+                Order.refund_financial_status == "SUCCESS",
+                Order.workflow_status.in_(
+                    [WorkflowStatus.RETURN_INSPECTED_PASS, WorkflowStatus.RETURN_WAITING_ERP_MATCH]
+                ),
+                Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
+                Task.action_status == State.PENDING,
+            )
+        )
+        if platform_order_sn:
+            query = query.where(Order.platform_order_sn == platform_order_sn).order_by(Task.id)
+        else:
+            query = due_first(
+                query, scope=GROUP_SCOPE, reference=Order.platform_order_sn,
+                tie_breaker=Task.id,
+            )
+        rows = self.session.execute(query.limit(max(20, limit * 10))).all()
+        grouped = {}
+        for task, order in rows:
+            grouped.setdefault((order.shop_id, order.platform_order_sn), []).append((task, order))
+        result = {
+            "scanned": 0,
+            "ready": 0,
+            "applied": 0,
+            "claimed": 0,
+            "awaiting_posting": 0,
+            "already_completed": 0,
+            "blocked": 0,
+            "tasks_created": created,
+            "details": [],
+        }
+        wrote = False
+        for (_, parent_order), pending in grouped.items():
+            if result["scanned"] >= limit:
+                break
+            task, order = pending[0]
+            try:
+                account, proof = self.inspect_group(task, order)
+                group_orders = {
+                    member.after_sales_sn: member for member in self._return_group(order)
+                }
+                group_tasks = {
+                    member.after_sales_sn: self.session.scalar(
+                        select(Task).where(
+                            Task.after_sales_sn == member.after_sales_sn,
+                            Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
+                        )
+                    )
+                    for member in group_orders.values()
+                }
+                ready = [
+                    after_sales_sn for after_sales_sn, member in account["members"].items()
+                    if member["state"] == "ready"
+                    and group_tasks.get(after_sales_sn) is not None
+                    and group_tasks[after_sales_sn].action_status == State.PENDING
+                ]
+                completed = [
+                    after_sales_sn for after_sales_sn, member in account["members"].items()
+                    if member["state"] == "completed"
+                    and group_tasks.get(after_sales_sn) is not None
+                    and group_tasks[after_sales_sn].action_status == State.PENDING
+                ]
+                result["scanned"] += len(ready) + len(completed)
+                result["ready"] += len(ready)
+                if dry_run:
+                    result["already_completed"] += len(completed)
+                    for after_sales_sn in completed + ready:
+                        result["details"].append(
+                            {
+                                "task_id": group_tasks[after_sales_sn].id,
+                                "status": account["members"][after_sales_sn]["state"],
+                                "group_order_sn": parent_order,
+                            }
+                        )
+                    continue
+                # 已存在且逐笔核实的退款流水只登记事实，不发送资金请求。
+                for after_sales_sn in completed:
+                    member_task = group_tasks[after_sales_sn]
+                    member_order = group_orders[after_sales_sn]
+                    _, member_proof = self.inspect_group(member_task, member_order)
+                    self._close_group_member(
+                        member_task, member_order, member_proof, observed=True,
+                    )
+                    result["already_completed"] += 1
+                    result["details"].append(
+                        {
+                            "task_id": member_task.id,
+                            "status": "completed",
+                            "group_order_sn": parent_order,
+                        }
+                    )
+                    self.session.commit()
+                # 每个 worker 周期全局最多新发起一笔 ERP 补单；下一笔重新全量核验余额。
+                if ready and not wrote:
+                    after_sales_sn = ready[0]
+                    member_task = group_tasks[after_sales_sn]
+                    member_order = group_orders[after_sales_sn]
+                    fresh_account, member_proof = self.inspect_group(member_task, member_order)
+                    member_task.payload = {
+                        **(member_task.payload or {}),
+                        "tmall_grouped_return_evidence": member_proof,
+                    }
+                    run_money_write(
+                        self.session,
+                        member_order,
+                        operation_type="ERP_REFUND",
+                        task_id=member_task.id,
+                        erp_adapter=GROUP_SCOPE,
+                        write=partial(
+                            self._write_group_once, member_task, member_order, member_proof,
+                        ),
+                    )
+                    fresh_account, member_proof = self.inspect_group(member_task, member_order)
+                    member_proof["account"] = fresh_account
+                    self._close_group_member(
+                        member_task, member_order, member_proof, observed=False,
+                    )
+                    result["applied"] += 1
+                    wrote = True
+                    result["details"].append(
+                        {
+                            "task_id": member_task.id,
+                            "status": "completed",
+                            "group_order_sn": parent_order,
+                        }
+                    )
+                    self.session.commit()
+                record_poll(
+                    self.session,
+                    scope=GROUP_SCOPE,
+                    reference=parent_order,
+                    delay_seconds=300,
+                )
+                self.session.commit()
+            except Exception as exc:
+                self.session.rollback()
+                message = str(exc)[:300] if isinstance(exc, ValueError) else type(exc).__name__
+                result["blocked"] += 1
+                if not dry_run:
+                    current = self.session.get(Task, task.id)
+                    if current is not None and current.action_status == State.PENDING:
+                        current.last_error = message
+                        current.payload = {
+                            **(current.payload or {}),
+                            "erp_return_claim_status": "blocked",
+                            "erp_return_claim_reason": message,
+                        }
+                    record_poll(
+                        self.session,
+                        scope=GROUP_SCOPE,
+                        reference=parent_order,
+                        delay_seconds=1800,
+                        error=message,
+                    )
+                    self.session.commit()
+                result["details"].append(
+                    {
+                        "task_id": task.id,
+                        "status": "blocked",
+                        "group_order_sn": parent_order,
+                        "reason": message,
+                    }
+                )
+        return result
+
     def run(self, *, limit=5, platform_order_sn=None, dry_run=True):
         if not 1 <= limit <= 20:
             raise ValueError("天猫退回自动化每批上限20")
@@ -378,6 +892,12 @@ class TmallModule1ReturnService:
             if self.journal is None and path.exists():
                 self.journal = ClaimJournal(path)
             self._recover_closed_claims()
+        grouped_result = self._run_return_refunds(
+            limit=limit, platform_order_sn=platform_order_sn, dry_run=dry_run,
+        )
+        remaining = max(0, limit - grouped_result["scanned"])
+        if remaining == 0:
+            return grouped_result
         query = (
             select(Task, Order)
             .join(Order, Order.after_sales_sn == Task.after_sales_sn)
@@ -389,6 +909,7 @@ class TmallModule1ReturnService:
                 Shop.shop_code.in_([f"tmall-shop-{n:02d}" for n in range(1, 7)]),
                 Shop.is_active == 1,
                 Order.id >= self.settings.tmall_module123_min_order_id,
+                Order.after_sales_type == AfterSalesType.ONLY_REFUND,
                 Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
                 Task.action_status == State.PENDING,
                 Order.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
@@ -414,7 +935,7 @@ class TmallModule1ReturnService:
             blocked=0,
             details=[],
         )
-        for task, order in self.session.execute(query.limit(limit)).all():
+        for task, order in self.session.execute(query.limit(remaining)).all():
             result["scanned"] += 1
             try:
                 account, proof = self.inspect(task, order)
@@ -479,4 +1000,11 @@ class TmallModule1ReturnService:
                     )
                     self.session.commit()
                 result["details"].append(dict(task_id=task.id, status="blocked", reason=message))
+        for key in (
+            "scanned", "ready", "applied", "claimed", "awaiting_posting",
+            "already_completed", "blocked",
+        ):
+            result[key] += grouped_result[key]
+        result["tasks_created"] = grouped_result["tasks_created"]
+        result["details"] = grouped_result["details"] + result["details"]
         return result

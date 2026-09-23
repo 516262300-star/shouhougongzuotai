@@ -407,6 +407,17 @@ class ActionCoordinator:
                     **(result_payload or {}),
                     "platform_request_completed_at": datetime.now(UTC).isoformat(),
                 }
+                if action_type is AutomationActionType.TMALL_AGREE_RETURN_REFUND:
+                    order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
+                    self._enqueue(
+                        task.after_sales_sn,
+                        AutomationActionType.ERP_MATCH_RETURN_ORDER,
+                        {
+                            "origin": "module2",
+                            "tracking_number": order.return_tracking_number,
+                            "queued_reason": "platform_refunded_waiting_erp_refund_record",
+                        },
+                    )
             elif action_type is AutomationActionType.ERP_CREATE_MANUAL_TODO:
                 external_todo_id = str((result_payload or {}).get("external_todo_id") or "").strip()
                 if not external_todo_id:

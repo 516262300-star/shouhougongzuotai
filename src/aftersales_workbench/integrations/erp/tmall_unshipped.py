@@ -97,18 +97,9 @@ def no_shipments(client, customer_id, erp_order, platform_order, *, prefix="tmx"
     raise ValueError("ERP发货页未取完")
 
 
-def read_existing_refund(client, order_sn):
-    """复用 Voyager 只读列表/详情；不触发 showlist 或编辑、移除动作。
-
-    启用/编辑互斥由共同的 deleteProdlist 服务端入口在写入前再次检查，
-    此页面并未查询这些表，不伪造 activating=False 等数据库事实。
-    """
-    page = client._get("/leedis2/public/admin/refunds",
-                       params={"key": "orderId", "filter": "equals", "s": order_sn})
-    rows = complete_table(page, {"平台单号", "退款单号", "平台", "操作"})
-    if len(rows) != 1 or rows[0]["平台单号"] != order_sn:
-        raise ValueError("ERP原订单退款记录缺失、不唯一或筛选失效")
-    ids = {m.group(1) for link in rows[0]["_links"]
+def _read_existing_refund_detail(client, order_sn, row):
+    """读取一条 Voyager 退款详情；只解析，不触发编辑或资金动作。"""
+    ids = {m.group(1) for link in row["_links"]
            if (m := re.search(r"/admin/refunds/(\d+)(?:[/?#]|$)", link))}
     if len(ids) != 1:
         raise ValueError("ERP退款详情ID不唯一")
@@ -140,13 +131,53 @@ def read_existing_refund(client, order_sn):
         raise ValueError("ERP退款详情缺少执行所需字段")
     source = {key: fields[label] for key, label in mapping.items()}
     source["id"] = record_id
-    if source["orderId"] != order_sn or source["refundId"] != rows[0]["退款单号"]:
+    if source["orderId"] != order_sn or source["refundId"] != row["退款单号"]:
         raise ValueError("ERP退款详情身份与列表不一致")
-    if source["isRefundGoods"] not in {"0", "仅退款", "否"}:
+    return source
+
+
+def read_existing_refunds(client, order_sn):
+    """读取父订单下全部退款记录，供严格的逐退款分组核验使用。
+
+    列表和每个详情都必须唯一、完整；不把同父订单的多条退款误判为重复记录。
+    """
+    page = client._get("/leedis2/public/admin/refunds",
+                       params={"key": "orderId", "filter": "equals", "s": order_sn})
+    rows = complete_table(page, {"平台单号", "退款单号", "平台", "操作"})
+    if not rows or any(row["平台单号"] != order_sn for row in rows):
+        raise ValueError("ERP原订单退款记录缺失或筛选失效")
+    refund_ids = [row["退款单号"] for row in rows]
+    if any(not value for value in refund_ids) or len(set(refund_ids)) != len(refund_ids):
+        raise ValueError("ERP退款单号缺失、不唯一或重复")
+    sources = [_read_existing_refund_detail(client, order_sn, row) for row in rows]
+    record_ids = [source["id"] for source in sources]
+    if len(set(record_ids)) != len(record_ids):
+        raise ValueError("ERP退款详情ID重复")
+    for source in sources:
+        raw = str(source["isRefundGoods"]).strip()
+        if raw in {"0", "仅退款", "否", "false", "False"}:
+            source["isRefundGoods"] = 0
+        elif raw in {"1", "退货退款", "是", "true", "True"}:
+            source["isRefundGoods"] = 1
+        else:
+            raise ValueError("ERP退款详情的退货类型不明确")
+        # 显示为空的运费不能作为明确的零金额使用。
+        amount(source["applyCarriage"])
+    return sources
+
+
+def read_existing_refund(client, order_sn):
+    """复用 Voyager 只读列表/详情；不触发 showlist 或编辑、移除动作。
+
+    启用/编辑互斥由共同的 deleteProdlist 服务端入口在写入前再次检查，
+    此页面并未查询这些表，不伪造 activating=False 等数据库事实。
+    """
+    sources = read_existing_refunds(client, order_sn)
+    if len(sources) != 1:
+        raise ValueError("ERP原订单退款记录缺失、不唯一或筛选失效")
+    source = sources[0]
+    if source["isRefundGoods"] != 0:
         raise ValueError("ERP退款详情不是明确的仅退款")
-    source["isRefundGoods"] = 0
-    # 显示为空的运费不能作为明确的零金额使用。
-    amount(source["applyCarriage"])
     return source
 
 
