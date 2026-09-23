@@ -1111,6 +1111,12 @@ function IntegrationWorkspace() {
 const MONITOR_STAGE_LABELS = {
   sync: "拼多多同步",
   tmall_sync: "天猫同步与物流补全",
+  marketplace_sync: "其他平台同步",
+  erp_sales_owners: "ERP 业务员归属同步",
+  erp_return_matches: "ERP 退货闭环查询",
+  erp_scrap_sync: "ERP 退货报废同步",
+  erp_todo_tasks: "生成 ERP 人工待办",
+  erp_todo_publish: "发布 ERP 人工待办",
   intercept_tasks: "生成拦截任务",
   notification_preflight: "发送前物流复核",
   notification: "企业微信发送",

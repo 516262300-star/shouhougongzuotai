@@ -694,6 +694,9 @@ class ErpReturnMatchSyncService:
                 AftersalesActionTask.action_type
                 == AutomationActionType.ERP_MATCH_RETURN_ORDER,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                # 模块2也共用此动作类型，但用退货运单和验货/退款流水核验。
+                # 必须在分页前限定模块1，不能用原发货运单查询覆盖模块2任务。
+                AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
             )
             .order_by(
                 AfterSalesOrder.forward_tracking_number,

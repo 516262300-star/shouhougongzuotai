@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from aftersales_workbench.api.routes.monitor import (
@@ -12,7 +13,11 @@ from aftersales_workbench.api.routes.monitor import (
     get_monitor_service,
 )
 from aftersales_workbench.main import app
-from aftersales_workbench.services.runtime_monitor import _latest_json_line
+from aftersales_workbench.services.runtime_monitor import (
+    _MODULE_STAGES,
+    RuntimeMonitorService,
+    _latest_json_line,
+)
 
 
 class FakeMonitorService:
@@ -109,3 +114,33 @@ def test_latest_json_line_skips_non_json_and_reads_latest_cycle(tmp_path: Path) 
 
 def test_latest_json_line_returns_none_for_missing_file(tmp_path: Path) -> None:
     assert _latest_json_line(tmp_path / "missing.log") is None
+
+
+@pytest.mark.parametrize("stage_id,module_id", [
+    ("marketplace_sync", "module1"), ("erp_sales_owners", "module1"),
+    ("erp_return_matches", "module1"), ("erp_todo_tasks", "module1"),
+    ("erp_todo_publish", "module1"), ("erp_scrap_sync", "module2"),
+])
+def test_previously_hidden_failure_marks_module_and_has_safe_detail_route(stage_id, module_id):
+    from aftersales_workbench.services.runtime_issue_focus import select_focus
+
+    cycle = {"ok": False, stage_id: {"status": "failed", "error": "原始具体失败原因"}}
+    result = RuntimeMonitorService._module_status(module_id, True, True, False, cycle)
+    assert result["status"] == "warning"
+    stage = next(s for s in result["stages"] if s["id"] == stage_id)
+    assert stage["error"] == "原始具体失败原因"
+    focus = select_focus([], cycle, stage_id)
+    assert focus["alert_active"] and not focus["issue_keys"]
+    assert "暂无可核实" in focus["message"]
+
+
+def test_monitor_covers_every_worker_stage_once():
+    from aftersales_workbench.workflows.module1_worker import Module1WorkerCycleResult
+
+    cycle = Module1WorkerCycleResult(started_at="2026-09-23T12:00:00+00:00").summary_dict()
+    actual = [s for stages in _MODULE_STAGES.values() for s in stages]
+    expected = {
+        key for key, value in cycle.items() if isinstance(value, dict) and "status" in value
+    }
+    assert set(actual) == expected
+    assert len(actual) == len(set(actual))
