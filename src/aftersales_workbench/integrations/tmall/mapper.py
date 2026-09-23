@@ -17,6 +17,8 @@ class TmallDataMappingError(ValueError):
 class NormalizedTmallRefundItem:
     sku_code: str
     applied_quantity: int
+    purchased_quantity: int | None = None
+    quantity_source: str = "TMALL_PURCHASE_NUM"
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,5 +225,7 @@ def normalize_refund(
         item=NormalizedTmallRefundItem(
             sku_code=sku_code,
             applied_quantity=_positive_int(quantity, field="num"),
+            # Refund.num 是购买数量，不能当作部分退货的独立申请数量。
+            purchased_quantity=_positive_int(quantity, field="num"),
         ),
     )

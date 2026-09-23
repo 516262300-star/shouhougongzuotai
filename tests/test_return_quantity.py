@@ -34,7 +34,8 @@ def sample():
 
 @pytest.mark.parametrize("refunded", [False, True])
 @pytest.mark.parametrize("dry_run", [False, True])
-def test_partial_return_never_creates_fail_pass_or_money(refunded, dry_run):
+@pytest.mark.parametrize("platform", [Platform.PDD, Platform.TMALL])
+def test_partial_return_never_creates_fail_pass_or_money(refunded, dry_run, platform):
     order, actual = sample()
     if refunded:
         order.platform_after_sales_status = 10
@@ -48,7 +49,7 @@ def test_partial_return_never_creates_fail_pass_or_money(refunded, dry_run):
     service = Module2ErpIntakeService(NS(), NS(lookup=lambda **kw: lookup))
     service._record = lambda *args: pytest.fail("未知数量不得记录验货通过或失败")
     result = Module2ErpIntakeRunResult(dry_run=dry_run)
-    message = service._inspect_candidate(order, Platform.PDD, set(), result, dry_run)
+    message = service._inspect_candidate(order, platform, set(), result, dry_run)
     assert "本次退货数量待核实" in message
     assert "×51" in message and "×27" in message and "×24" not in message
     assert result.quantity_reviews == 1 and result.ambiguous == 1
@@ -64,18 +65,19 @@ def test_partial_return_never_creates_fail_pass_or_money(refunded, dry_run):
     ("quantity", 0), ("quantity", Decimal("1.5")),
     ("item_status", ItemStatus.DEFECTIVE),
 ])
-def test_real_item_or_quality_discrepancy_is_not_suppressed(field, value):
+@pytest.mark.parametrize("platform", [Platform.PDD, Platform.TMALL])
+def test_real_item_or_quality_discrepancy_is_not_suppressed(field, value, platform):
     order, actual = sample()
     setattr(actual[0], field, value)
-    assert quantity_review_note(order, Platform.PDD, actual) is None
+    assert quantity_review_note(order, platform, actual) is None
 
 
-def test_full_return_and_other_platform_keep_existing_flow():
+@pytest.mark.parametrize("platform", [Platform.PDD, Platform.TMALL])
+def test_full_return_keeps_existing_flow(platform):
     order, actual = sample()
-    assert quantity_review_note(order, Platform.TMALL, actual) is None
     actual[0].quantity = 51
-    assert quantity_review_note(order, Platform.PDD, actual) is None
-    assert quantity_review_note(order, Platform.PDD, []) is None
+    assert quantity_review_note(order, platform, actual) is None
+    assert quantity_review_note(order, platform, []) is None
 
 
 @pytest.mark.parametrize("amount", [Decimal("100"), Decimal("200"), None])

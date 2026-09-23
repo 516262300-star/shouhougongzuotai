@@ -77,6 +77,24 @@ class SqlAlchemyTmallSyncRepository:
             )
         ).scalar_one_or_none()
         created = order is None
+        # 人工已核实且平台已完成的部分退货，重复同步不能再用购买数覆盖。
+        # 任一业务事实变化即失效；只保留数量证据，不授予质检或退款资格。
+        preserve_confirmed_quantity = bool(
+            order is not None
+            and order.platform_after_sales_status_text == "SUCCESS"
+            and order.refund_financial_status == "SUCCESS"
+            and refund.platform_after_sales_status_text == "SUCCESS"
+            and order.after_sales_type == "RETURN_AND_REFUND"
+            and order.platform_order_sn == refund.platform_order_sn
+            and order.after_sales_type == refund.after_sales_type
+            and order.refund_amount == refund.refund_amount
+            and order.return_tracking_number == refund.return_tracking_number
+            and order.buyer_reason_raw == refund.buyer_reason_raw
+            and order.buyer_memo == refund.buyer_memo
+            and len(order.items) == 1
+            and order.items[0].sku_code == refund.item.sku_code
+            and order.items[0].purchased_quantity == refund.item.purchased_quantity
+        )
         if order is None:
             order = AfterSalesOrder(
                 shop_id=shop_id,
@@ -108,6 +126,13 @@ class SqlAlchemyTmallSyncRepository:
                 order.order_shipping_status, refund.order_shipping_status,
             )
 
+        if not preserve_confirmed_quantity:
+            for old_item in order.items:
+                if old_item.quantity_source == "TMALL_CONFIRMED_RETURN":
+                    old_item.applied_quantity = (
+                        old_item.purchased_quantity or old_item.applied_quantity
+                    )
+                    old_item.quantity_source = "TMALL_PURCHASE_NUM"
         order.buyer_reason_raw = refund.buyer_reason_raw
         order.buyer_memo = refund.buyer_memo
         order.reason_category = classify_refund_reason(
@@ -143,12 +168,21 @@ class SqlAlchemyTmallSyncRepository:
                     after_sales_sn=refund.after_sales_sn,
                     sku_code=refund.item.sku_code,
                     applied_quantity=refund.item.applied_quantity,
+                    purchased_quantity=refund.item.purchased_quantity,
+                    quantity_source=refund.item.quantity_source,
                     inspected_quantity=0,
                     item_status=ItemStatus.NORMAL,
                 )
             )
-        else:
+        elif not (
+            preserve_confirmed_quantity
+            and item.quantity_source == "TMALL_CONFIRMED_RETURN"
+            and item.purchased_quantity == refund.item.purchased_quantity
+            and 0 < item.applied_quantity <= (item.purchased_quantity or 0)
+        ):
             item.applied_quantity = refund.item.applied_quantity
+            item.purchased_quantity = refund.item.purchased_quantity
+            item.quantity_source = refund.item.quantity_source
         return created
 
     def advance_cursor(self, shop_id: int, sync_scope: str, cursor_end_at: int) -> None:

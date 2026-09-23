@@ -19,18 +19,23 @@ from aftersales_workbench.db.models import (
 )
 
 
+def _known_quantity(order, platform):
+    source = {Platform.PDD: "PDD_PART_AFTER_SALES",
+              Platform.TMALL: "TMALL_CONFIRMED_RETURN"}.get(platform)
+    return bool(source and order.items and all(
+        getattr(item, "quantity_source", None) == source for item in order.items
+    ))
+
+
 def quantity_review_note(order, platform, actual_items) -> str | None:
-    """PDD goods_number 目前存入 applied_quantity，但未提供独立的本次退货数量。
+    """PDD goods_number / 天猫 num 是购买数量，不是独立的本次退货数量。
 
     仅处理实收是购买明细真子集的情况；错型号、错颜色、多退及质量异常仍走原核验。
     即使退款金额等于订单金额也不能据此确定退货件数。
     """
-    if platform != Platform.PDD:
+    if platform not in {Platform.PDD, Platform.TMALL}:
         return None
-    if order.items and all(
-        getattr(item, "quantity_source", None) == "PDD_PART_AFTER_SALES"
-        for item in order.items
-    ):
+    if _known_quantity(order, platform):
         return None  # 应退数量明确时，真正的少退继续走异常核验。
     purchased = Counter()
     for item in order.items:
@@ -107,7 +112,7 @@ def queued_quantity_review(session, payload, after_sales_sn):
 
 def correct_legacy_quantity_failure(session, order, platform, *, dry_run=False):
     """撤销系统用购买数量做减法产生的旧失败，保留原审计，不确认质量或退款。"""
-    if platform != Platform.PDD or not order.items:
+    if platform not in {Platform.PDD, Platform.TMALL} or not order.items:
         return None
     receipts = list(session.scalars(select(WarehouseReturnRecord).where(
         WarehouseReturnRecord.after_sales_sn == order.after_sales_sn,
@@ -138,7 +143,7 @@ def correct_legacy_quantity_failure(session, order, platform, *, dry_run=False):
     note = quantity_review_note(purchased_order, platform, receipt.items)
     if not note:
         return None
-    known = all(getattr(i, "quantity_source", None) == "PDD_PART_AFTER_SALES" for i in order.items)
+    known = _known_quantity(order, platform)
     if known:
         def key(sku, color):
             if not color and "#" in sku:
@@ -152,7 +157,7 @@ def correct_legacy_quantity_failure(session, order, platform, *, dry_run=False):
         if expected != actual:
             return None  # 明确申请数量后仍不一致的不能撤销。
         summary = "、".join(f"{s}/{c}×{q}" for (s, c), q in sorted(actual.items()))
-        note = (f"旧少退结论已撤销：平台本次申请与ERP实收一致（{summary}）；"
+        note = (f"旧少退结论已撤销：已核实的本次申请与ERP实收一致（{summary}）；"
                 "独立质检及退款后核账另行确认。")
     if dry_run:
         return note

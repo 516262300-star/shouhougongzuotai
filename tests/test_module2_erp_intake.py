@@ -97,6 +97,9 @@ class _TodoRows:
     def all(self):
         return self.rows
 
+    def unique(self):
+        return []  # 此 fixture 没有需要历史纠偏的系统数量失败。
+
 
 class _TodoSession:
     def __init__(self, rows) -> None:
