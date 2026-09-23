@@ -139,10 +139,12 @@ class WeComReceiptReader:
         # 最宽完整面板边界定位，不能把某行文字之间的白缝当作边界。
         counts: Counter[tuple[int, int]] = Counter()
         for y in range(int(h * .86), int(h * .94), max(1, int(h * .003))):
-            white = [x for x in range(int(w * .2), int(w * .99))
+            # 固定宽度的左侧栏在宽屏上可能不足整窗20%；从全宽寻找
+            # 完整白色面板，不能把扫描起点误当成面板左边界而截掉群名。
+            white = [x for x in range(0, int(w * .99))
                      if min(pixels[x, y]) > 250]
             counts.update((a, b) for a, b in _runs(white)
-                          if b - a > w * .4 and a < w * .4)
+                          if b - a > w * .4 and 0 < a < w * .4)
         stable = [bounds for bounds, count in counts.items() if count >= 3]
         if not stable:
             raise ValueError("无法唯一定位企微输入面板")

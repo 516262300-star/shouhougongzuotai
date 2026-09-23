@@ -140,6 +140,29 @@ def test_single_white_scanline_is_not_sufficient_panel_evidence():
         WeComReceiptReader._input_panel_bounds(image)
 
 
+@pytest.mark.parametrize('left', [120, 235, 360])
+def test_fixed_sidebar_on_wide_window_keeps_complete_title_and_draft(left):
+    image = Image.new('RGB', (1400, 857), (246, 247, 251))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((left, 34, left + 200, 52), fill='black')
+    draw.rectangle((left, 710, 1270, 837), fill='white')
+    # 草稿首字可能也位于旧20%扫描起点左侧，不能漏掉而误判空框。
+    draw.rectangle((left + 15, 750, left + 45, 765), fill='black')
+    assert WeComReceiptReader._input_panel_bounds(image) == (left, 1271)
+    result = WeComReceiptReader(FakeOcr()).inspect(image, GROUP, MESSAGE)
+    assert result.group_matches and result.draft_matches
+    assert not result.input_empty and not result.sent_visible
+    wrong = WeComReceiptReader(FakeOcr(title='其他群')).inspect(image, GROUP, MESSAGE)
+    assert not wrong.group_matches and not wrong.sent_visible
+
+
+def test_white_area_clipped_at_window_edge_is_not_a_complete_input_panel():
+    image = Image.new('RGB', (1400, 857), (246, 247, 251))
+    ImageDraw.Draw(image).rectangle((0, 710, 1270, 837), fill='white')
+    with pytest.raises(ValueError, match='无法唯一定位'):
+        WeComReceiptReader._input_panel_bounds(image)
+
+
 def test_maximized_window_with_short_input_panel_keeps_full_draft():
     image = Image.new('RGB', (1400, 857), (246, 247, 251))
     draw = ImageDraw.Draw(image)
