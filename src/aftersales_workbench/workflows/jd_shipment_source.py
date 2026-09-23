@@ -39,6 +39,8 @@ def _amount(value):
 
 
 def _date(value):
+    if re.fullmatch(r"\d{13}", str(value)):
+        return _millis(value)
     if not value or str(value).startswith(("0001-", "1970-")):
         raise ValueError("京东缺少真实发货时间")
     dt = utc_time(value)

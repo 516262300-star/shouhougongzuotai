@@ -133,6 +133,15 @@ def test_completed_full_refund_excludes_partial_stays_monitored(setup):
     assert len(source.refresh("900001")) == 1
 
 
+def test_jd_millisecond_completion_and_outbound_time(setup):
+    source, state = setup
+    state.aftersales = [{**completed("100.00"), "completeTime": 1790041566000}]
+    assert source.refresh("900001").full_refund["refund_amount"] == "100.00"
+    state.aftersales = []
+    state.row["outBoundDate"] = 1790041566000
+    assert source.refresh("900001")[0].shipped_at == datetime(2026, 9, 22, 1, 46, 6)
+
+
 def test_pending_refund_and_partial_approved_stay_monitored_but_full_approval_waits(setup):
     source, state = setup
     state.refunds = [{"orderId": "900001", "id": 1, "status": 0, "applyRefundSum": 10000}]
