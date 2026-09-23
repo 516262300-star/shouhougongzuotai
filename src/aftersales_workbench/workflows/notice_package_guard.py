@@ -25,6 +25,10 @@ from aftersales_workbench.workflows.uncollected_refund import order_snapshot
 KEY = "notice_package_check"
 
 
+class NoticePackageEvidenceExpired(ValueError):
+    """身份仍一致，但输入前证据超时；下轮必须重新获取完整证据。"""
+
+
 class NoticePackageGuard:
     def __init__(self, session, settings, *, verifier=None, client_factory=None, now=None):
         self.session, self.settings = session, settings
@@ -186,10 +190,16 @@ class NoticePackageGuard:
         order = self._order(task)
         snapshot, started = self.approvals[task_id]
         if (order is None or order_snapshot(order) != snapshot
-                or has_shared_package_hold(self.session, order)
-                or not timedelta(0) <= self.now() - datetime.fromisoformat(started)
-                <= timedelta(seconds=80)):
-            raise ValueError("发送前整包裹证据变化或过期，禁止输入")
+                or has_shared_package_hold(self.session, order)):
+            raise ValueError("发送前整包裹证据变化，禁止输入")
+        age = self.now() - datetime.fromisoformat(started)
+        if age < timedelta(0):
+            raise ValueError("发送前整包裹证据时间异常，禁止输入")
+        if age > timedelta(seconds=80):
+            raise NoticePackageEvidenceExpired(
+                f"发送前整包裹证据已过期（{age.total_seconds():.1f}秒），"
+                "尚未输入，等待重新完整核验"
+            )
 
     def _hold(self, order, evidence):
         # 保留已发送/结果未知的凭证；只取消尚未发送的同包裹通知。

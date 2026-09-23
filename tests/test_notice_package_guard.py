@@ -1,6 +1,6 @@
 from contextlib import nullcontext
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -10,8 +10,14 @@ from aftersales_workbench.workflows.desktop_notice import DesktopNoticePlan
 from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendService,
+    desktop_notice_plan_hash,
+    resume_due_before_paste_entries,
 )
-from aftersales_workbench.workflows.notice_package_guard import KEY, NoticePackageGuard
+from aftersales_workbench.workflows.notice_package_guard import (
+    KEY,
+    NoticePackageEvidenceExpired,
+    NoticePackageGuard,
+)
 from aftersales_workbench.workflows.pdd_reconciliation import PddFailedRefundReconciler
 from aftersales_workbench.workflows.shared_package import HOLD_REASON
 from tests import test_shared_package as shared
@@ -150,6 +156,92 @@ def test_approved_snapshot_must_still_match_before_typing(db, case, change):
     db.commit()
     with pytest.raises(ValueError):
         guard.validate_before_input(1)
+
+
+def test_expired_before_input_rechecks_full_package_then_sends_once(db, case, tmp_path):
+    x, task, plan, guard = case
+    x.infos['other']['refund_status'] = 2
+    ledger = DesktopNoticeLedger(tmp_path / 'ledger')
+    writes = []
+
+    def send(_plan, hooks):
+        guard.now = lambda: base.NOW + timedelta(seconds=212)
+        hooks.paste_started()
+        writes.append('input')
+
+    service = DesktopNoticeSendService(db, Mock(send=send), ledger)
+    service.package_guard = guard
+    result = service.run([plan])
+    assert result.paused == 1 and result.sent == 0 and writes == []
+    assert task.action_status == 'PENDING' and task.attempts == 0
+    assert service.parcel_store.get(plan) is None
+    entry = ledger.latest(plan.task_id)
+    assert entry.state == 'PausedBeforePaste' and entry.retry_after
+    assert entry.plan_hash == desktop_notice_plan_hash(plan)
+    due = datetime.fromisoformat(entry.retry_after)
+    assert due > datetime.now(UTC)
+    assert resume_due_before_paste_entries(db, ledger, now=due - timedelta(seconds=1)) == 0
+    assert resume_due_before_paste_entries(db, ledger, now=due) == 1
+    # 下一次重新通过保护器获取完整证据，不延长旧证据的起始时间。
+    guard.now = lambda: base.NOW
+    x.source.read.reset_mock()
+
+    def successful_send(_plan, hooks):
+        hooks.paste_started()
+        writes.append('input')
+        hooks.send_pressed()
+        writes.append('send')
+        hooks.sent()
+
+    service.gateway = Mock(send=successful_send)
+    result = service.run([plan])
+    assert x.source.read.call_count == 1
+    assert result.sent == 1 and writes == ['input', 'send']
+    assert ledger.latest(plan.task_id).state == 'Sent'
+    assert task.attempts == 1 and task.action_status == 'SUCCEEDED'
+    x.client.agree_refund.assert_not_called()
+
+
+@pytest.mark.parametrize('fault', ['amount', 'tracking', 'clock', 'missing', 'cancelled'])
+def test_non_expiry_evidence_faults_never_get_automatic_retry(db, case, tmp_path, fault):
+    x, task, plan, guard = case
+    x.infos['other']['refund_status'] = 2
+    ledger = DesktopNoticeLedger(tmp_path / 'ledger')
+    writes = []
+
+    def send(_plan, hooks):
+        guard.now = lambda: base.NOW + timedelta(seconds=212)
+        if fault == 'amount':
+            x.order.refund_amount += 1
+        elif fault == 'tracking':
+            x.order.forward_tracking_number = 'changed'
+        elif fault == 'clock':
+            guard.now = lambda: base.NOW - timedelta(seconds=1)
+        elif fault == 'missing':
+            guard.approvals.clear()
+        else:
+            task.action_status = 'CANCELLED'
+        db.commit()
+        hooks.paste_started()
+        writes.append('input')
+
+    service = DesktopNoticeSendService(db, Mock(send=send), ledger)
+    service.package_guard = guard
+    result = service.run([plan])
+    assert result.paused == 1 and result.sent == 0 and writes == []
+    assert task.attempts == 0
+    assert ledger.latest(plan.task_id).retry_after is None
+
+
+def test_expiry_threshold_unchanged(db, case):
+    x, task, plan, guard = case
+    x.infos['other']['refund_status'] = 2
+    assert guard.check(plan)
+    guard.now = lambda: base.NOW + timedelta(seconds=80)
+    guard.validate_before_input(task.id)
+    guard.now = lambda: base.NOW + timedelta(seconds=80, microseconds=1)
+    with pytest.raises(NoticePackageEvidenceExpired):
+        guard.validate_before_input(task.id)
 
 
 def test_mismatched_plan_never_checks_or_sends(db, case):

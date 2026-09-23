@@ -17,6 +17,7 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendError,
     DesktopNoticeSendService,
+    DesktopPackageEvidenceExpiredError,
     DesktopSendLockError,
     DesktopSendProcessLock,
     desktop_notice_plan_hash,
@@ -518,7 +519,12 @@ def test_desktop_sender_process_lock_is_non_blocking_and_reusable(tmp_path) -> N
 
 
 @pytest.mark.parametrize("send_pressed", [False, True])
-def test_before_paste_exception_after_input_never_downgrades_ledger(tmp_path, send_pressed):
+@pytest.mark.parametrize(
+    "error_type", [DesktopBeforePasteError, DesktopPackageEvidenceExpiredError],
+)
+def test_before_paste_exception_after_input_never_downgrades_ledger(
+    tmp_path, send_pressed, error_type,
+):
     class Gateway:
         calls = 0
 
@@ -527,7 +533,7 @@ def test_before_paste_exception_after_input_never_downgrades_ledger(tmp_path, se
             hooks.paste_started()
             if send_pressed:
                 hooks.send_pressed()
-            raise DesktopBeforePasteError("窗口区域读取失败")
+            raise error_type("窗口区域读取失败")
 
     session = _FakeSession()
     ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")
@@ -540,6 +546,7 @@ def test_before_paste_exception_after_input_never_downgrades_ledger(tmp_path, se
         DesktopLedgerState.SEND_PRESSED if send_pressed else DesktopLedgerState.PASTE_STARTED
     )
     assert ledger.latest(61).error == "窗口区域读取失败"
+    assert ledger.latest(61).retry_after is None
     assert session.task.action_status is AutomationTaskStatus.RUNNING
     with pytest.raises(DesktopNoticeSendError):
         ledger.resume_before_paste(61)

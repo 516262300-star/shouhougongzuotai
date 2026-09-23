@@ -52,6 +52,10 @@ class DesktopReceiptUnavailableError(DesktopBeforePasteError):
     """尚未输入正文时的截图或界面识别失败，允许冷却后重新核验。"""
 
 
+class DesktopPackageEvidenceExpiredError(DesktopBeforePasteError):
+    """输入前包裹证据超时，冷却后重新核验，不复用过期批准。"""
+
+
 class DesktopAmbiguousSendError(DesktopNoticeSendError):
     """已经开始输入或可能按过发送键，禁止自动重试。"""
 
@@ -556,6 +560,7 @@ class DesktopNoticeSendService:
                             if isinstance(exc, (
                                 DesktopForegroundUnavailableError, DesktopSearchUnavailableError,
                                 DesktopGroupUnavailableError, DesktopReceiptUnavailableError,
+                                DesktopPackageEvidenceExpiredError,
                             ))
                             else None
                         ),
@@ -593,9 +598,15 @@ class DesktopNoticeSendService:
         return self.package_guard.check(plan)
 
     def _claim(self, task_id: int) -> None:
+        from aftersales_workbench.workflows.notice_package_guard import (
+            NoticePackageEvidenceExpired,
+        )
+
         if hasattr(self, "package_guard"):
             try:
                 self.package_guard.validate_before_input(task_id)
+            except NoticePackageEvidenceExpired as exc:
+                raise DesktopPackageEvidenceExpiredError(str(exc)) from exc
             except ValueError as exc:
                 raise DesktopBeforePasteError(str(exc)) from exc
         task = self.session.get(AftersalesActionTask, task_id)
