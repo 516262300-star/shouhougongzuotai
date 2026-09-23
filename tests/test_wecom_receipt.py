@@ -97,6 +97,30 @@ def test_high_resolution_bubble_ocr_preserves_original_pixels():
     assert (255, 0, 0) in list(crops[0].getdata())
 
 
+def test_high_resolution_draft_ocr_preserves_original_pixels_and_strict_text():
+    image = scene(bubble=False, draft=True).resize((2800, 1714), Image.Resampling.NEAREST)
+    image.putpixel((1501, 1380), (255, 0, 0))
+    crops = []
+
+    class NativeDraftOcr:
+        text = MESSAGE
+
+        def read_title(self, _image):
+            return GROUP
+
+        def read(self, crop):
+            crops.append(crop)
+            return self.text
+
+    ocr = NativeDraftOcr()
+    result = WeComReceiptReader(ocr).inspect(image, GROUP, MESSAGE)
+    assert result.draft_matches and not result.input_empty and not result.sent_visible
+    assert len(crops) == 1 and crops[0].width > 1600
+    assert (255, 0, 0) in list(crops[0].getdata())
+    ocr.text = MESSAGE.replace('12345678', '12345679')
+    assert not WeComReceiptReader(ocr).inspect(image, GROUP, MESSAGE).draft_matches
+
+
 @pytest.mark.parametrize('changes', [
     {'draft': True}, {'mark': True}, {'incoming': True}, {'bubble': False},
 ])

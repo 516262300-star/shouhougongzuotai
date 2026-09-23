@@ -219,7 +219,12 @@ class WeComReceiptReader:
         bbox = dark.getbbox()
         # 空框可能有一条闪烁插入光标；任何更宽的深色内容都不是空框。
         empty = bbox is None or bbox[2] - bbox[0] <= max(2, int(w / 700))
-        draft_matches = not empty and message_key(self.ocr.read(draft)) == message_key(message)
+        # 与发送气泡一样，正文必须从原始像素读取；宽屏缩小后再放大
+        # 会丢失运单首字母和中文笔画，不能靠放宽匹配弥补。
+        native_draft = original.crop(tuple(
+            round(value * original.width / w) for value in draft_box
+        ))
+        draft_matches = not empty and message_key(self.ocr.read(native_draft)) == message_key(message)
         title = self._title_image(original, round(left * original.width / w),
                                   round(right * original.width / w))
         read_title = getattr(self.ocr, "read_title", self.ocr.read)
