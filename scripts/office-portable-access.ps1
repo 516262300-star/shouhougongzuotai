@@ -50,6 +50,24 @@ function Save-State {
     $state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
 }
 
+function Wait-PortableListenerStartup([Diagnostics.Process]$Process, [string]$ErrorLog, [int]$Port) {
+    # In -d mode sshd closes its listening socket when it accepts a connection.
+    # A socket snapshot can therefore miss a successful start and kill an active transfer.
+    # Each invocation has a new, private log: its bind-success record remains valid after accept/exit.
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $listeningPattern = '^Server listening on [0-9.]+ port ' + $Port + '\.$'
+    while ($true) {
+        $exited = $Process.HasExited
+        if ($exited) { $Process.WaitForExit() } # Drain redirected output before the final log read.
+        if (Test-Path -LiteralPath $ErrorLog) {
+            $lines = Get-Content -LiteralPath $ErrorLog -ErrorAction Stop
+            if ($lines | Where-Object { $_ -cmatch $listeningPattern }) { return $true }
+        }
+        if ($exited -or $watch.ElapsedMilliseconds -ge 8000) { return $false }
+        Start-Sleep -Milliseconds 100
+    }
+}
+
 function Disable-WindowQuickEdit {
     # Only this console window; do not change the user's registry/defaults.
     if (-not ('LdsPortableConsoleInput' -as [type])) {
@@ -217,13 +235,7 @@ try {
         $state.process_id = $process.Id
         $state.process_start_ticks = $process.StartTime.ToUniversalTime().Ticks.ToString()
         Save-State
-        $ready = $false
-        for ($attempt=0; $attempt -lt 12 -and -not $process.HasExited; $attempt++) {
-            if (Get-NetTCPConnection -LocalPort $portNumber -State Listen -ErrorAction SilentlyContinue | Where-Object OwningProcess -eq $process.Id) {
-                $ready = $true; break
-            }
-            $null = $process.WaitForExit(500)
-        }
+        $ready = Wait-PortableListenerStartup $process ($logPrefix+'.err.log') $portNumber
         if (-not $ready) { throw "Temporary listener failed; read $logPrefix.err.log" }
         if (-not $reportedReady) {
             $state.phase = 'ready'; Save-State
