@@ -34,6 +34,7 @@ from aftersales_workbench.services.return_quantity import (
     legacy_quantity_review_note,
     quantity_review_note,
 )
+from aftersales_workbench.services.return_sales_identity import original_sale_review
 from aftersales_workbench.workflows.module2 import (
     ActualReturnItem,
     CreateWarehouseReturnCommand,
@@ -61,6 +62,7 @@ class Module2ErpIntakeRunResult:
     inspections_passed: int = 0
     inspections_failed: int = 0
     quantity_reviews: int = 0
+    original_sales_reviews: int = 0
     not_found: int = 0
     post_refund_waiting_tracking: int = 0
     post_refund_waiting_receipt: int = 0
@@ -261,6 +263,16 @@ class Module2ErpIntakeService:
         if actual_items is None:
             result.unavailable += 1
             return "ERP 实收数量无法转换为有效验货明细"
+        sales_note = original_sale_review(self.matcher, order, lookup, dry_run=dry_run)
+        if sales_note:
+            # 原销售部件全部退回不等于平台 SKU 映射/质量已经核准。
+            # 不制造 FAIL、错退申诉待办，也不改匹配器的退款放行结果。
+            result.original_sales_reviews += 1
+            result.ambiguous += 1
+            if not dry_run:
+                order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
+                order.exception_type = sales_note
+            return sales_note
         quantity_note = quantity_review_note(order, platform, actual_items)
         if quantity_note:
             result.quantity_reviews += 1
