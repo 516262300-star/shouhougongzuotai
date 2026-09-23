@@ -321,6 +321,24 @@ def test_successful_return_refunds_without_old_match_tasks_are_discovered(groupe
     assert grouped.state["writes"] == 1
 
 
+def test_discovered_match_tasks_survive_later_group_rollback(grouped):
+    grouped.db.delete(grouped.task)
+    grouped.db.delete(grouped.second_task)
+    grouped.order.workflow_status = WorkflowStatus.PENDING_CHECK
+    grouped.second.workflow_status = WorkflowStatus.PENDING_CHECK
+    grouped.db.commit()
+
+    created = grouped.service._ensure_return_refund_tasks(limit=5, dry_run=False)
+    grouped.db.rollback()  # 模拟后续某个外部核验组失败。
+
+    assert created == 2
+    tasks = list(grouped.db.scalars(select(Task).where(
+        Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
+    )))
+    assert len(tasks) == 2
+    assert all(task.action_status == State.PENDING for task in tasks)
+
+
 def test_existing_grouped_refunds_are_reconciled_without_resend(grouped):
     grouped.state["refunded"].update({"9001", "9002"})
     result = grouped.service.run(dry_run=False)

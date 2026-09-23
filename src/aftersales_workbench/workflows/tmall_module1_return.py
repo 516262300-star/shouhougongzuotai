@@ -439,7 +439,9 @@ class TmallModule1ReturnService:
             )
             order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
         if not dry_run and created:
-            self.session.flush()
+            # 任务补建是独立、本地、幂等事实；先持久化再进入逐组外部核验。
+            # 否则任一组失败 rollback 会撤销同批全部新任务，并使已加载ORM对象失效。
+            self.session.commit()
         return created
 
     def inspect(self, task, order):
@@ -748,6 +750,7 @@ class TmallModule1ReturnService:
             if result["scanned"] >= limit:
                 break
             task, order = pending[0]
+            task_id = task.id
             try:
                 account, proof = self.inspect_group(task, order)
                 group_orders = {
@@ -851,7 +854,7 @@ class TmallModule1ReturnService:
                 message = str(exc)[:300] if isinstance(exc, ValueError) else type(exc).__name__
                 result["blocked"] += 1
                 if not dry_run:
-                    current = self.session.get(Task, task.id)
+                    current = self.session.get(Task, task_id)
                     if current is not None and current.action_status == State.PENDING:
                         current.last_error = message
                         current.payload = {
@@ -869,7 +872,7 @@ class TmallModule1ReturnService:
                     self.session.commit()
                 result["details"].append(
                     {
-                        "task_id": task.id,
+                        "task_id": task_id,
                         "status": "blocked",
                         "group_order_sn": parent_order,
                         "reason": message,

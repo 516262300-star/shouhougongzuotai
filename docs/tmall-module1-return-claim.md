@@ -67,7 +67,7 @@
 
 Worker每个完整周期在全部候选中最多新发起一笔ERP补单。第一笔完成后，下一笔必须在后续周期重新读取平台、RC/TH、全部收退款流水和最新累计应收，不能沿用第一笔前的余额证据。资金请求前仍先提交 `money_operations` 的售后级 `REQUEST_STARTED` 唯一记录，使用单次、不跟随重定向的ERP请求；回查对应SK流水后才记 `CONFIRMED` 和闭环。已有流水的历史单可在同一周期只读对账收尾，因为这一步不会发送外部资金请求。
 
-天猫模块2平台退款成功回写时会建立 `ERP_MATCH_RETURN_ORDER`；升级前遗漏任务的、平台已明确退款成功的退货退款，也会在现有水位内补建核验任务。补建只授予“进入严格只读核验”的资格，不代表自动补单；ERP正式退货、原销售、税点、逐笔退款记录或余额任一不符合上述条件都会保留阻断原因。此功能沿用 `TMALL_MODULE1_RETURN_CLAIM_ENABLED`、`MODULE1_ERP_REFUND_EXECUTION_ENABLED`、`ERP_AUTOMATION_ACCOUNT_DEDICATED` 和 `ERP_WRITE_ENABLED`，未新增数据库迁移或独立定时任务。紧急暂停可关闭 `TMALL_MODULE1_RETURN_CLAIM_ENABLED` 并安全重启Worker；不得删除 `money_operations` 来重试。
+天猫模块2平台退款成功回写时会建立 `ERP_MATCH_RETURN_ORDER`；升级前遗漏任务的、平台已明确退款成功的退货退款，也会在现有水位内补建核验任务。补建只授予“进入严格只读核验”的资格，不代表自动补单；补建任务先作为独立本地事务持久化，再逐组读取外部证据，某一组核验失败回滚时不会撤销同批其他组任务。ERP正式退货、原销售、税点、逐笔退款记录或余额任一不符合上述条件都会保留阻断原因。此功能沿用 `TMALL_MODULE1_RETURN_CLAIM_ENABLED`、`MODULE1_ERP_REFUND_EXECUTION_ENABLED`、`ERP_AUTOMATION_ACCOUNT_DEDICATED` 和 `ERP_WRITE_ENABLED`，未新增数据库迁移或独立定时任务。紧急暂停可关闭 `TMALL_MODULE1_RETURN_CLAIM_ENABLED` 并安全重启Worker；不得删除 `money_operations` 来重试。
 
 离线合成测试覆盖两子单分两周期补单、已存在两笔流水只对账、一分税点舍入、退款成功后子单实付归零、父单昵称缺失、同客户其他已结清历史订单、未知结果回查不重发、历史漏任务补建，以及子单、运单、退货类型、金额、当前组混杂商品/额外流水和余额不一致时零资金请求。
 
