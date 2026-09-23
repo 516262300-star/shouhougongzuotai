@@ -138,7 +138,7 @@ try {
     # Install only into the private directory. Never run install-sshd.ps1 or alter in-box SSH.
     Expand-Archive -LiteralPath $Archive -DestinationPath $root -Force
     $binaryDir = Join-Path $root 'OpenSSH-Win64'
-    foreach ($executable in @('sshd.exe','ssh-keygen.exe')) {
+    foreach ($executable in @('sshd.exe','ssh-keygen.exe','sftp-server.exe')) {
         $signature = Get-AuthenticodeSignature (Join-Path $binaryDir $executable)
         if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
             throw "Microsoft signature verification failed: $executable"
@@ -173,7 +173,7 @@ try {
         'PermitTTY no'
         'LoginGraceTime 30'
         'MaxAuthTries 3'
-        'Subsystem sftp internal-sftp'
+        ('Subsystem sftp "' + (Join-Path $binaryDir 'sftp-server.exe').Replace('\','/') + '"')
     ) | Set-Content -LiteralPath $config -Encoding ASCII
     & $state.binary -t -f $config
     if ($LASTEXITCODE -ne 0) { throw 'SSH configuration validation failed' }
