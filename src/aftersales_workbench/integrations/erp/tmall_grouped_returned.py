@@ -143,20 +143,24 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
         if row["编号"].startswith("TH-")
         and row["订单编号"] == tracking and row["客户编号"] == erp_number
     ]
+    if len(product_rows) != len(sales) + len(returns):
+        raise ValueError("ERP当前父订单商品账存在混杂或未适配商品行")
+    sale_docs = {row["编号"] for row in sales}
+    return_docs = {row["编号"] for row in returns}
     sale_tax = [
         row for row in special_rows
-        if row["编号"].startswith("RC-")
-        and row["客户编号"] == order_sn and row["订单编号"] == erp_number
+        if row["型号"] == "税点" and row["编号"] in sale_docs
+        and row["客户编号"] in {"", order_sn}
+        and row["订单编号"] == erp_number
     ]
     return_tax = [
         row for row in special_rows
-        if row["编号"].startswith("TH-")
-        and row["订单编号"] == tracking and row["客户编号"] == erp_number
+        if row["型号"] == "税点" and row["编号"] in return_docs
+        and row["订单编号"] in {erp_number, tracking}
+        and row["客户编号"] == erp_number
     ]
     if len(related_rows) != len(sales) + len(returns) + len(sale_tax) + len(return_tax):
         raise ValueError("ERP当前父订单商品账存在混杂或未适配单据")
-    sale_docs = {row["编号"] for row in sales + sale_tax}
-    return_docs = {row["编号"] for row in returns + return_tax}
     if (
         len(sale_docs) != 1
         or len(return_docs) != 1

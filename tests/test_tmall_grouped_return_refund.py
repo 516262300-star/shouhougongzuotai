@@ -332,15 +332,21 @@ def test_unknown_request_is_reconciled_from_unique_receipt_not_resent(grouped):
     assert operation.state == "CONFIRMED"
 
 
-def test_tax_rows_allow_only_mirrored_one_cent_rounding(grouped):
+@pytest.mark.parametrize(
+    ("sale_customer", "return_order"),
+    [(base.OID, "RETURN-TRACK"), ("", "11")],
+)
+def test_tax_rows_allow_only_mirrored_one_cent_rounding(
+    grouped, sale_customer, return_order,
+):
     for row in grouped.goods:
         if row["型号"] == "MODEL-B":
             row["单价"] = "7.99"
     grouped.goods.extend([
         {"编号": "RC-1", "型号": "税点", "颜色": "自动", "订单编号": "11",
-         "客户编号": base.OID, "入库化只": "1", "单价": "0.02"},
+         "客户编号": sale_customer, "入库化只": "1", "单价": "0.02"},
         {"编号": "TH-1-2026-09-23", "型号": "税点", "颜色": "自动",
-         "订单编号": "RETURN-TRACK", "客户编号": "11", "入库化只": "-1",
+         "订单编号": return_order, "客户编号": "11", "入库化只": "-1",
          "单价": "0.02"},
     ])
     result = grouped.service.run(dry_run=True)
