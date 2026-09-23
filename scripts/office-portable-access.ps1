@@ -50,6 +50,28 @@ function Save-State {
     $state | ConvertTo-Json | Set-Content -LiteralPath $stateFile -Encoding UTF8
 }
 
+function Disable-WindowQuickEdit {
+    # Only this console window; do not change the user's registry/defaults.
+    if (-not ('LdsPortableConsoleInput' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class LdsPortableConsoleInput {
+    [DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int id);
+    [DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint mode);
+    [DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint mode);
+    public static bool DisableQuickEdit() {
+        IntPtr h = GetStdHandle(-10);
+        uint mode;
+        if (!GetConsoleMode(h, out mode)) return false; // Redirected input has no console.
+        return SetConsoleMode(h, (mode | 0x80U) & ~0x40U);
+    }
+}
+'@
+    }
+    $null = [LdsPortableConsoleInput]::DisableQuickEdit()
+}
+
 function Remove-OwnRule($State) {
     if (-not $State.rule_name) { return }
     if ($State.rule_name -notmatch '^LDS-Aftersales-Portable-[a-f0-9]{32}$') { throw 'Invalid rule identity' }
@@ -88,6 +110,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw 'Right-click the CMD file and choose Run as administrator.'
 }
+if ($Action -eq 'Start') { Disable-WindowQuickEdit }
 $loginName = $env:USERNAME.ToLowerInvariant()
 if ($loginName -notmatch '^[a-z0-9_][a-z0-9_.-]{0,63}$' -or
     (Get-LocalUser -Name $loginName).SID.Value -ne $identity.User.Value) { throw 'Local administrator account required' }
