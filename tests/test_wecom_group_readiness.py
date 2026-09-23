@@ -43,12 +43,43 @@ def test_slow_group_needs_consecutive_matches_before_input(monkeypatch, tmp_path
 
 
 def test_missing_group_times_out_without_any_input(monkeypatch, tmp_path):
-    gateway, reads = setup(monkeypatch, [obs(False)] * 40, tmp_path)
+    gateway, reads = setup(monkeypatch, [obs(False)] * 120, tmp_path)
     with pytest.raises(sender.DesktopGroupUnavailableError):
         gateway._wait_for_prepared_group(11, SimpleNamespace(task_id=2))
-    assert 29 <= len(reads) <= 31
+    assert 112 <= len(reads) <= 114
     report = json.loads((tmp_path / '2-before-paste-first-failure.json').read_text('utf8'))
     assert not report['verified'] and not report['message_input_started']
+
+
+@pytest.mark.parametrize('matches,accepted', [([True, True], True),
+                                            ([True, False, True], False)])
+def test_slow_full_ocr_still_requires_two_consecutive_matches(
+    monkeypatch, tmp_path, matches, accepted,
+):
+    gateway, _ = setup(monkeypatch, [], tmp_path)
+    clock, calls = [0.0], []
+    values = iter(matches)
+    monkeypatch.setattr(windows.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(gateway, '_sleep_range',
+                        lambda *args: clock.__setitem__(0, clock[0] + .4))
+
+    def read(*args):
+        clock[0] += 17
+        calls.append(clock[0])
+        return obs(next(values))
+
+    monkeypatch.setattr(gateway, '_read_receipt', read)
+    plan = SimpleNamespace(task_id=4)
+    if accepted:
+        assert gateway._wait_for_prepared_group(11, plan).group_matches
+        assert len(calls) == 2
+    else:
+        with pytest.raises(sender.DesktopGroupUnavailableError):
+            gateway._wait_for_prepared_group(11, plan)
+    report = json.loads((tmp_path / '4-before-paste-latest.json').read_text('utf8'))
+    assert report['verified'] is accepted
+    assert report['message_input_started'] is False
+    assert all(s['read_seconds'] == 17 for s in report['samples'])
 
 
 @pytest.mark.parametrize('value', [obs(empty=False), obs(bubbles=1),

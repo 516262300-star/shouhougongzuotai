@@ -331,7 +331,8 @@ def test_existing_receipt_recheck_never_types_searches_or_sends(monkeypatch, con
     monkeypatch.setattr(gateway, '_restore_after_send', lambda: restores.append(True))
     monkeypatch.setattr(gateway, '_read_receipt', lambda *a, **kw:
                         ReceiptObservation(confirmed, True, False, 1, True))
-    for name in ('_hotkey', '_tap', '_type_unicode', '_type_multiline_message', '_open_group_search'):
+    for name in ('_hotkey', '_tap', '_type_unicode', '_type_multiline_message',
+                 '_open_group_search'):
         monkeypatch.setattr(gateway, name, lambda *a, **kw: pytest.fail('只读复核不得按键或输入'))
     if confirmed:
         assert gateway.verify_existing_receipt(SimpleNamespace(task_id=7))['verified']
@@ -354,6 +355,11 @@ def test_bad_group_existing_draft_or_wrong_typed_text_never_press_send(
                  '_sleep_range', '_snapshot', '_open_group_search', '_wait_for_change',
                  '_type_unicode', '_type_multiline_message', '_restore_previous_window']:
         monkeypatch.setattr(gateway, name, lambda *args, **kwargs: None)
+    from aftersales_workbench.workflows import windows_wecom as module
+    clock = [0.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(gateway, '_sleep_range',
+                        lambda *a, **kw: clock.__setitem__(0, clock[0] + .5))
     monkeypatch.setattr(gateway, '_activate_wecom_foreground', lambda: (11, 101))
     monkeypatch.setattr(gateway, '_require_wecom_foreground', lambda **kwargs: (11, 101))
     monkeypatch.setattr(gateway, '_read_receipt', lambda *args, **kwargs: SimpleNamespace(

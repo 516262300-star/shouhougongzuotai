@@ -302,7 +302,9 @@ class WindowsWeComGateway:
     def _wait_for_prepared_group(self, hwnd: int, plan: DesktopNoticePlan):
         """只读等待群聊加载；完整群名连续匹配两次后才允许开始输入。"""
         started = time.monotonic()
-        deadline = started + 12.0
+        # 新机单次完整画面识别可能超过12秒；保留连续两次完整匹配，
+        # 与发送后核验一样给予45秒。输入前仍由包裹保护器复核80秒证据。
+        deadline = started + 45.0
         confirmations = 0
         samples = []
         verified = False
@@ -310,9 +312,11 @@ class WindowsWeComGateway:
         self._last_receipt_snapshot = None
         try:
             while time.monotonic() < deadline:
+                read_started = time.monotonic()
                 observed = self._read_receipt(hwnd, plan)
                 samples.append({
                     'elapsed': round(time.monotonic() - started, 3),
+                    'read_seconds': round(time.monotonic() - read_started, 3),
                     'group_matches': observed.group_matches,
                     'input_empty': observed.input_empty,
                     'matching_bubbles': observed.matching_bubbles,
@@ -346,6 +350,7 @@ class WindowsWeComGateway:
                     'task_id': plan.task_id, 'phase': 'before_paste',
                     'verified': verified, 'message_input_started': False, 'error': failure,
                     'checked_at': datetime.now(UTC).isoformat(), 'samples': samples,
+                    'duration_seconds': round(time.monotonic() - started, 3),
                 }
                 prefixes = [audit / f'{plan.task_id}-before-paste-latest']
                 first = audit / f'{plan.task_id}-before-paste-first-failure'

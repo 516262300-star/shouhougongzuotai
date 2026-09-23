@@ -22,6 +22,8 @@ def sending(monkeypatch):
         return 11, 101
 
     monkeypatch.setattr(gateway, "_activate_wecom_foreground", activate)
+    # 搜索页退出另有独立测试；这里只隔离发送后的失焦恢复。
+    monkeypatch.setattr(gateway, "_leave_global_search_if_needed", lambda *args: args)
     monkeypatch.setattr(gateway, "_require_wecom_foreground", lambda **kw: (11, 101))
     for name in ("_raise_if_security_window", "_raise_if_escape", "_hotkey", "_snapshot",
                  "_open_group_search",
