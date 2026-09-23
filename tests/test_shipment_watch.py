@@ -81,8 +81,8 @@ def test_twenty_hour_boundary_and_overdue(setup, seconds, expected):
     source.refresh = lambda sn: [replace(parcel, shipped_at=NOW-timedelta(seconds=seconds))]
     watch.check_order(order, source, "店铺", publish=True)
     assert state.posts == expected
-    if seconds >= 24*3600:
-        assert "已超过" in state.content
+    if expected:
+        assert state.content == "【揽收提醒】 店铺，订单order-1，运单tracking-1。"
 
 
 def test_sent_reminder_is_not_repeated_after_owner_change(setup):
@@ -351,7 +351,11 @@ def test_same_package_batch_sends_one_todo_with_all_orders(setup):
     package_orders(setup, second_carrier="中通")
     result = watch.check_due({"pdd-1": (source, "店铺")}, publish=True)
     assert result == {"checked": 2, "created": 1, "failed": 0}
-    assert state.posts == 1 and "相关订单：order-1、order-2" in state.content
+    assert state.posts == 1
+    assert state.content == (
+        "【揽收提醒】 店铺，订单order-1，运单tracking-1。"
+        "相关订单：order-1、order-2。发货满20小时仍未查到物流信息"
+    )
     rows = list(session.scalars(select(Notice)))
     primary = next(n for n in rows if n.status == "SENT")
     alias = next(n for n in rows if n.status == "MERGED")

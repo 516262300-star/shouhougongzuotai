@@ -244,23 +244,18 @@ class ShipmentWatch:
                 notice.last_error = str(exc)
                 self.session.commit()
                 continue
-            earliest = min(datetime.fromisoformat(n.payload["shipped_at"]) for n in group)
-            deadline = earliest + REFERENCE_DEADLINE
             legacy_markers = tuple(dict.fromkeys(
                 m for n in group
                 for m in [n.payload["marker"], *n.payload.get("legacy_markers", ())]
                 if m != marker
             ))
-            overdue = checked_at >= deadline
-            minutes_left = max(0, int((deadline - checked_at).total_seconds() / 60))
-            timing = "已超过发货后24小时" if overdue else f"距发货后24小时约{minutes_left}分钟"
-            content = (
-                f"{marker}{'最早' if len(group) > 1 else ''}发货时间：{platform_time(earliest)}；"
-                + (f"相关订单：{'、'.join(sorted({n.order_sn for n in group}))}。"
-                   if len(group) > 1 else "") +
-                f"发货满20小时仍未查到物流信息，{timing}。"
-                "请联系仓库或快递核实是否交运、催促实际揽收并回传轨迹。"
-            )
+            related_orders = sorted({n.order_sn for n in group})
+            content = marker
+            if len(related_orders) > 1:
+                content += (
+                    f"相关订单：{'、'.join(related_orders)}。"
+                    "发货满20小时仍未查到物流信息"
+                )
             notice.payload = {**notice.payload, "content": content,
                               "legacy_markers": list(legacy_markers),
                               "checked_at": checked_at.isoformat(), "evidence": evidence}
