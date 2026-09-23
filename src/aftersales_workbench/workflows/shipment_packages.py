@@ -51,7 +51,8 @@ def merge(session, primary, rows, now):
             notice.todo_id = primary.todo_id
     active = [n for n in rows if not n.payload.get("full_refund")
               and not n.payload.get("trace_resolved")
-              and n.status not in {"TRACE_SEEN", "REFUNDED"}]
+              and not n.payload.get("shipment_closed")
+              and n.status not in {"TRACE_SEEN", "REFUNDED", "CLOSED"}]
     order_sns = sorted({n.order_sn for n in active})
     shops = sorted({n.payload.get("shop_name") or n.shop_code for n in active})
     messages = {}

@@ -155,7 +155,7 @@ class ShipmentWatch:
         parcels = source.refresh(order.order_sn)
         now = self.now()
         sent = 0
-        if self._record_full_refund(order, parcels):
+        if self._record_exclusion(order, parcels):
             order.checks += 1
             order.last_error = None
             order.next_check_at = now + timedelta(days=1)
@@ -225,7 +225,7 @@ class ShipmentWatch:
                      and not n.payload.get("full_refund") and n.shop_code in sources]
             # 归属查询期间可能已出现物流或退款/换单，发布前重新核对。
             fresh = source.refresh(order.order_sn)
-            if self._record_full_refund(order, fresh):
+            if self._record_exclusion(order, fresh):
                 break
             if parcel not in fresh:
                 notice.last_error = "发布前订单或包裹已变化，等待下一轮核对"
@@ -270,8 +270,8 @@ class ShipmentWatch:
                                notice=notice, sources=sources):
                 require_publish_enabled(self.session, self.settings)
                 final = source.refresh(order.order_sn)
-                if self._record_full_refund(order, final):
-                    raise ManualTodoPublishingPaused("订单已全额退款成功，不再催揽收")
+                if self._record_exclusion(order, final):
+                    raise ManualTodoPublishingPaused("订单已结束监控，不再催揽收")
                 if parcel not in final:
                     raise ManualTodoPublishingPaused("提交前订单或包裹已变化，留待重新核验")
                 self._verify_package(group, sources, notice.assignee)
@@ -324,7 +324,7 @@ class ShipmentWatch:
         return sent
 
     def _resolve_sent_traces(self, order, source):
-        if source.platform != "TMALL":
+        if source.platform not in {"TMALL", "JD"}:
             return
         for notice in self.session.scalars(select(Notice).where(
             Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
@@ -336,7 +336,12 @@ class ShipmentWatch:
             parcel = Parcel(notice.order_sn, notice.tracking_number, p["carrier"],
                             datetime.fromisoformat(p["shipped_at"]),
                             tuple(p.get("sub_order_ids", ())))
-            proof = source.trace_evidence(parcel, self.settings.kuaidi100_carrier_map)
+            if source.platform == "JD":
+                proof = {"result": "HAS_TRACE" if self._trace_absent(parcel, source) is None
+                         else "NO_TRACE", "tracking_number": parcel.tracking_number,
+                         "order_sn": parcel.order_sn, "source": "KUAIDI100"}
+            else:
+                proof = source.trace_evidence(parcel, self.settings.kuaidi100_carrier_map)
             if proof["result"] == "HAS_TRACE":
                 # 保留真实发送凭证，不将远端待办伪标为撤回/完成。
                 notice.payload = {**p, "trace_resolved": {
@@ -345,20 +350,21 @@ class ShipmentWatch:
                 shipment_packages.refresh_merged(self.session, notice, self.now())
         self.session.commit()
 
-    def _record_full_refund(self, order, snapshot):
-        evidence = getattr(snapshot, "full_refund", None)
+    def _record_exclusion(self, order, snapshot):
+        closed = getattr(snapshot, "closed", None)
+        evidence = getattr(snapshot, "full_refund", None) or closed
         if not evidence:
             return False
         if evidence.get("order_sn") != order.order_sn:
-            raise ValueError("全额退款证据订单不匹配")
+            raise ValueError("停止监控证据订单不匹配")
         for notice in self.session.scalars(select(Notice).where(
             Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
         )):
-            notice.payload = {**notice.payload, "full_refund": {
+            notice.payload = {**notice.payload, "shipment_closed" if closed else "full_refund": {
                 **evidence, "checked_at": self.now().isoformat(),
             }}
             if notice.status == "PENDING":
-                notice.status = "REFUNDED"
+                notice.status = "CLOSED" if closed else "REFUNDED"
                 notice.last_error = None
                 notice.updated_at = self.now()
             # 已发送/结果不明保留原状态、远端ID和确认时间；不能伪称远端已撤回。
@@ -375,8 +381,8 @@ class ShipmentWatch:
             watched = self.session.get(Order, (member.shop_code, member.order_sn))
             if watched is None:
                 raise ManualTodoPublishingPaused("缺少订单监控记录，等待重新核验")
-            if self._record_full_refund(watched, snapshot):
-                raise ManualTodoPublishingPaused("同包裹订单已全额退款，重新整理提醒范围")
+            if self._record_exclusion(watched, snapshot):
+                raise ManualTodoPublishingPaused("同包裹订单已结束监控，重新整理提醒范围")
             matching = [p for p in snapshot if p.tracking_number == member.tracking_number
                         and resolve_logistics_carrier(
                             p.carrier, self.settings.kuaidi100_carrier_map)

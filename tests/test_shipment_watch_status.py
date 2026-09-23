@@ -206,3 +206,25 @@ def test_stale_records_are_not_reported_as_running(setup):
         now=NOW + timedelta(hours=1),
     )
     assert payload["shipment_reminder"]["label"] == "运行记录待核验"
+
+
+def test_jd_enabled_only_with_compatible_release_carriers_and_verified_seller(setup):
+    settings, snapshots, _, root = setup
+    settings.jd_shops_json = [{"shop_code": "jd-test", "shop_name": "京东测试",
+                              "platform_shop_id": "relay-prefix", "app_key": "synthetic",
+                              "app_secret": "synthetic", "access_token": "synthetic"}]
+    snapshots.append(ShopSnapshot(Platform.JD, "jd-test", "京东测试", "relay-prefix", True))
+    assert caps(result(setup), "JD")["shipment_reminder"]["state"] == "disabled"
+    path = root / ".runtime/shipment-watch-release.json"
+    pointer = json.loads(path.read_text())
+    pointer.update(platforms=["PDD", "TMALL", "JD"], jd_carrier_map={"900": "jtexpress"},
+                   jd_seller_ids={"jd-test": "42"})
+    path.write_text(json.dumps(pointer))
+    assert caps(result(setup), "JD")["shipment_reminder"]["state"] == "disabled"
+    (root / pointer["source_path"] / "aftersales_workbench/workflows/jd_shipment_source.py"
+     ).write_text("# compatible fixture")
+    assert caps(result(setup), "JD")["shipment_reminder"]["state"] == "enabled"
+    assert result(setup)["shipment_reminder"]["enabled_shop_count"] == 3
+    pointer["jd_seller_ids"] = {}
+    path.write_text(json.dumps(pointer))
+    assert "真实商家编号" in caps(result(setup), "JD")["shipment_reminder"]["detail"]

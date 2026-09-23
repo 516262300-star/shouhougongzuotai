@@ -9,17 +9,20 @@ from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
-from aftersales_workbench.db.models import Shop
+from aftersales_workbench.db.models import Platform, Shop
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
 from aftersales_workbench.integrations.erp.todo import ErpTodoClient
 from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100Client,
     Kuaidi100Credentials,
 )
+from aftersales_workbench.integrations.marketplace.jd import JdReadClient
+from aftersales_workbench.integrations.marketplace.shops import load_marketplace_shops
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.tmall.client import TmallClient
 from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
+from aftersales_workbench.workflows.jd_shipment_source import JdShipmentSource
 from aftersales_workbench.workflows.shipment_watch import ShipmentWatch, utcnow
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentNoTraceNotice,
@@ -29,7 +32,11 @@ from aftersales_workbench.workflows.shipment_watch_models import (
 from aftersales_workbench.workflows.shipment_watch_sources import ShipmentSource
 
 
-def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False):
+def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
+        platforms=("PDD", "TMALL"), jd_carrier_map=None, jd_seller_ids=None):
+    platforms = tuple(dict.fromkeys(platforms))
+    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD"}:
+        raise ValueError("普通订单提醒平台配置无效")
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     result = {"publish": publish, "sync_errors": {}, "synced": 0}
     try:
@@ -82,9 +89,13 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False)
             for platform, loader, client_type in (
                 ("PDD", load_configured_pdd_shops, PddClient),
                 ("TMALL", load_configured_tmall_shops, TmallClient),
+                ("JD", None, JdReadClient),
             ):
+                if platform not in platforms:
+                    continue
                 try:
-                    configured = loader(cfg, require_all=False)
+                    configured = (load_marketplace_shops(cfg, Platform.JD) if platform == "JD"
+                                  else loader(cfg, require_all=False))
                 except Exception as exc:
                     result["sync_errors"][platform] = type(exc).__name__
                     continue
@@ -96,17 +107,25 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False)
                         ))
                         if shop is None:
                             raise ValueError("店铺不在有效工作台店铺列表")
-                        client = client_type(config.credentials(), read_max_attempts=2)
+                        client = (JdReadClient(config, cfg) if platform == "JD"
+                                  else client_type(config.credentials(), read_max_attempts=2))
                         stack.callback(client.close)
                         if platform == "PDD":
                             identity = client.get_mall_info()["mall_info_get_response"]["mall_id"]
-                        else:
+                        elif platform == "TMALL":
                             identity = client.get_seller()["user_seller_get_response"]["user"][
                                 "user_id"
                             ]
+                        else:
+                            identity = config.platform_shop_id
                         if str(identity) != str(shop.platform_shop_id):
                             raise ValueError("店铺授权身份不匹配")
-                        source = ShipmentSource(platform, client)
+                        seller_id = (jd_seller_ids or {}).get(config.shop_code, "")
+                        if platform == "JD" and not str(seller_id).isdigit():
+                            raise ValueError("京东真实商家编号尚未核实绑定")
+                        source = (JdShipmentSource(client, seller_id=seller_id,
+                                                   carrier_map=jd_carrier_map or {})
+                                  if platform == "JD" else ShipmentSource(platform, client))
                         sources[config.shop_code] = source, shop.shop_name
                         result["synced"] += watch.sync(
                             config.shop_code, source, max_windows=max_windows,
@@ -116,10 +135,12 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False)
                         result["sync_errors"][config.shop_code] = (
                             f"{type(exc).__name__}: {str(exc)[:250]}"
                         )
+            result["platforms"] = list(platforms)
             result.update(watch.check_due(sources, publish=publish, limit=limit))
             result["lagging_shops"] = list(session.scalars(select(
                 ShipmentWatchCursor.shop_code,
-            ).where(ShipmentWatchCursor.updated_through < utcnow() - timedelta(minutes=10))))
+            ).where(ShipmentWatchCursor.shop_code.in_(sources),
+                    ShipmentWatchCursor.updated_through < utcnow() - timedelta(minutes=10))))
             return result
     finally:
         engine.dispose()

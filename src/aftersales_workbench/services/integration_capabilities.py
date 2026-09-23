@@ -234,7 +234,10 @@ def _shop_capabilities(
     if not supports_modules:
         return {
             "sync": sync,
-            "shipment_reminder": _unsupported("当前仅接入拼多多、天猫普通发货订单"),
+            "shipment_reminder": (
+                _disabled("等待核对京东独立提醒版本、商家身份及物流映射")
+                if platform == Platform.JD else _unsupported("该平台尚未接入普通发货订单提醒")
+            ),
             "attribution": attribution,
             "financial": financial,
             "refund_permission": _unsupported("当前接入为只读同步，不调用平台退款接口"),

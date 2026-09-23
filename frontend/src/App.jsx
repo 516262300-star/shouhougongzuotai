@@ -1006,7 +1006,7 @@ function ShipmentReminderStatus({ data }) {
   return (
     <section className="shipment-reminder-status" aria-label="发货20小时无物流提醒">
       <header>
-        <div><h2>发货20小时无物流提醒</h2><p>拼多多、天猫 · 截止前4小时提醒 · 每5分钟巡检</p></div>
+        <div><h2>发货20小时无物流提醒</h2><p>按各店开通状态执行 · 发货满20小时提醒 · 每5分钟巡检</p></div>
         <StatusTag tone={capabilityTone(data.state)}>{data.label}</StatusTag>
       </header>
       <div className="shipment-reminder-metrics">

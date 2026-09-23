@@ -479,3 +479,44 @@ def test_sent_tmall_reminder_is_resolved_even_after_trade_closed_without_erasing
     assert notice.payload["trace_resolved"]["event_count"] == 2
     assert before == (notice.status, notice.todo_id, notice.updated_at, notice.payload["content"])
     assert notice.payload["package_active_count"] == 0 and state.posts == 1
+
+
+def test_jd_closing_before_publish_hides_pending_without_fake_refund_evidence(setup):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "JD"
+    watch.check_order(order, source, "京东店")
+    notice = session.scalar(select(Notice))
+    source.refresh = lambda sn: ShipmentSnapshot(closed={
+        "platform": "JD", "order_sn": sn, "order_state": "TRADE_CANCELED",
+    })
+    watch.check_order(order, source, "京东店", publish=True)
+    assert notice.status == "CLOSED" and state.posts == 0
+    assert "shipment_closed" in notice.payload and "full_refund" not in notice.payload
+
+
+def test_jd_terminal_transition_at_final_submission_prevents_post(setup):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "JD"
+    original = watch.todo_factory
+    def factory(before):
+        if before:
+            source.refresh = lambda sn: ShipmentSnapshot(closed={
+                "order_sn": sn, "order_state": "FINISHED_L",
+            })
+        return original(before)
+    watch.todo_factory = factory
+    watch.check_order(order, source, "京东店", publish=True)
+    assert state.posts == 0 and session.scalar(select(Notice)).status == "CLOSED"
+
+
+def test_jd_sent_notice_keeps_receipt_after_trace_appears(setup):
+    watch, session, order, source, state, parcel = setup
+    source.platform = "JD"
+    watch.check_order(order, source, "京东店", publish=True)
+    notice = session.scalar(select(Notice))
+    before = (notice.todo_id, notice.updated_at, notice.payload["content"])
+    state.trace = True
+    watch.check_order(order, source, "京东店", publish=True)
+    assert notice.status == "SENT" and state.posts == 1
+    assert notice.payload["trace_resolved"]["tracking_number"] == parcel.tracking_number
+    assert before == (notice.todo_id, notice.updated_at, notice.payload["content"])

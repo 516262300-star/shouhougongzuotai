@@ -190,6 +190,26 @@ def test_full_refund_hides_reminders_but_retains_unknown_outcomes_and_receipts(r
     assert db.get(Notice, "sent").todo_id == "new-remote"
 
 
+def test_jd_terminal_reminders_hidden_but_unknown_submission_remains_auditable(records):
+    service, db = records
+    for key in ("sent", "pending", "unknown"):
+        notice = db.get(Notice, key)
+        notice.payload = {**notice.payload, "shipment_closed": {
+            "order_sn": notice.order_sn, "order_state": "TRADE_CANCELED",
+        }}
+        if key == "pending":
+            notice.status = "CLOSED"
+    db.commit()
+    visible = service.list_manual_todos(page=1, page_size=20)
+    ids = {row["task_id"] for row in visible["items"]}
+    assert "shipment:sent" not in ids and "shipment:pending" not in ids
+    assert "shipment:unknown" in ids
+    assert "不再催揽收" in next(
+        row["reason"] for row in visible["items"] if row["task_id"] == "shipment:unknown"
+    )
+    assert db.get(Notice, "sent").todo_id == "new-remote"
+
+
 def test_mixed_pagination_orders_by_china_time_without_duplicates(records):
     service, db = records
     pages = [service.list_manual_todos(page=p, page_size=2) for p in range(1, 4)]

@@ -80,7 +80,7 @@ def _index(session):
         .outerjoin(Shop, Shop.shop_code == Notice.shop_code)
         .where(
             # 已发现轨迹、未发布的提醒只保留后台核验记录，不进入人工待办及统计。
-            Notice.status.not_in(("TRACE_SEEN", "REFUNDED", "MERGED")),
+            Notice.status.not_in(("TRACE_SEEN", "REFUNDED", "MERGED", "CLOSED")),
             Notice.payload["merged_into"].as_string().is_(None),
             or_(
                 Notice.payload["full_refund"]["order_sn"].as_string().is_(None),
@@ -89,6 +89,11 @@ def _index(session):
             ),
             or_(
                 Notice.payload["trace_resolved"]["tracking_number"].as_string().is_(None),
+                Notice.payload["package_active_count"].as_integer() > 0,
+                Notice.status.in_(("SUBMITTING", "UNKNOWN")),
+            ),
+            or_(
+                Notice.payload["shipment_closed"]["order_sn"].as_string().is_(None),
                 Notice.payload["package_active_count"].as_integer() > 0,
                 Notice.status.in_(("SUBMITTING", "UNKNOWN")),
             ),
@@ -111,6 +116,8 @@ def _shipment_item(notice, shop):
         reason = "已全额退款，不再催揽收；原提醒发送结果待确认"
     if payload.get("trace_resolved") and not payload.get("package_active_count"):
         reason = "已核实物流轨迹，无需催揽收；原提醒发送结果待确认"
+    if payload.get("shipment_closed") and not payload.get("package_active_count"):
+        reason = "订单已关闭、完成或配送退回，不再催揽收；原提醒发送结果待确认"
     order_sns = payload.get("package_order_sns") or [notice.order_sn]
     todo_ids = payload.get("package_todo_ids") or ([notice.todo_id] if notice.todo_id else [])
     return {

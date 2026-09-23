@@ -6,9 +6,10 @@ from decimal import Decimal, InvalidOperation
 class ShipmentSnapshot(list):
     """兼容包裹列表，同时携带本次平台查询确认的整单全额退款证据。"""
 
-    def __init__(self, parcels=(), *, full_refund=None):
+    def __init__(self, parcels=(), *, full_refund=None, closed=None):
         super().__init__(parcels)
         self.full_refund = full_refund
+        self.closed = closed
 
 
 def _money(value):
