@@ -351,6 +351,32 @@ def test_existing_grouped_refunds_are_reconciled_without_resend(grouped):
     assert all(op.state == "CONFIRMED" and op.snapshot["observed_existing"] for op in operations)
 
 
+def test_discovered_historical_existing_refunds_close_once(grouped):
+    grouped.db.delete(grouped.task)
+    grouped.db.delete(grouped.second_task)
+    grouped.order.workflow_status = WorkflowStatus.PENDING_CHECK
+    grouped.second.workflow_status = WorkflowStatus.PENDING_CHECK
+    grouped.db.commit()
+    grouped.state["refunded"].update({"9001", "9002"})
+
+    first = grouped.service.run(dry_run=False, platform_order_sn=base.OID)
+    assert first["tasks_created"] == 2 and first["already_completed"] == 2, first
+    assert first["applied"] == 0 and first["blocked"] == 0
+    tasks = list(grouped.db.scalars(select(Task).where(
+        Task.action_type == Action.ERP_MATCH_RETURN_ORDER,
+    )))
+    assert len(tasks) == 2 and all(task.action_status == State.SUCCEEDED for task in tasks)
+    assert grouped.order.workflow_status == WorkflowStatus.INTERCEPT_SUCCESS
+    assert grouped.second.workflow_status == WorkflowStatus.INTERCEPT_SUCCESS
+
+    second = grouped.service.run(dry_run=False, platform_order_sn=base.OID)
+    assert second["tasks_created"] == 0 and second["scanned"] == 0, second
+    assert grouped.state["writes"] == 0
+    operations = list(grouped.db.scalars(select(MoneyOperation)))
+    assert len(operations) == 2
+    assert all(op.state == "CONFIRMED" and op.snapshot["observed_existing"] for op in operations)
+
+
 def test_unknown_request_is_reconciled_from_unique_receipt_not_resent(grouped):
     grouped.state["timeout"] = True
     first = grouped.service.run(dry_run=False)
