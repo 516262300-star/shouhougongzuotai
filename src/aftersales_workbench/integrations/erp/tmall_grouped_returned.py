@@ -186,7 +186,11 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
     if abs(sale_total - total) > abs(tolerance):
         raise ValueError("ERP原销售商品及税点金额与平台退款合计不符")
 
-    balances = complete_table(profile, {"客户名字", "累计应收"})
+    # 旧客户档案会留下未闭合的客户详情 <a>，但表格、行、列和关键表头均完整；
+    # 只在本余额表显式兼容该已知标签，其他未闭合结构仍失败关闭。
+    balances = complete_table(
+        profile, {"客户名字", "累计应收"}, allowed_unclosed_tags={"a"},
+    )
     if len(balances) != 1 or balances[0]["客户名字"] != customer:
         raise ValueError("ERP客户应收不唯一")
     balance = _signed(balances[0]["累计应收"], "ERP客户应收")

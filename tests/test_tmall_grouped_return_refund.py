@@ -24,6 +24,7 @@ from aftersales_workbench.db.models import (
 from aftersales_workbench.db.models import (
     AutomationTaskStatus as State,
 )
+from aftersales_workbench.integrations.erp.tmall_unshipped import complete_table
 from aftersales_workbench.integrations.erp.unshipped_refund import ErpWebUnshippedRefundClient
 from aftersales_workbench.workflows.tmall_module1_return import TmallModule1ReturnService
 from tests import test_tmall_module3 as base
@@ -41,6 +42,19 @@ def detail_page(source):
         '<div class="panel-body">' + escape(str(source[key])) + '</div>'
         for key, label in mapping.items()
     ) + "</div></body></html>"
+
+
+def test_complete_table_only_allows_explicit_legacy_unclosed_anchor():
+    page = (
+        "<html><body><table><tr><th>客户名字</th><th>累计应收</th></tr>"
+        "<tr><td><a href='/customer/1'>测试客户</td><td>0.00</td></tr>"
+        "</table></body></html>"
+    )
+    with pytest.raises(ValueError, match="表格不完整"):
+        complete_table(page, {"客户名字", "累计应收"})
+    assert complete_table(
+        page, {"客户名字", "累计应收"}, allowed_unclosed_tags={"a"},
+    )[0]["累计应收"] == "0.00"
 
 
 @pytest.fixture

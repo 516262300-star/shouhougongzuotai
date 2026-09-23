@@ -21,7 +21,7 @@ def amount(value):
     return number
 
 
-def complete_table(document, required):
+def complete_table(document, required, *, allowed_unclosed_tags=frozenset()):
     """要求完整唯一表格；权限页、截断、重复表头、漏页不能当作空结果。"""
     nodes = list(_Page(document).root.nodes())
     if re.search(r"权限不足|没有权限|登录失效|查询失败|加载失败|请求超时", nodes[0].text()):
@@ -36,7 +36,11 @@ def complete_table(document, required):
         cells = [[n.text() for n in r.children if n.tag in {"th", "td"}] for r in rows]
         if not cells or not required <= set(cells[0]):
             continue
-        if any(not n.closed for n in table.nodes()) or len(set(cells[0])) != len(cells[0]):
+        unclosed = {n.tag for n in table.nodes() if not n.closed}
+        if (
+            unclosed - set(allowed_unclosed_tags)
+            or len(set(cells[0])) != len(cells[0])
+        ):
             raise ValueError("ERP表格不完整或重复表头")
         if any(n.attrs.get("colspan", "1") != "1" or n.attrs.get("rowspan", "1") != "1"
                for n in table.nodes() if n.tag in {"td", "th"}):
