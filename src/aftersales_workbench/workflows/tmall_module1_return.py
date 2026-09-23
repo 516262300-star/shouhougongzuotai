@@ -235,7 +235,9 @@ class TmallModule1ReturnService:
                     or Decimal(str(detail.get("num") or 0)) != quantity
                     or str(child.get("outer_sku_id") or "").strip() != sku
                     or Decimal(str(child.get("num") or 0)) != quantity
-                    or amount(child.get("payment")) != expected
+                    # 退款成功后，天猫部分订单会把子单 payment 归零；父订单原实付、
+                    # 本笔 refund_fee 及全部子单集合仍必须完整等额，不能据此放宽金额核验。
+                    or amount(child.get("payment")) not in {expected, Decimal("0")}
                 ):
                     raise ValueError("天猫退货退款与子单SKU、数量、金额或退货运单不一致")
                 product, color = (part.strip() for part in sku.split("#", 1))

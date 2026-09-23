@@ -246,6 +246,15 @@ def test_grouped_refunds_execute_one_child_per_cycle(grouped):
     grouped.platform.agree_refund.assert_not_called()
 
 
+def test_successful_refund_may_zero_live_child_payment(grouped):
+    for child in grouped.trade["orders"]["order"]:
+        child["payment"] = "0.00"
+    preview = grouped.service.run(dry_run=True)
+    assert preview["ready"] == 2
+    assert preview["blocked"] == 0
+    assert grouped.state["writes"] == 0
+
+
 def test_successful_return_refunds_without_old_match_tasks_are_discovered(grouped):
     grouped.db.delete(grouped.task)
     grouped.db.delete(grouped.second_task)
