@@ -258,7 +258,12 @@ class TmallModule1ReturnService:
                 not shop.platform_shop_id
                 or str(seller.get("user_id") or "") != shop.platform_shop_id
                 or not seller.get("nick")
-                or trade.get("seller_nick") != seller["nick"]
+                # 部分退款成功后的 fullinfo 不再返回 seller_nick；主账号 user_id
+                # 仍须与店铺配置精确一致，非空昵称则也必须一致。
+                or (
+                    trade.get("seller_nick")
+                    and trade.get("seller_nick") != seller["nick"]
+                )
                 or str(trade.get("tid") or "") != order.platform_order_sn
                 or set(child_map) != refund_children
                 or amount(trade.get("payment")) != total

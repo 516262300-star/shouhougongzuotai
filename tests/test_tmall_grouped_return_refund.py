@@ -255,6 +255,14 @@ def test_successful_refund_may_zero_live_child_payment(grouped):
     assert grouped.state["writes"] == 0
 
 
+def test_successful_refund_trade_may_omit_seller_nick(grouped):
+    grouped.trade.pop("seller_nick")
+    preview = grouped.service.run(dry_run=True)
+    assert preview["ready"] == 2
+    assert preview["blocked"] == 0
+    assert grouped.state["writes"] == 0
+
+
 def test_successful_return_refunds_without_old_match_tasks_are_discovered(grouped):
     grouped.db.delete(grouped.task)
     grouped.db.delete(grouped.second_task)
