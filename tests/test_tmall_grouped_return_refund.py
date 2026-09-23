@@ -149,7 +149,10 @@ def grouped(db, monkeypatch):
         {"编号": "TH-1-2026-09-23", "型号": "MODEL-B", "颜色": "黑",
          "订单编号": "RETURN-TRACK", "客户编号": "11", "入库化只": "-1", "单价": "8"},
     ]
-    state = {"refunded": set(), "writes": 0, "write_ids": [], "timeout": False}
+    state = {
+        "refunded": set(), "writes": 0, "write_ids": [], "timeout": False,
+        "extra_bills": [],
+    }
     original = {
         "单据编号": "SK-SALE", "收款金额": "20", "制单人": "DD-11",
         "备注": "原收款", "订单编号": "11",
@@ -169,7 +172,11 @@ def grouped(db, monkeypatch):
             Decimal("12" if refund_sn == "9001" else "8")
             for refund_sn in state["refunded"]
         )
-        bills = [original] + [receipt(refund_sn) for refund_sn in sorted(state["refunded"])]
+        bills = (
+            [original]
+            + [receipt(refund_sn) for refund_sn in sorted(state["refunded"])]
+            + state["extra_bills"]
+        )
         return (
             base.table(["客户名字", "累计应收"], [
                 {"客户名字": "测试客户", "累计应收": str(-remaining)}
@@ -263,6 +270,25 @@ def test_successful_refund_trade_may_omit_seller_nick(grouped):
     assert grouped.state["writes"] == 0
 
 
+def test_unrelated_settled_customer_history_is_ignored(grouped):
+    grouped.goods.extend([
+        {"编号": "RC-OTHER", "型号": "OTHER-A", "颜色": "白",
+         "订单编号": "99", "客户编号": "OTHER-ORDER", "入库化只": "1",
+         "单价": "32.91"},
+        {"编号": "RC-OTHER", "型号": "OTHER-B", "颜色": "蓝",
+         "订单编号": "99", "客户编号": "OTHER-ORDER", "入库化只": "2",
+         "单价": "14.26"},
+    ])
+    grouped.state["extra_bills"].append({
+        "单据编号": "SK-OTHER", "收款金额": "61.43", "制单人": "DD-99",
+        "备注": "其他已结清订单", "订单编号": "99",
+    })
+    preview = grouped.service.run(dry_run=True)
+    assert preview["ready"] == 2
+    assert preview["blocked"] == 0
+    assert grouped.state["writes"] == 0
+
+
 def test_successful_return_refunds_without_old_match_tasks_are_discovered(grouped):
     grouped.db.delete(grouped.task)
     grouped.db.delete(grouped.second_task)
@@ -323,7 +349,10 @@ def test_tax_rows_allow_only_mirrored_one_cent_rounding(grouped):
 
 @pytest.mark.parametrize(
     "change",
-    ["missing_child", "wrong_tracking", "wrong_amount", "not_return", "extra_bill", "balance"],
+    [
+        "missing_child", "wrong_tracking", "wrong_amount", "not_return",
+        "extra_bill", "mixed_goods", "balance",
+    ],
 )
 def test_grouped_mismatch_never_sends_money(grouped, change):
     c = grouped
@@ -337,6 +366,12 @@ def test_grouped_mismatch_never_sends_money(grouped, change):
         c.sources["9002"]["isRefundGoods"] = "否"
     elif change == "extra_bill":
         c.state["refunded"].add("unexpected")
+    elif change == "mixed_goods":
+        c.goods.append({
+            "编号": "RC-MIXED", "型号": "OTHER", "颜色": "白",
+            "订单编号": "99", "客户编号": base.OID, "入库化只": "1",
+            "单价": "1",
+        })
     else:
         original_profile = c.erp._load_customer_profile.side_effect
 

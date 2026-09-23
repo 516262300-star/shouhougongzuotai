@@ -117,26 +117,49 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
     erp_order, customer = identities.pop()
     profile, customer_id = client._load_customer_profile(order_sn, customer)
     rows = customer_rows(client, customer_id)
-    product_rows = [row for row in rows if row["型号"] not in {"税点", "运费"}]
-    special_rows = [row for row in rows if row["型号"] in {"税点", "运费"}]
+    erp_number = erp_order.removeprefix("DD-")
+    # 客户商品账是完整历史页；只圈定当前父订单/ERP原单/退货运单相关行。
+    # 任何只命中部分当前标识的混杂行仍会落入 related_rows 并在下方阻断。
+    related_rows = [
+        row for row in rows
+        if row["客户编号"] in {order_sn, erp_number}
+        or row["订单编号"] in {erp_number, tracking}
+    ]
+    product_rows = [
+        row for row in related_rows if row["型号"] not in {"税点", "运费"}
+    ]
+    special_rows = [
+        row for row in related_rows if row["型号"] in {"税点", "运费"}
+    ]
     if any(row["型号"] == "运费" for row in special_rows):
         raise ValueError("ERP商品账含未适配运费行")
-    sales = [row for row in product_rows if row["编号"].startswith("RC-")]
-    returns = [row for row in product_rows if row["编号"].startswith("TH-")]
-    sale_tax = [row for row in special_rows if row["编号"].startswith("RC-")]
-    return_tax = [row for row in special_rows if row["编号"].startswith("TH-")]
-    if len(rows) != len(sales) + len(returns) + len(sale_tax) + len(return_tax):
-        raise ValueError("ERP客户商品账存在未适配单据")
+    sales = [
+        row for row in product_rows
+        if row["编号"].startswith("RC-")
+        and row["客户编号"] == order_sn and row["订单编号"] == erp_number
+    ]
+    returns = [
+        row for row in product_rows
+        if row["编号"].startswith("TH-")
+        and row["订单编号"] == tracking and row["客户编号"] == erp_number
+    ]
+    sale_tax = [
+        row for row in special_rows
+        if row["编号"].startswith("RC-")
+        and row["客户编号"] == order_sn and row["订单编号"] == erp_number
+    ]
+    return_tax = [
+        row for row in special_rows
+        if row["编号"].startswith("TH-")
+        and row["订单编号"] == tracking and row["客户编号"] == erp_number
+    ]
+    if len(related_rows) != len(sales) + len(returns) + len(sale_tax) + len(return_tax):
+        raise ValueError("ERP当前父订单商品账存在混杂或未适配单据")
     sale_docs = {row["编号"] for row in sales + sale_tax}
     return_docs = {row["编号"] for row in returns + return_tax}
-    erp_number = erp_order.removeprefix("DD-")
     if (
         len(sale_docs) != 1
         or len(return_docs) != 1
-        or any(row["客户编号"] != order_sn or row["订单编号"] != erp_number
-               for row in sales + sale_tax)
-        or any(row["订单编号"] != tracking or row["客户编号"] != erp_number
-               for row in returns + return_tax)
         or _item_counter(sales, sign=1) != wanted
         or _item_counter(returns, sign=-1) != wanted
     ):
@@ -166,8 +189,13 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
     if outstanding_records(profile):
         raise ValueError("ERP客户仍有欠货，禁止自动补单")
     bills = complete_table(profile, {"单据编号", "收款金额", "制单人", "备注", "订单编号"})
-    originals = [
+    related_bills = [
         row for row in bills
+        if row["制单人"] in {erp_order, *refund_sns}
+        or row["订单编号"] == erp_number
+    ]
+    originals = [
+        row for row in related_bills
         if row["制单人"] == erp_order and row["订单编号"] == erp_number
         and row["单据编号"].startswith("SK-")
         and _signed(row["收款金额"], "ERP原收款") == total
@@ -183,7 +211,7 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
         refund_sn = str(member["refund_sn"])
         expected = amount(member["amount"])
         matched = [
-            row for row in bills
+            row for row in related_bills
             if row["制单人"] == refund_sn and row["订单编号"] == erp_number
         ]
         if len(matched) > 1:
@@ -209,8 +237,8 @@ def inspect_grouped_return_account(client, *, order_sn, members, tolerance=Decim
                 raise ValueError("ERP有历史处理记录但缺少唯一退款流水，禁止重发")
             remaining += expected
             member_results[refund_sn].update(state="ready", reference=None)
-    if len(bills) != len(allowed_bill_ids):
-        raise ValueError("ERP客户存在本父订单之外的收退款流水，须人工核账")
+    if len(related_bills) != len(allowed_bill_ids):
+        raise ValueError("ERP当前父订单存在未适配收退款流水，须人工核账")
     if abs(balance + remaining) > abs(tolerance):
         raise ValueError("ERP累计应收与尚未补开的退款金额不一致")
     return {
