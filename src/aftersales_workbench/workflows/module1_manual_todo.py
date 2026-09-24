@@ -23,6 +23,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_REASON_LIKE,
     is_no_trace_reason,
 )
+from aftersales_workbench.services.manual_todo_retry import preserve_owner_retry
 from aftersales_workbench.services.manual_todo_text import module1_todo_marker, prepare_manual_todo
 from aftersales_workbench.services.return_todo_policy import MANUAL_REASONS, manual_balance_reason
 from aftersales_workbench.workflows.pdd_refund_cases import CASE_MESSAGES, RELATED_SUCCESS
@@ -358,7 +359,7 @@ class SqlAlchemyModule1ManualTodoRepository:
         payload = candidate.task_payload(started_at=started_at)
         if existing is not None:
             if AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.PENDING:
-                existing.payload = payload
+                existing.payload = preserve_owner_retry(existing.payload, payload)
                 return ManualTodoEnqueueResult.EXISTING
             if (
                 AutomationTaskStatus(existing.action_status) is AutomationTaskStatus.FAILED

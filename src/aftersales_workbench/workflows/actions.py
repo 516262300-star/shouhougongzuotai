@@ -47,6 +47,7 @@ from aftersales_workbench.services.manual_todo_policy import (
     NO_TRACE_CANCEL_REASON,
     suppress_manual_todo,
 )
+from aftersales_workbench.services.manual_todo_retry import owner_retry_waiting
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
@@ -1055,17 +1056,30 @@ class ExternalActionExecutor:
                     AftersalesActionTask.id >= self.settings.module1_notification_min_task_id,
                 )
             )
-        return [
-            ExternalTaskSnapshot(
-                id=row.id,
-                after_sales_sn=row.after_sales_sn,
-                action_type=AutomationActionType(row.action_type),
-                payload=row.payload or {},
-                platform_order_sn=row.platform_order_sn,
-                shop_code=row.shop_code,
-            )
-            for row in self.session.execute(statement).all()
-        ]
+        has_todos = AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types
+        now = datetime.now(UTC)
+        tasks = []
+        page = statement
+        while True:
+            rows = self.session.execute(page).all()
+            for row in rows:
+                if (row.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO
+                        and owner_retry_waiting(row.payload, now=now)):
+                    continue
+                tasks.append(ExternalTaskSnapshot(
+                    id=row.id,
+                    after_sales_sn=row.after_sales_sn,
+                    action_type=AutomationActionType(row.action_type),
+                    payload=row.payload or {},
+                    platform_order_sn=row.platform_order_sn,
+                    shop_code=row.shop_code,
+                ))
+                if len(tasks) >= limit:
+                    return tasks
+            if not has_todos or len(rows) < limit:
+                return tasks
+            # 等待中的待办不占发送名额；按ID继续读取，避免反复扫描队头。
+            page = statement.where(AftersalesActionTask.id > rows[-1].id)
 
     def _claim(self, task_id: int) -> bool:
         result = self.session.execute(

@@ -9,6 +9,10 @@ from sqlalchemy import select
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder, Shop
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
+from aftersales_workbench.services.manual_todo_retry import (
+    owner_retry_waiting,
+    preserve_owner_retry,
+)
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 
 SOURCE = "shipment_order"
@@ -84,7 +88,7 @@ def enqueue_route(session, anchor, seed, assignee, assigned_sns):
         )
         session.add(task)
     else:
-        task.payload = payload
+        task.payload = preserve_owner_retry(task.payload, payload)
     session.flush()
     return task
 
@@ -142,8 +146,7 @@ class TodoOwnerRouter:
         if row is None or row.action_status != "PENDING":
             return None
         payload = dict(row.payload or {})
-        due = payload.get("owner_routing_retry_after")
-        if due and datetime.fromisoformat(due) > datetime.now(UTC):
+        if owner_retry_waiting(payload):
             return None
         order = self.session.scalar(
             select(AfterSalesOrder).where(

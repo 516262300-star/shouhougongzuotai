@@ -139,7 +139,7 @@ def test_unavailable_sales_owner_does_not_spend_attempt_and_recovers_without_cac
         return executor.run(action_types=("ERP_CREATE_MANUAL_TODO",), dry_run=False)
 
     assert run().skipped == 1 and task.attempts == 0
-    assert run().skipped == 1 and task.attempts == 0
+    assert run().scanned == 0 and task.attempts == 0
     client.create_todo.assert_not_called()
     resolver.owners = {"example-order": "销售订单业务员"}
     task.payload = {k: v for k, v in task.payload.items() if k != "owner_routing_retry_after"}

@@ -18,6 +18,7 @@ from aftersales_workbench.db.models import (
 from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
 )
+from aftersales_workbench.services.manual_todo_retry import preserve_owner_retry
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module1_manual_todo import (
     ManualTodoEnqueueResult,
@@ -224,7 +225,7 @@ class SqlAlchemyModule3ExceptionTodoRepository:
             existing_origin = str((existing.payload or {}).get("origin") or "")
             if existing_status is AutomationTaskStatus.PENDING:
                 if existing_origin == "module3":
-                    existing.payload = payload
+                    existing.payload = preserve_owner_retry(existing.payload, payload)
                 return ManualTodoEnqueueResult.EXISTING
             if existing_origin == "module3" and (
                 existing_status is AutomationTaskStatus.CANCELLED
