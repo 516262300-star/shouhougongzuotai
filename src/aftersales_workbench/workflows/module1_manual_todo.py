@@ -6,7 +6,7 @@ from enum import StrEnum
 from typing import Any, ClassVar, Protocol
 
 from sqlalchemy import and_, exists, func, or_, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session, aliased, selectinload
 
 from aftersales_workbench.db.models import (
     AftersalesActionTask,
@@ -49,6 +49,7 @@ class Module1ManualTodoCandidate:
     tracking_number: str
     carrier_code: str | None
     erp_match_payload: dict[str, Any] | None = None
+    expected_return_items: tuple[dict[str, Any], ...] = ()
 
     _LOGISTICS_LABELS: ClassVar[dict[str, str]] = {
         "OUT_FOR_DELIVERY": "派件中",
@@ -105,7 +106,7 @@ class Module1ManualTodoCandidate:
         )
         erp_payload = self.erp_match_payload or {}
         if self.workflow_status is WorkflowStatus.RETURN_WAITING_ERP_MATCH:
-            # 长明细只保存在下面的结构化载荷，统一文案层生成简短处理要求。
+            # 保留核验明细，由统一文案层展示本单应退与ERP退货商品。
             content = f"{marker} 退货需核对"
         else:
             content = (
@@ -137,6 +138,7 @@ class Module1ManualTodoCandidate:
                     "erp_return_order_sn": erp_payload.get("erp_return_order_sn"),
                     "erp_receivable_amount": erp_payload.get("erp_receivable_amount"),
                     "erp_return_rows": erp_payload.get("erp_return_rows"),
+                    "expected_return_items": list(self.expected_return_items),
                     "manual_context": erp_payload.get("manual_context"),
                 }
             )
@@ -251,6 +253,7 @@ class SqlAlchemyModule1ManualTodoRepository:
         )
         statement = (
             select(AfterSalesOrder, Shop.shop_name, AftersalesActionTask.payload)
+            .options(selectinload(AfterSalesOrder.items))
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .outerjoin(
                 AftersalesActionTask,
@@ -321,6 +324,11 @@ class SqlAlchemyModule1ManualTodoRepository:
                 tracking_number=str(order.forward_tracking_number),
                 carrier_code=order.carrier_code,
                 erp_match_payload=erp_match_payload,
+                expected_return_items=tuple(
+                    {"product": item.sku_code, "color": item.color,
+                     "quantity": str(item.applied_quantity)}
+                    for item in order.items
+                ),
             )
             for order, shop_name, erp_match_payload in rows
         ]

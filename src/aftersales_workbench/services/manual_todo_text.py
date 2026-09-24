@@ -1,6 +1,7 @@
 """业务员可见的简短售后待办文案；不改变内部任务身份和发布开关。"""
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 
@@ -52,6 +53,27 @@ def _short_reason(raw: str, order_sn: str, after_sn: str, fallback: str) -> str:
         first = re.split(r"[；。\n]", text, maxsplit=1)[0]
         text = (first if len(first) <= 100 else fallback) + "（完整原因见工作台）"
     return text
+
+
+def _return_items_text(rows: Any) -> str:
+    """展示核验来源中的完整商品规格；缺失信息明确标记，不推测实收。"""
+    items = []
+    for row in rows if isinstance(rows, (list, tuple)) else ():
+        if not isinstance(row, dict):
+            continue
+        product = str(row.get("product") or "").strip()
+        color = str(row.get("color") or "").strip()
+        if not color and "#" in product:
+            product, color = (part.strip() for part in product.split("#", 1))
+        quantity = "数量待核实"
+        try:
+            number = Decimal(str(row.get("quantity")))
+            if number.is_finite() and number >= 0:
+                quantity = f"{format(number.normalize(), 'f')}件"
+        except InvalidOperation:
+            pass
+        items.append(f"{product or '型号待核实'}/{color or '颜色待核实'}×{quantity}")
+    return "、".join(items) or "型号、颜色、数量待核实"
 
 
 def prepare_manual_todo(
@@ -113,6 +135,8 @@ def prepare_manual_todo(
             platform_order_sn=platform_order_sn, after_sales_sn=after_sales_sn,
         )
         return_status = str(payload.get("erp_match_status") or "")
+        if not return_status and payload.get("reason_code") == "ERP_RETURN_ITEM_MISMATCH":
+            return_status = "item_mismatch"
         if (return_status or str(payload.get("reason_code") or "").startswith("ERP_RETURN_")
                 or "退货需核对" in content):
             handling = {
@@ -123,7 +147,12 @@ def prepare_manual_todo(
             }.get(return_status, "请核对退货归属、实收和客户账务")
             content = f"{marker} 店铺：{shop}；原因：{reason}；"
             amount = payload.get("erp_receivable_amount")
-            if return_status != "receivable_open" and amount is not None and str(amount).strip():
+            if return_status == "item_mismatch":
+                content += (
+                    f"本单应退：{_return_items_text(payload.get('expected_return_items'))}；"
+                    f"ERP退货单商品：{_return_items_text(payload.get('erp_return_rows'))}；"
+                )
+            elif return_status != "receivable_open" and amount is not None and str(amount).strip():
                 content += f"客户累计应收：{amount}元；"
             content += f"{handling}。明细见售后工作台。"
         else:

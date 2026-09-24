@@ -14,7 +14,6 @@ def prepare(payload):
 @pytest.mark.parametrize("status,handling", [
     ("staged", "认领到正确客户名下"),
     ("receivable_open", "勿重复给买家退款"),
-    ("item_mismatch", "型号、颜色和数量差异"),
     ("customer_conflict", "客户档案及退货归属"),
 ])
 def test_return_closure_hides_long_detail_without_losing_audit(status, handling):
@@ -55,6 +54,52 @@ def test_long_reasons_keep_full_audit_and_remove_module_labels(origin):
     assert "SKU" not in result["content"]
     assert result["reason_text"] == payload["reason_text"]
     assert prepare(result) == result
+
+
+@pytest.mark.parametrize("amount", ["0", "-12.30", None])
+def test_item_mismatch_shows_specs_instead_of_customer_balance(amount):
+    payload = {
+        "origin": "module1", "marker": "【售后工作台 M1订单:order-A】",
+        "content": "旧通知；客户累计应收：0元；", "shop_name": "示例店",
+        "reason_code": "ERP_RETURN_ITEM_MISMATCH",
+        "reason_text": "ERP退货单型号颜色数量不一致",
+        "erp_match_status": "item_mismatch", "erp_receivable_amount": amount,
+        "expected_return_items": [{"product": "MODEL-A#铬", "color": None, "quantity": "1"}],
+        "erp_return_rows": [{"product": "MODEL-B", "color": "铬", "quantity": "1.000"}],
+    }
+    original = deepcopy(payload)
+    result = prepare(payload)
+    assert "本单应退：MODEL-A/铬×1件；ERP退货单商品：MODEL-B/铬×1件" in result["content"]
+    assert "客户累计应收" not in result["content"]
+    assert "请核对退货型号、颜色和数量差异" in result["content"]
+    assert result["marker"] == "【售后工作台 订单:order-A】"
+    assert "【售后工作台 M1订单:order-A】" in result["legacy_markers"]
+    assert result["erp_receivable_amount"] == amount
+    assert payload == original
+    assert prepare(result) == result
+
+
+def test_legacy_item_mismatch_keeps_available_specs_and_marks_missing_evidence():
+    result = prepare({
+        "origin": "module1", "marker": "【售后工作台 订单:order-A】",
+        "content": "旧通知", "reason_code": "ERP_RETURN_ITEM_MISMATCH",
+        "erp_receivable_amount": "0",
+        "erp_return_rows": [{"product": "MODEL-C", "quantity": "NaN"}],
+    })
+    assert "本单应退：型号、颜色、数量待核实" in result["content"]
+    assert "ERP退货单商品：MODEL-C/颜色待核实×数量待核实" in result["content"]
+    assert "客户累计应收" not in result["content"]
+
+
+def test_mismatch_does_not_truncate_multiple_complete_specs():
+    rows = [{"product": f"MODEL-{i}-128长规格", "color": "铜拉丝", "quantity": i + 1}
+            for i in range(15)]
+    result = prepare({
+        "origin": "module1", "content": "旧通知", "erp_match_status": "item_mismatch",
+        "expected_return_items": rows, "erp_return_rows": rows,
+    })
+    for i in range(15):
+        assert result["content"].count(f"MODEL-{i}-128长规格/铜拉丝×{i + 1}件") == 2
 
 
 def test_shared_package_keeps_all_distinct_order_numbers_not_product_list():

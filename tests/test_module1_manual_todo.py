@@ -17,6 +17,7 @@ def _candidate(
     logistics_state: str | None = "OUT_FOR_DELIVERY",
     exception_type: str | None = None,
     erp_match_payload: dict | None = None,
+    expected_return_items: tuple[dict, ...] = (),
 ) -> Module1ManualTodoCandidate:
     return Module1ManualTodoCandidate(
         after_sales_sn="after-1",
@@ -31,6 +32,7 @@ def _candidate(
         tracking_number="tracking-1",
         carrier_code="384",
         erp_match_payload=erp_match_payload,
+        expected_return_items=expected_return_items,
     )
 
 
@@ -135,6 +137,10 @@ def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
         workflow=WorkflowStatus.RETURN_WAITING_ERP_MATCH,
         logistics_state="RETURNED",
         exception_type="ERP退货单型号颜色数量不一致",
+        expected_return_items=(
+            {"product": "8143-128#铜本色", "color": None, "quantity": "11"},
+            {"product": "8066-30直径", "color": "铜本色", "quantity": "22"},
+        ),
         erp_match_payload={
             "erp_match_status": "item_mismatch",
             "erp_return_order_sn": "TH-1",
@@ -157,13 +163,15 @@ def test_manual_todo_payload_explains_actionable_erp_return_exception() -> None:
     assert "售后单号" not in payload["content"]
     assert "after-1" not in payload["content"]
     assert "TH-1" not in payload["content"]
-    assert "客户累计应收：-333.16元" in payload["content"]
-    assert "8066-30直径/铜本色×24" not in payload["content"]
+    assert "客户累计应收" not in payload["content"]
+    assert "本单应退：8143-128/铜本色×11件、8066-30直径/铜本色×22件" in payload["content"]
+    assert "ERP退货单商品：8143-128/铜本色×11件、8066-30直径/铜本色×24件" in payload["content"]
     assert manual_context.rstrip("。") not in payload["content"]
     assert payload["manual_context"] == manual_context
     assert payload["erp_return_order_sn"] == "TH-1"
     assert len(payload["erp_return_rows"]) == 2
     assert payload["erp_match_status"] == "item_mismatch"
+    assert payload["expected_return_items"] == list(candidate.expected_return_items)
 
 
 def test_manual_todo_service_counts_safe_requeue() -> None:
@@ -224,3 +232,31 @@ def test_manual_todo_repository_requires_full_refund() -> None:
     )
     assert "RETURN_WAITING_ERP_MATCH" in compiled
     assert "ERP退货单型号颜色数量不一致" in compiled
+
+
+def test_repository_carries_this_after_sale_items_into_mismatch_notice() -> None:
+    from unittest.mock import Mock
+
+    from aftersales_workbench.db.models import AfterSalesItem, AfterSalesOrder
+
+    order = AfterSalesOrder(
+        after_sales_sn="after-A", platform_order_sn="order-A",
+        workflow_status=WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+        exception_type="ERP退货单型号颜色数量不一致",
+        erp_sales_owner="示例业务员", erp_sales_owner_status="matched",
+        forward_tracking_number="tracking-A",
+        items=[AfterSalesItem(sku_code="MODEL-A#铬", applied_quantity=1, purchased_quantity=3)],
+    )
+    session = Mock()
+    session.execute.return_value.all.return_value = [(order, "示例店", {
+        "erp_match_status": "item_mismatch", "erp_receivable_amount": "0",
+        "erp_return_rows": [{"product": "MODEL-B", "color": "铬", "quantity": "1"}],
+    })]
+    candidate, = SqlAlchemyModule1ManualTodoRepository(session).list_candidates(
+        shop_codes=None, limit=100,
+    )
+    content = candidate.task_payload(started_at="now")["content"]
+    assert "本单应退：MODEL-A/铬×1件" in content
+    assert "ERP退货单商品：MODEL-B/铬×1件" in content
+    assert "×3件" not in content
+    session.commit.assert_not_called()
