@@ -316,7 +316,7 @@ def test_slow_ocr_still_requires_three_strict_reads_and_saves_timing(monkeypatch
 
 
 @pytest.mark.parametrize('confirmed', [True, False])
-def test_existing_receipt_recheck_never_types_searches_or_sends(monkeypatch, confirmed):
+def test_existing_receipt_recheck_only_navigates_then_reads_never_sends(monkeypatch, confirmed):
     from aftersales_workbench.workflows import windows_wecom as module
 
     gateway = object.__new__(WindowsWeComGateway)
@@ -329,6 +329,9 @@ def test_existing_receipt_recheck_never_types_searches_or_sends(monkeypatch, con
     monkeypatch.setattr(gateway, '_raise_if_escape', lambda *a, **kw: None)
     monkeypatch.setattr(gateway, '_raise_if_security_window', lambda *a, **kw: None)
     monkeypatch.setattr(gateway, '_restore_after_send', lambda: restores.append(True))
+    navigations = []
+    monkeypatch.setattr(gateway, '_reopen_receipt_group',
+                        lambda hwnd, pid, plan: navigations.append(plan.task_id) or hwnd)
     monkeypatch.setattr(gateway, '_read_receipt', lambda *a, **kw:
                         ReceiptObservation(confirmed, True, False, 1, True))
     for name in ('_hotkey', '_tap', '_type_unicode', '_type_multiline_message',
@@ -340,6 +343,7 @@ def test_existing_receipt_recheck_never_types_searches_or_sends(monkeypatch, con
         with pytest.raises(DesktopAmbiguousSendError):
             gateway.verify_existing_receipt(SimpleNamespace(task_id=7))
     assert restores == [True]
+    assert navigations == [7]
 
 
 @pytest.mark.parametrize('group,empty,draft,expected', [

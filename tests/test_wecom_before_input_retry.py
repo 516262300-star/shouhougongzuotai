@@ -59,6 +59,7 @@ def test_ocr_failure_is_retryable_only_before_message_input(monkeypatch, ambiguo
 def test_capture_failure_keeps_message_phase(monkeypatch, ambiguous):
     gateway = object.__new__(windows.WindowsWeComGateway)
     monkeypatch.setattr(gateway, "_require_target_foreground", lambda **kwargs: None)
+    monkeypatch.setattr(gateway, "_require_unobscured", lambda *args, **kwargs: None)
     gateway.user32 = SimpleNamespace(GetWindowRect=lambda *args: True)
     def fail(**kwargs):
         raise OSError("desktop unavailable")

@@ -169,6 +169,7 @@ def test_no_key_is_sent_after_target_window_changes(monkeypatch, ambiguous) -> N
 
 def test_occluded_snapshot_cannot_confirm_send(monkeypatch) -> None:
     gateway = object.__new__(WindowsWeComGateway)
+    monkeypatch.setattr(gateway, '_require_unobscured', lambda *args, **kwargs: None)
     observations = iter([(11, 101), (12, 101)])
     monkeypatch.setattr(
         gateway, "_require_wecom_foreground", lambda **kwargs: next(observations)

@@ -690,7 +690,7 @@ class WindowsWeComGateway:
         return result
 
     def verify_existing_receipt(self, plan: DesktopNoticePlan) -> dict:
-        """只回看当前目标群的原消息；允许有限滚动，不搜索或输入消息。"""
+        """重新定位原群后只读核验；搜索只输入群名，绝不输入或重发正文。"""
         self._restore_hwnd = int(self.user32.GetForegroundWindow() or 0)
         self._target_hwnd = None
         self._target_process_id = None
@@ -700,10 +700,41 @@ class WindowsWeComGateway:
             hwnd, process_id = self._activate_wecom_foreground()
             self._target_hwnd, self._target_process_id = hwnd, process_id
             self._raise_if_security_window(process_id, ambiguous=True)
+            hwnd = self._reopen_receipt_group(hwnd, process_id, plan)
             self._wait_for_receipt(hwnd, plan, allow_history=True)
             return self._receipt_report
         finally:
             self._restore_after_send()
+
+    def _reopen_receipt_group(self, hwnd, process_id, plan):
+        # 重启后可能只有欢迎页，不能要求用户先手工打开原群。搜索框焦点
+        # 必须在输入群名之前确认；这条路径不调用任何发送钩子或正文输入。
+        hwnd, process_id = self._leave_global_search_if_needed(hwnd, process_id)
+        self._hotkey(VK_CONTROL, VK_1)
+        self._sleep_range(320, 620)
+        self._open_group_search(hwnd, process_id)
+        self._hotkey(VK_CONTROL, VK_A)
+        self._tap(VK_BACK)
+        self._type_unicode(plan.target_group)
+        self._sleep_range(1500, 2100)
+        if not search_field_focused(self._full_snapshot(hwnd, ambiguous=True)):
+            raise DesktopAmbiguousSendError("回查搜索框已失去焦点，禁止按回车，原通知不重发")
+        self._tap(VK_RETURN)  # 仅选择已核验焦点的群搜索结果。
+        self._sleep_range(650, 1050)
+        deadline = time.monotonic() + 45
+        matches = 0
+        while time.monotonic() < deadline:
+            observed = self._read_receipt(hwnd, plan, ambiguous=True)
+            if observed.group_matches:
+                if not observed.input_empty or observed.draft_matches:
+                    raise DesktopAmbiguousSendError("原群仍有草稿，保留原文，禁止自动发送或清空")
+                matches += 1
+                if matches >= 2:
+                    return hwnd
+            else:
+                matches = 0
+            self._sleep_range(350, 500, ambiguous=True)
+        raise DesktopAmbiguousSendError("回查未能确认原目标群，原通知不重发")
 
     def _recover_receipt_foreground(self, hwnd: int) -> None:
         """只恢复原企微窗口用于读回执，绝不搜索、输入、粘贴或按发送键。"""
@@ -882,6 +913,7 @@ class WindowsWeComGateway:
         rect = wintypes.RECT()
         if not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
             raise error_type("无法读取企业微信窗口区域")
+        self._require_unobscured(hwnd, rect, ambiguous=ambiguous)
         try:
             image = self.ImageGrab.grab(
                 bbox=(rect.left, rect.top, rect.right, rect.bottom), all_screens=True,
@@ -889,7 +921,46 @@ class WindowsWeComGateway:
         except Exception as exc:
             raise error_type("暂时无法读取企业微信画面") from exc
         self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
+        self._require_unobscured(hwnd, rect, ambiguous=ambiguous)
         return image
+
+    def _require_unobscured(self, hwnd, rect, *, ambiguous=False):
+        """前台仍是企微也可能被置顶弹窗遮挡；此时不采用截图或滚动历史。"""
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        blockers = []
+        found = False
+
+        @callback_type
+        def visit(other, _):
+            nonlocal found
+            if other == hwnd:
+                found = True
+                return False  # EnumWindows 按 Z 序枚举，只检查企微前面的窗口。
+            if not self.user32.IsWindowVisible(other) or self.user32.IsIconic(other):
+                return True
+            pid = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(other, ctypes.byref(pid))
+            if pid.value == self._target_process_id:
+                return True  # 企微自身窗口继续由登录/安全验证保护器处理。
+            cloaked = wintypes.DWORD()
+            if (ctypes.windll.dwmapi.DwmGetWindowAttribute(
+                    wintypes.HWND(other), 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0
+                    and cloaked.value):
+                return True
+            bounds = wintypes.RECT()
+            if self.user32.GetWindowRect(other, ctypes.byref(bounds)):
+                width = min(bounds.right, rect.right - 8) - max(bounds.left, rect.left + 8)
+                height = min(bounds.bottom, rect.bottom - 8) - max(bounds.top, rect.top + 32)
+                if width >= 16 and height >= 16:
+                    blockers.append(int(other))
+            return True
+
+        self.user32.EnumWindows(visit, 0)
+        error_type = DesktopAmbiguousSendError if ambiguous else DesktopReceiptUnavailableError
+        if not found:
+            raise error_type("企业微信窗口已变化，暂不采用画面")
+        if blockers:
+            raise error_type("企业微信被其他窗口遮挡，等待遮挡消失后核验；不输入、不重发")
 
     def _snapshot(
         self,
