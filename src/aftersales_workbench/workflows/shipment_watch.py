@@ -13,6 +13,7 @@ from aftersales_workbench.services.manual_todo_control import (
 )
 from aftersales_workbench.services.shipment_todo_text import (
     legacy_shipment_marker,
+    legacy_short_shipment_marker,
     shipment_business_marker,
 )
 from aftersales_workbench.workflows import shipment_packages
@@ -134,7 +135,9 @@ class ShipmentWatch:
             payload = notice.payload
             markers = [payload["marker"], *payload.get("legacy_markers", ())]
             if payload.get("shop_name") and payload.get("carrier"):
-                for formatter in (shipment_business_marker, legacy_shipment_marker):
+                for formatter in (
+                    shipment_business_marker, legacy_short_shipment_marker, legacy_shipment_marker,
+                ):
                     markers.append(formatter(payload["shop_name"], notice.order_sn,
                                              notice.tracking_number, payload["carrier"]))
             todo_id = None
@@ -192,6 +195,8 @@ class ShipmentWatch:
                 shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
             )
             legacy_markers = (f"【揽收提醒:{key[:24]}】", legacy_shipment_marker(
+                shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
+            ), legacy_short_shipment_marker(
                 shop_name, order.order_sn, parcel.tracking_number, parcel.carrier,
             ))
             notice.payload = {
@@ -252,10 +257,7 @@ class ShipmentWatch:
             related_orders = sorted({n.order_sn for n in group})
             content = marker
             if len(related_orders) > 1:
-                content += (
-                    f"相关订单：{'、'.join(related_orders)}。"
-                    "发货满20小时仍未查到物流信息"
-                )
+                content += f"。相关订单：{'、'.join(related_orders)}。"
             notice.payload = {**notice.payload, "content": content,
                               "legacy_markers": list(legacy_markers),
                               "checked_at": checked_at.isoformat(), "evidence": evidence}

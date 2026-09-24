@@ -82,7 +82,10 @@ def test_twenty_hour_boundary_and_overdue(setup, seconds, expected):
     watch.check_order(order, source, "店铺", publish=True)
     assert state.posts == expected
     if expected:
-        assert state.content == "【揽收提醒】 店铺，订单order-1，运单tracking-1。"
+        assert state.content == (
+            "【揽收提醒】 店铺，订单order-1，运单tracking-1 "
+            "发货满20小时仍未查到物流信息"
+        )
 
 
 def test_sent_reminder_is_not_repeated_after_owner_change(setup):
@@ -103,14 +106,20 @@ def test_shipment_text_has_no_internal_code_but_keeps_legacy_deduplication(setup
     assert state.request.marker in state.content
     assert f"【揽收提醒:{notice.notice_key[:24]}】" in state.request.legacy_markers
     assert any("（zhongtong）" in m for m in state.request.legacy_markers)
+    assert "【揽收提醒】 店铺，订单order-1，运单tracking-1。" in state.request.legacy_markers
 
 
-def test_unknown_shipment_reconciles_old_and_clean_business_text_without_resending(setup):
+@pytest.mark.parametrize("old_short_text", [False, True])
+def test_unknown_shipment_reconciles_old_and_clean_business_text_without_resending(
+    setup, old_short_text,
+):
     watch, session, order, source, state, parcel = setup
     state.unknown = True
     watch.check_order(order, source, "店铺", publish=True)
     notice = session.scalar(select(Notice))
-    public = notice.payload["marker"]
+    current_marker = notice.payload["marker"]
+    old_marker = "【揽收提醒】 店铺，订单order-1，运单tracking-1。"
+    public = old_marker if old_short_text else current_marker
     notice.payload = {**notice.payload, "marker": notice.payload["legacy_markers"][0],
                       "legacy_markers": []}
     session.commit()
@@ -123,7 +132,10 @@ def test_unknown_shipment_reconciles_old_and_clean_business_text_without_resendi
     watch.todo_factory = lambda before: SimpleNamespace(find_existing=find, close=lambda: None)
     watch.check_order(order, source, "店铺", publish=True)
     assert notice.status == "SENT" and notice.todo_id == "existing-clean-todo"
-    assert queried == [notice.payload["marker"], public] and state.posts == 1
+    expected = [notice.payload["marker"], current_marker]
+    if old_short_text:
+        expected.append(old_marker)
+    assert queried == expected and state.posts == 1
 
 
 def test_trace_seen_cancels_pending_and_latches(setup):
@@ -353,8 +365,8 @@ def test_same_package_batch_sends_one_todo_with_all_orders(setup):
     assert result == {"checked": 2, "created": 1, "failed": 0}
     assert state.posts == 1
     assert state.content == (
-        "【揽收提醒】 店铺，订单order-1，运单tracking-1。"
-        "相关订单：order-1、order-2。发货满20小时仍未查到物流信息"
+        "【揽收提醒】 店铺，订单order-1，运单tracking-1 "
+        "发货满20小时仍未查到物流信息。相关订单：order-1、order-2。"
     )
     rows = list(session.scalars(select(Notice)))
     primary = next(n for n in rows if n.status == "SENT")

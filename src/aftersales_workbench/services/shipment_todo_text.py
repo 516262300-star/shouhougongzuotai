@@ -13,6 +13,13 @@ def visible_shipment_text(content):
 def shipment_business_marker(shop_name, order_sn, tracking_number, carrier):
     if not all((shop_name, order_sn, tracking_number, carrier)):
         raise ValueError("揽收提醒缺少店铺、订单或运单身份")
+    return (
+        f"【揽收提醒】 {shop_name}，订单{order_sn}，运单{tracking_number} "
+        "发货满20小时仍未查到物流信息"
+    )
+
+
+def legacy_short_shipment_marker(shop_name, order_sn, tracking_number, carrier):
     return f"【揽收提醒】 {shop_name}，订单{order_sn}，运单{tracking_number}。"
 
 
