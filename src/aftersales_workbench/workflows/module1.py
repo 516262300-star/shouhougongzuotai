@@ -39,6 +39,7 @@ class Module1RunResult:
     tasks_created: int = 0
     tasks_existing: int = 0
     trade_check_errors: list[dict[str, str]] | None = None
+    completed_trade_check_errors: list[dict[str, str]] | None = None
 
     def safe_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -64,6 +65,7 @@ class Module1Repository(Protocol):
 class SqlAlchemyModule1Repository:
     def __init__(self, session: Session) -> None:
         self.session = session
+        self.completed_trade_check_errors: list[dict[str, str]] = []
 
     def list_candidates(
         self,
@@ -83,6 +85,9 @@ class SqlAlchemyModule1Repository:
                 AfterSalesOrder.platform_order_sn,
                 Shop.shop_name,
                 Shop.platform,
+                Shop.shop_code,
+                AfterSalesOrder.order_shipping_status,
+                AfterSalesOrder.refund_amount,
                 AfterSalesOrder.forward_tracking_number,
                 AfterSalesOrder.carrier_code,
                 AfterSalesOrder.platform_after_sales_status,
@@ -104,7 +109,18 @@ class SqlAlchemyModule1Repository:
                     ),
                 ),
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
-                AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
+                or_(
+                    AfterSalesOrder.order_shipping_status == ShippingStatus.IN_TRANSIT,
+                    and_(
+                        # PDD交易完成不等于包裹真正签收。有效新退款仍须查物流，
+                        # 由通知预检分流到拦截或原销售业务员待办；不改资金资格。
+                        Shop.platform == Platform.PDD,
+                        AfterSalesOrder.order_shipping_status == ShippingStatus.DELIVERED,
+                        AfterSalesOrder.platform_after_sales_status == 2,
+                        AfterSalesOrder.platform_order_refund_status == 2,
+                        AfterSalesOrder.refund_amount > 0,
+                    ),
+                ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 AfterSalesOrder.platform_order_amount.is_not(None),
                 AfterSalesOrder.refund_amount
@@ -119,6 +135,28 @@ class SqlAlchemyModule1Repository:
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
         rows = self.session.execute(statement).all()
+        checked_rows = []
+        self.completed_trade_check_errors = []
+        for row in rows:
+            if (
+                row.platform == Platform.PDD
+                and row.order_shipping_status == ShippingStatus.DELIVERED
+            ):
+                from aftersales_workbench.workflows.pdd_completed_notice import (
+                    verify_completed_notice,
+                )
+
+                try:
+                    if not verify_completed_notice(row):
+                        continue
+                except Exception as exc:
+                    # 单笔旧资料或读取失败不能让其他正常订单停止入队。
+                    self.completed_trade_check_errors.append({
+                        "after_sales_sn": row.after_sales_sn,
+                        "error": f"交易完成订单的实时售后核验失败：{type(exc).__name__}",
+                    })
+                    continue
+            checked_rows.append(row)
         return [
             Module1Candidate(
                 after_sales_sn=row.after_sales_sn,
@@ -132,7 +170,7 @@ class SqlAlchemyModule1Repository:
                     or row.platform_after_sales_status == 10
                 ),
             )
-            for row in rows
+            for row in checked_rows
         ]
 
     def enqueue_notice(self, candidate: Module1Candidate) -> bool:
@@ -234,6 +272,9 @@ class Module1InterceptService:
                     tmall_min_order_id=tmall_min_order_id,
                 )
             candidates = self.repository.list_candidates(**query)
+            result.completed_trade_check_errors = (
+                getattr(self.repository, "completed_trade_check_errors", None) or None
+            )
             if include_tmall and hasattr(self.repository, "list_trade_candidates"):
                 extra, errors = self.repository.list_trade_candidates(
                     shop_codes=shop_codes, min_order_id=tmall_min_order_id,
