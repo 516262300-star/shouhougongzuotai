@@ -44,6 +44,17 @@ def _rows(value, label):
     return value
 
 
+def _unshipped(row, products):
+    # 实测：部分商品取消为cancel/4，剩余waitsellersend/1，没有任何发货包裹。
+    # 仅这两个明确组合可证明尚无待催揽收商品，不能把未知/缺失物流状态当未发货。
+    return row["baseInfo"]["status"] == "waitsellersend" and bool(products) and all(
+        type(p.get("logisticsStatus")) is int and (
+            (p.get("status") == "waitsellersend" and p["logisticsStatus"] == 1)
+            or (p.get("status") == "cancel" and p["logisticsStatus"] == 4)
+        ) for p in products
+    )
+
+
 def _result(body):
     if not isinstance(body, dict) or not (
         body.get("success") is True or body.get("success") == "true"
@@ -147,7 +158,7 @@ class Alibaba1688ShipmentSource:
         products = _rows(row.get("productItems"), "商品明细")
         if not products:
             raise ValueError("1688商品明细为空")
-        if status == "waitsellersend" and all(p.get("logisticsStatus") == 1 for p in products):
+        if _unshipped(row, products):
             return None
         # 列表不含包裹发货时间，不能用下单/修改/整单最后发货时间替代。
         detail = self._detail(sn)
@@ -157,9 +168,7 @@ class Alibaba1688ShipmentSource:
         native = detail.get("nativeLogistics")
         if not isinstance(native, dict):
             raise ValueError("1688包裹信息缺失")
-        if (native.get("logisticsItems") is None and products
-                and detail["baseInfo"]["status"] == "waitsellersend"
-                and all(p.get("logisticsStatus") == 1 for p in products)):
+        if native.get("logisticsItems") is None and _unshipped(detail, products):
             return None
         entries = _rows(native.get("logisticsItems"), "发货包裹")
         if not entries:
@@ -180,9 +189,7 @@ class Alibaba1688ShipmentSource:
         if not isinstance(native, dict):
             raise ValueError("1688包裹信息缺失")
         value = native.get("logisticsItems")
-        if value is None and row["baseInfo"]["status"] == "waitsellersend" and all(
-            p.get("logisticsStatus") == 1 for p in products
-        ):
+        if value is None and _unshipped(row, products):
             return []
         entries = _rows(value, "发货包裹")
         if not entries:

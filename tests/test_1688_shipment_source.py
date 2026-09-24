@@ -167,6 +167,22 @@ def test_unshipped_has_no_fake_shipment_time(setup):
     assert source.refresh(SN) == []
 
 
+def test_unshipped_with_cancelled_part_is_not_a_broken_shipment(setup):
+    source, state = setup
+    state.row['baseInfo'].update(status='waitsellersend', refund=5, refundPayment=500)
+    state.row['productItems'][0].update(status='waitsellersend', logisticsStatus=1)
+    state.row['productItems'].append({'subItemID': 802, 'subItemIDString': '802',
+                                     'status': 'cancel', 'logisticsStatus': 4})
+    del state.row['nativeLogistics']['logisticsItems']
+    assert source.candidate(state.row) is None
+    assert source.refresh(SN) == []
+    state.row['productItems'][0]['logisticsStatus'] = None
+    with pytest.raises(ValueError, match='包裹'):
+        source.candidate(state.row)
+    with pytest.raises(ValueError, match='包裹'):
+        source.refresh(SN)
+
+
 def test_list_empty_explicit_and_window_time(setup):
     source, state = setup
     state.bodies = [{'success': True, 'result': [], 'totalRecord': 0}]
