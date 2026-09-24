@@ -51,6 +51,10 @@ class _ReceiptForegroundLost(DesktopAmbiguousSendError):
     """仅在已经按过发送键后的只读核验阶段允许有限恢复前台。"""
 
 
+class _ReceiptLayoutUnavailable(DesktopAmbiguousSendError):
+    """已核对窗口且无外部遮挡，但当前页面无法识别为聊天界面。"""
+
+
 @dataclass(frozen=True, slots=True)
 class _WeComWindowCandidate:
     hwnd: int
@@ -682,6 +686,9 @@ class WindowsWeComGateway:
         try:
             result = self.receipt_reader.inspect(snapshot, plan.target_group, plan.message)
         except Exception as exc:
+            if ambiguous:
+                raise _ReceiptLayoutUnavailable(
+                    "无法识别企微群名或消息界面，未确认发送成功") from exc
             raise error_type("无法识别企微群名或消息界面，未确认发送成功") from exc
         self._require_target_foreground(hwnd=hwnd, ambiguous=ambiguous)
         if process_id is not None:
@@ -707,6 +714,16 @@ class WindowsWeComGateway:
             self._restore_after_send()
 
     def _reopen_receipt_group(self, hwnd, process_id, plan):
+        # 已在原群时保留历史位置，下一轮可从上次停止的位置继续有限回看。
+        # 仅聊天布局无法识别（如欢迎页）允许导航，遮挡、失焦、安全验证不吞掉。
+        try:
+            current = self._read_receipt(hwnd, plan, ambiguous=True)
+        except _ReceiptLayoutUnavailable:
+            current = None
+        if current is not None and current.group_matches:
+            if not current.input_empty or current.draft_matches:
+                raise DesktopAmbiguousSendError("原群仍有草稿，保留原文，禁止自动发送或清空")
+            return hwnd
         # 重启后可能只有欢迎页，不能要求用户先手工打开原群。搜索框焦点
         # 必须在输入群名之前确认；这条路径不调用任何发送钩子或正文输入。
         hwnd, process_id = self._leave_global_search_if_needed(hwnd, process_id)
@@ -721,6 +738,8 @@ class WindowsWeComGateway:
             raise DesktopAmbiguousSendError("回查搜索框已失去焦点，禁止按回车，原通知不重发")
         self._tap(VK_RETURN)  # 仅选择已核验焦点的群搜索结果。
         self._sleep_range(650, 1050)
+        # 搜索选择可能把焦点交给同进程群公告窗口；只恢复原主窗口用于读取。
+        self._recover_receipt_foreground(hwnd)
         deadline = time.monotonic() + 45
         matches = 0
         while time.monotonic() < deadline:

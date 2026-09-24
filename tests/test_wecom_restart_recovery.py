@@ -29,12 +29,21 @@ def test_reopen_preserves_draft_and_only_types_group_in_verified_search(monkeypa
     if state == 'search_blocked':
         g._open_group_search.side_effect = DesktopReceiptUnavailableError('搜索框未获得焦点')
     g._full_snapshot = lambda *a, **kw: scene(focused=state != 'lost_search')
-    g._read_receipt = Mock(return_value=ReceiptObservation(
-        state != 'wrong_group', state != 'draft', state == 'draft', 1, True))
+    g._recover_receipt_foreground = Mock()
+    observation = ReceiptObservation(
+        state != 'wrong_group', state != 'draft', state == 'draft', 1, True)
+    reads = [0]
+    def read(*a, **kw):
+        reads[0] += 1
+        if reads[0] == 1:
+            raise m._ReceiptLayoutUnavailable('重启欢迎页')
+        return observation
+    g._read_receipt = Mock(side_effect=read)
     plan = NS(target_group='原目标群', message='绝不重新输入的正文')
     if state == 'welcome':
         assert g._reopen_receipt_group(11, 101, plan) == 11
-        assert g._read_receipt.call_count == 2
+        assert g._read_receipt.call_count == 3
+        g._recover_receipt_foreground.assert_called_once_with(11)
     else:
         with pytest.raises((DesktopAmbiguousSendError, DesktopReceiptUnavailableError)):
             g._reopen_receipt_group(11, 101, plan)
@@ -47,6 +56,22 @@ def test_reopen_preserves_draft_and_only_types_group_in_verified_search(monkeypa
         assert g._tap.call_args_list[0].args == (m.VK_BACK,)
         returns = [call for call in g._tap.call_args_list if call.args == (m.VK_RETURN,)]
         assert len(returns) == (0 if state == 'lost_search' else 1)
+
+
+@pytest.mark.parametrize('state', ['original_history', 'draft', 'obscured'])
+def test_existing_group_preserves_history_and_draft_and_obscured_does_not_navigate(state):
+    g = object.__new__(m.WindowsWeComGateway)
+    g._leave_global_search_if_needed = Mock(side_effect=AssertionError('不得重新搜索'))
+    g._read_receipt = Mock(return_value=ReceiptObservation(
+        True, state != 'draft', state == 'draft', 0, True))
+    if state == 'obscured':
+        g._read_receipt.side_effect = DesktopAmbiguousSendError('第三方遮挡')
+    if state == 'original_history':
+        assert g._reopen_receipt_group(11, 101, NS()) == 11
+    else:
+        with pytest.raises(DesktopAmbiguousSendError):
+            g._reopen_receipt_group(11, 101, NS())
+    g._leave_global_search_if_needed.assert_not_called()
 
 
 @pytest.mark.parametrize('kind,blocked', [
