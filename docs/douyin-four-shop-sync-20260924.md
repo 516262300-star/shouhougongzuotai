@@ -12,7 +12,7 @@
 - `access_token_mode=authorization_self`：调用官方 `/token/create`，严格比对返回店铺ID；自动取得和缓存短期token，不把一次性token硬编码成长期凭据。缓存包含店铺ID、应用ID、到期时间和平台店名，身份不匹配或即将过期时重新获取。
 - `DOUYIN_SYNC_ENABLED`：只控制售后同步；首次导入近7天**发生更新**的售后，随后沿用已保存游标和公共重叠窗口增量读取。并非只读取近7天创建的订单，也不是全年历史已补齐。
 - 由现有模块1后台周期中的多平台同步入口执行 `/afterSale/List` 和 `/afterSale/Detail`，不新增定时任务或第二套业务worker。公共周期/窗口设置保持原值。
-- 读取接口明确白名单，不能调用 `/afterSale/operate`；授权成功不等于验证了退款写权限。
+- 读取客户端保持明确白名单，不能调用 `/afterSale/operate`；授权成功不等于验证了退款写权限。当天下午另经用户授权完成一笔独立 API 退款实测，见[单笔验收记录](douyin-single-refund-api-acceptance-20260924.md)，未开启模块1/2自动执行。
 
 ## 数据口径
 
