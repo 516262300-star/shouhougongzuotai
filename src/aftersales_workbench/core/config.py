@@ -201,6 +201,8 @@ class Settings(BaseSettings):
 
     alibaba_1688_api_url: str = "https://gw.open.1688.com/openapi"
     alibaba_1688_sync_enabled: bool = False
+    alibaba_1688_shipment_reminder_enabled: bool = False
+    alibaba_1688_shipment_seller_fingerprints: dict[str, str] = Field(default_factory=dict)
     alibaba_1688_shops_json: list[dict[str, str]] = Field(default_factory=list)
 
     jd_api_url: str = "https://odiych.goldbrantech.com/forward.ashx"

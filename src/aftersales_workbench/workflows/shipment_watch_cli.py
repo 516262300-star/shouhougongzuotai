@@ -23,6 +23,10 @@ from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.tmall.client import TmallClient
 from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
+from aftersales_workbench.workflows.alibaba_1688_shipment_source import (
+    Alibaba1688ShipmentClient,
+    Alibaba1688ShipmentSource,
+)
 from aftersales_workbench.workflows.douyin_shipment_source import DouyinShipmentSource
 from aftersales_workbench.workflows.jd_shipment_source import JdShipmentSource
 from aftersales_workbench.workflows.shipment_watch import ShipmentWatch, utcnow
@@ -37,7 +41,7 @@ from aftersales_workbench.workflows.shipment_watch_sources import ShipmentSource
 def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
         platforms=("PDD", "TMALL"), jd_carrier_map=None, jd_seller_ids=None):
     platforms = tuple(dict.fromkeys(platforms))
-    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD", "DOUYIN"}:
+    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD", "DOUYIN", "1688"}:
         raise ValueError("普通订单提醒平台配置无效")
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     result = {"publish": publish, "sync_errors": {}, "synced": 0}
@@ -93,14 +97,17 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                 ("TMALL", load_configured_tmall_shops, TmallClient),
                 ("JD", None, JdReadClient),
                 ("DOUYIN", None, DouyinReadClient),
+                ("1688", None, Alibaba1688ShipmentClient),
             ):
                 if platform not in platforms:
                     continue
                 if platform == "DOUYIN" and not cfg.douyin_shipment_reminder_enabled:
                     continue
+                if platform == "1688" and not cfg.alibaba_1688_shipment_reminder_enabled:
+                    continue
                 try:
                     configured = (load_marketplace_shops(cfg, Platform(platform))
-                                  if platform in {"JD", "DOUYIN"}
+                                  if platform in {"JD", "DOUYIN", "1688"}
                                   else loader(cfg, require_all=False))
                 except Exception as exc:
                     result["sync_errors"][platform] = type(exc).__name__
@@ -113,7 +120,7 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                         ))
                         if shop is None:
                             raise ValueError("店铺不在有效工作台店铺列表")
-                        client = (client_type(config, cfg) if platform in {"JD", "DOUYIN"}
+                        client = (client_type(config, cfg) if platform in {"JD", "DOUYIN", "1688"}
                                   else client_type(config.credentials(), read_max_attempts=2))
                         stack.callback(client.close)
                         if platform == "PDD":
@@ -135,7 +142,11 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                                                    carrier_map=jd_carrier_map or {})
                                   if platform == "JD" else
                                   DouyinShipmentSource(client, shop_id=identity)
-                                  if platform == "DOUYIN" else ShipmentSource(platform, client))
+                                  if platform == "DOUYIN" else
+                                  Alibaba1688ShipmentSource(client, seller_fingerprint=
+                                      cfg.alibaba_1688_shipment_seller_fingerprints.get(
+                                          config.shop_code, ""))
+                                  if platform == "1688" else ShipmentSource(platform, client))
                         sources[config.shop_code] = source, shop.shop_name
                         result["synced"] += watch.sync(
                             config.shop_code, source, max_windows=max_windows,

@@ -251,3 +251,30 @@ def test_douyin_requires_flag_release_source_and_registered_shop(setup):
     pointer["platforms"].remove("DOUYIN")
     path.write_text(json.dumps(pointer))
     assert caps(result(setup), "DOUYIN")["shipment_reminder"]["state"] == "disabled"
+
+
+def test_1688_requires_separate_flag_release_and_valid_merchant_binding(setup):
+    settings, snapshots, _, root = setup
+    settings.alibaba_1688_shops_json = [{
+        "shop_code": "1688-test", "shop_name": "合成1688店",
+        "app_key": "synthetic", "app_secret": "synthetic",
+    }]
+    snapshots.append(ShopSnapshot(Platform.ALIBABA_1688, "1688-test", "合成1688店",
+                                  "1688-test", True))
+    path = root / ".runtime/shipment-watch-release.json"
+    pointer = json.loads(path.read_text())
+    pointer["platforms"] = ["PDD", "TMALL", "1688"]
+    path.write_text(json.dumps(pointer))
+    source = root / pointer["source_path"] / "aftersales_workbench/workflows"
+    (source / "alibaba_1688_shipment_source.py").write_text("# fixture")
+    assert caps(result(setup), "1688")["shipment_reminder"]["state"] == "disabled"
+    settings.alibaba_1688_shipment_reminder_enabled = True
+    assert "商家身份" in caps(result(setup), "1688")["shipment_reminder"]["detail"]
+    settings.alibaba_1688_shipment_seller_fingerprints = {"1688-test": "g" * 64}
+    assert caps(result(setup), "1688")["shipment_reminder"]["state"] == "disabled"
+    settings.alibaba_1688_shipment_seller_fingerprints = {"1688-test": "a" * 64}
+    assert caps(result(setup), "1688")["shipment_reminder"]["state"] == "enabled"
+    assert caps(result(setup), "1688")["refund_permission"]["state"] != "enabled"
+    pointer["platforms"].remove("1688")
+    path.write_text(json.dumps(pointer))
+    assert caps(result(setup), "1688")["shipment_reminder"]["state"] == "disabled"

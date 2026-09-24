@@ -1,6 +1,7 @@
 """接入能力中的普通订单提醒状态；只读取发布配置、巡检摘要和本地账本。"""
 
 import json
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -134,7 +135,7 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
     enabled_count = registered_count = sync_errors = 0
     latest = completed
     for platform in payload["platforms"]:
-        if platform["platform"] not in {"PDD", "TMALL", "JD", "DOUYIN"}:
+        if platform["platform"] not in {"PDD", "TMALL", "JD", "DOUYIN", "1688"}:
             continue
         platform_ready = platform["platform"] != "JD" or (
             "JD" in pointer.get("platforms", [])
@@ -147,6 +148,13 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
                 "DOUYIN" in pointer.get("platforms", [])
                 and settings.douyin_shipment_reminder_enabled and source_valid
                 and (source / "aftersales_workbench/workflows/douyin_shipment_source.py").is_file()
+            )
+        if platform["platform"] == "1688":
+            platform_ready = (
+                "1688" in pointer.get("platforms", [])
+                and settings.alibaba_1688_shipment_reminder_enabled and source_valid
+                and (source / "aftersales_workbench/workflows/alibaba_1688_shipment_source.py"
+                     ).is_file()
             )
         for item in platform["shops"]:
             code = item["shop_code"]
@@ -179,6 +187,9 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
                     for ready, reason in (
                         (configured, "独立提醒任务未启用或发布版本不可用"),
                         (platform_ready, "平台提醒适配或独立配置尚未启用"),
+                        (platform["platform"] != "1688" or re.fullmatch(r"[a-f0-9]{64}",
+                            settings.alibaba_1688_shipment_seller_fingerprints.get(code, "")),
+                         "1688真实商家身份尚未核实绑定"),
                         (platform["platform"] != "JD" or str(
                             pointer.get("jd_seller_ids", {}).get(code, "")).isdigit(),
                          "京东真实商家编号尚未核实绑定"),
