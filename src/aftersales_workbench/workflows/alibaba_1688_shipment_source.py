@@ -203,7 +203,10 @@ class Alibaba1688ShipmentSource:
                 raise ValueError("1688包裹发货状态未识别")
             tracking = str(item.get("logisticsBillNo") or "").strip()
             carrier = str(item.get("logisticsCompanyName") or "").strip()
-            carrier = {"圆通速递(YTO)": "圆通速递"}.get(carrier, carrier)
+            carrier = {
+                "圆通速递(YTO)": "圆通速递",
+                "中通快运": "zhongtongkuaiyun",
+            }.get(carrier, carrier)
             raw_ids = item.get("subItemIds")
             linked = tuple(sorted(raw_ids.split(','))) if isinstance(raw_ids, str) else ()
             if (not linked or len(linked) != len(set(linked)) or not set(linked) <= set(ids)

@@ -83,6 +83,17 @@ def test_platform_full_yto_name_is_a_carrier_alias_not_a_number(setup):
     assert source.refresh(SN)[0].carrier == '圆通速递'
 
 
+def test_zto_freight_is_not_zto_express(setup):
+    from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
+
+    source, state = setup
+    package = state.row['nativeLogistics']['logisticsItems'][0]
+    package.update(logisticsCompanyName='中通快运', logisticsCompanyNo='ZTO')
+    assert resolve_logistics_carrier(source.refresh(SN)[0].carrier) == 'zhongtongkuaiyun'
+    package['logisticsCompanyName'] = '中通快递'
+    assert resolve_logistics_carrier(source.refresh(SN)[0].carrier) == 'zhongtong'
+
+
 def test_historical_ended_merchant_cannot_enter_queue_or_bypass_live_refresh(setup):
     source, state = setup
     state.row['baseInfo'].update(sellerAlipayId='2088000000000002', status='success')
