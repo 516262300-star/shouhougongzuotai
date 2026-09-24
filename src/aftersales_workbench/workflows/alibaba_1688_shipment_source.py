@@ -74,7 +74,7 @@ class Alibaba1688ShipmentSource:
             raise ValueError("1688真实商家身份尚未核实绑定")
         self.client, self.seller_fingerprint = client, seller_fingerprint
 
-    def _identity(self, row, expected=None):
+    def _identity(self, row, expected=None, *, ignore_ended=False):
         base = row.get("baseInfo") if isinstance(row, dict) else None
         if not isinstance(base, dict):
             raise ValueError("1688订单基本信息缺失")
@@ -83,12 +83,16 @@ class Alibaba1688ShipmentSource:
         if (not sn.isdigit() or str(base.get("id")) != sn
                 or (expected is not None and sn != expected)):
             raise ValueError("1688订单身份不一致")
+        if base.get("status") not in STATES:
+            raise ValueError(f"1688订单状态未识别: {str(base.get('status'))[:60]}")
+        # 列表中的已结束订单不入提醒队列；历史收款账号不同不能阻塞普通发货增量。
+        # 只允许跳过结束记录，任何发货候选和每次详情/发送前刷新仍严格核对商家。
+        if ignore_ended and base["status"] in TERMINAL:
+            return sn
         # 昵称已脱敏、sellerOrder可能为false；不把这些字段当作唯一商家身份。
         if (not re.fullmatch(r"\d{16}", seller)
                 or hashlib.sha256(seller.encode()).hexdigest() != self.seller_fingerprint):
             raise ValueError("1688返回商家身份与核实绑定不一致")
-        if base.get("status") not in STATES:
-            raise ValueError(f"1688订单状态未识别: {str(base.get('status'))[:60]}")
         return sn
 
     def _detail(self, sn):
@@ -114,7 +118,7 @@ class Alibaba1688ShipmentSource:
                     or (expected is not None and expected != total)):
                 raise ValueError("1688分页总数无效或发生变化")
             expected = total
-            ids = [self._identity(row) for row in rows]
+            ids = [self._identity(row, ignore_ended=True) for row in rows]
             if len(set(ids)) != len(ids) or seen.intersection(ids):
                 raise ValueError("1688订单分页重复")
             seen.update(ids)
@@ -126,7 +130,7 @@ class Alibaba1688ShipmentSource:
         raise ValueError("1688订单超过分页上限，需缩短窗口")
 
     def candidate(self, row):
-        sn = self._identity(row)
+        sn = self._identity(row, ignore_ended=True)
         status = row["baseInfo"]["status"]
         if status in TERMINAL or status == "waitbuyerpay":
             return None
@@ -182,6 +186,7 @@ class Alibaba1688ShipmentSource:
                 raise ValueError("1688包裹发货状态未识别")
             tracking = str(item.get("logisticsBillNo") or "").strip()
             carrier = str(item.get("logisticsCompanyName") or "").strip()
+            carrier = {"圆通速递(YTO)": "圆通速递"}.get(carrier, carrier)
             raw_ids = item.get("subItemIds")
             linked = tuple(sorted(raw_ids.split(','))) if isinstance(raw_ids, str) else ()
             if (not linked or len(linked) != len(set(linked)) or not set(linked) <= set(ids)

@@ -75,6 +75,27 @@ def test_multiple_parcels_and_partial_refund(setup):
     assert source.candidate(state.row)[1] == a.shipped_at
 
 
+def test_platform_full_yto_name_is_a_carrier_alias_not_a_number(setup):
+    source, state = setup
+    state.row['nativeLogistics']['logisticsItems'][0].update(
+        logisticsCompanyName='圆通速递(YTO)', logisticsCompanyNo='YTO')
+    assert source.refresh(SN)[0].carrier == '圆通速递'
+
+
+def test_historical_ended_merchant_cannot_enter_queue_or_bypass_live_refresh(setup):
+    source, state = setup
+    state.row['baseInfo'].update(sellerAlipayId='2088000000000002', status='success')
+    assert source.candidate(state.row) is None
+    assert len(list(source.list_window(datetime(2026, 9, 23), datetime(2026, 9, 23, 1)))) == 1
+    with pytest.raises(ValueError, match='商家身份'):
+        source.refresh(SN)
+    state.row['baseInfo']['status'] = 'waitbuyerreceive'
+    with pytest.raises(ValueError, match='商家身份'):
+        source.candidate(state.row)
+    with pytest.raises(ValueError, match='商家身份'):
+        list(source.list_window(datetime(2026, 9, 23), datetime(2026, 9, 23, 1)))
+
+
 @pytest.mark.parametrize('status', ['success', 'cancel', 'terminated',
                                   'confirm_goods', 'confirm_goods_but_not_fund'])
 def test_closed_order_excluded_without_claiming_money(setup, status):
