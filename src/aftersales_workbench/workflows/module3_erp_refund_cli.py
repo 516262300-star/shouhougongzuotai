@@ -17,8 +17,8 @@ def _parser() -> argparse.ArgumentParser:
         description="核对或执行模块3的 ERP 未发货补开退款单。"
     )
     parser.add_argument("--platform-order-sn", help="只处理指定平台订单号")
-    parser.add_argument("--platform", choices=("PDD", "TMALL"), default="PDD",
-                        help="平台隔离；天猫使用独立只读核验及补单适配")
+    parser.add_argument("--platform", choices=("PDD", "TMALL", "DOUYIN"), default="PDD",
+                        help="平台隔离；天猫和抖音使用各自独立核验及补单适配")
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--details", action="store_true", help="输出逐单核对结果")
     parser.add_argument(
@@ -41,10 +41,19 @@ def main(argv: list[str] | None = None) -> int:
             )
         if not settings.erp_write_enabled:
             raise RuntimeError("ERP_WRITE_ENABLED=false，禁止 ERP 外部写入")
-    client = build_erp_unshipped_refund_client(settings)
+    if args.platform == "DOUYIN" and not args.apply:
+        from aftersales_workbench.workflows.taobao_preview import build_readonly_erp
+
+        client = build_readonly_erp(settings)
+    else:
+        client = build_erp_unshipped_refund_client(settings)
     try:
         with SessionLocal() as session:
-            if args.platform == "TMALL":
+            if args.platform == "DOUYIN":
+                from aftersales_workbench.workflows.douyin_module3 import DouyinModule3Service
+
+                service = DouyinModule3Service(session, client, settings)
+            elif args.platform == "TMALL":
                 from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
 
                 service = TmallModule3Service(session, client, settings)

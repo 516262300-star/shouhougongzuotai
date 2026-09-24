@@ -228,3 +228,26 @@ def test_jd_enabled_only_with_compatible_release_carriers_and_verified_seller(se
     pointer["jd_seller_ids"] = {}
     path.write_text(json.dumps(pointer))
     assert "真实商家编号" in caps(result(setup), "JD")["shipment_reminder"]["detail"]
+
+
+def test_douyin_requires_flag_release_source_and_registered_shop(setup):
+    settings, snapshots, _, root = setup
+    settings.douyin_shops_json = [{
+        "shop_code": "douyin-third-party-01", "shop_name": "合成抖音店",
+        "platform_shop_id": "101", "app_key": "synthetic", "app_secret": "synthetic",
+        "access_token_mode": "authorization_self",
+    }]
+    snapshots.append(ShopSnapshot(Platform.DOUYIN, "douyin-third-party-01", "合成抖音店",
+                                  "101", True))
+    path = root / ".runtime/shipment-watch-release.json"
+    pointer = json.loads(path.read_text())
+    pointer["platforms"] = ["PDD", "TMALL", "DOUYIN"]
+    path.write_text(json.dumps(pointer))
+    source = root / pointer["source_path"] / "aftersales_workbench/workflows"
+    (source / "douyin_shipment_source.py").write_text("# fixture")
+    assert caps(result(setup), "DOUYIN")["shipment_reminder"]["state"] == "disabled"
+    settings.douyin_shipment_reminder_enabled = True
+    assert caps(result(setup), "DOUYIN")["shipment_reminder"]["state"] == "enabled"
+    pointer["platforms"].remove("DOUYIN")
+    path.write_text(json.dumps(pointer))
+    assert caps(result(setup), "DOUYIN")["shipment_reminder"]["state"] == "disabled"

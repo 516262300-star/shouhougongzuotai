@@ -134,7 +134,7 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
     enabled_count = registered_count = sync_errors = 0
     latest = completed
     for platform in payload["platforms"]:
-        if platform["platform"] not in {"PDD", "TMALL", "JD"}:
+        if platform["platform"] not in {"PDD", "TMALL", "JD", "DOUYIN"}:
             continue
         platform_ready = platform["platform"] != "JD" or (
             "JD" in pointer.get("platforms", [])
@@ -142,6 +142,12 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
             and source_valid
             and (source / "aftersales_workbench/workflows/jd_shipment_source.py").is_file()
         )
+        if platform["platform"] == "DOUYIN":
+            platform_ready = (
+                "DOUYIN" in pointer.get("platforms", [])
+                and settings.douyin_shipment_reminder_enabled and source_valid
+                and (source / "aftersales_workbench/workflows/douyin_shipment_source.py").is_file()
+            )
         for item in platform["shops"]:
             code = item["shop_code"]
             row = database.get(code)
@@ -172,7 +178,7 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
                     reason
                     for ready, reason in (
                         (configured, "独立提醒任务未启用或发布版本不可用"),
-                        (platform_ready, "京东提醒适配或独立快递公司映射尚未启用"),
+                        (platform_ready, "平台提醒适配或独立配置尚未启用"),
                         (platform["platform"] != "JD" or str(
                             pointer.get("jd_seller_ids", {}).get(code, "")).isdigit(),
                          "京东真实商家编号尚未核实绑定"),

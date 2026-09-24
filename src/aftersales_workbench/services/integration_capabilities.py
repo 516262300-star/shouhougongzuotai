@@ -232,11 +232,26 @@ def _shop_capabilities(
         else _disabled("开启售后同步后才能持续更新退款金额")
     )
     if not supports_modules:
+        douyin_module3 = _unsupported("当前平台尚未接入模块 3 自动化")
+        if platform == Platform.DOUYIN:
+            douyin_module3 = _requirements((
+                (sync_enabled, "抖音售后同步未开启"),
+                (configured.shop_code in {f"douyin-third-party-{n:02d}" for n in range(1, 5)}
+                 & set(settings.douyin_module3_shop_codes),
+                 "该店未加入抖音模块3执行范围"),
+                (settings.douyin_module3_enabled, "抖音模块3已适配，待核验后开启"),
+                (settings.module3_worker_enabled, "模块3后台运行未开启"),
+                (settings.module3_erp_refund_execution_enabled, "模块3ERP补单总开关未开启"),
+                (settings.erp_write_enabled, "ERP写入总开关关闭"),
+                (settings.erp_web_username and settings.erp_web_password, "ERP查询凭据未配置"),
+            ), "平台已退款且独立整单未发货时核账、缺单补开一次；不再次平台退款")
         return {
             "sync": sync,
             "shipment_reminder": (
                 _disabled("等待核对京东独立提醒版本、商家身份及物流映射")
-                if platform == Platform.JD else _unsupported("该平台尚未接入普通发货订单提醒")
+                if platform == Platform.JD else
+                _disabled("等待核对抖音独立提醒配置和运行记录")
+                if platform == Platform.DOUYIN else _unsupported("该平台尚未接入普通发货订单提醒")
             ),
             "attribution": attribution,
             "financial": financial,
@@ -244,7 +259,7 @@ def _shop_capabilities(
             "module1": _unsupported("当前平台尚未接入模块 1 自动化"),
             "module1_erp": _unsupported("当前平台尚未接入模块 1 退回平账"),
             "module2": _unsupported("当前平台尚未接入模块 2 自动化"),
-            "module3": _unsupported("当前平台尚未接入模块 3 自动化"),
+            "module3": douyin_module3,
         }
 
     refund_permission = _requirements(
@@ -311,7 +326,8 @@ def _shop_capabilities(
                     (configured.shop_number in range(1, 7), "该店不在天猫六店退款范围"),
                     (settings.tmall_single_parcel_refund_enabled, "天猫单订单单包裹退款尚未启用"),
                     (settings.erp_web_lookup_enabled, "ERP原销售只读核验未开启"),
-                    (bool(settings.erp_web_username and settings.erp_web_password), "ERP核验凭据缺失"),
+                    (bool(settings.erp_web_username and settings.erp_web_password),
+                     "ERP核验凭据缺失"),
                 ),
                 "仅独立原销售、单订单单子单单包裹；"
                 + ("通知成功并通过实时物流闸门后退款" if key == "module1"
@@ -337,7 +353,8 @@ def _shop_capabilities(
         )
         if module1_erp["state"] == "enabled":
             module1_erp.update(state="warning", label="核账已开·认领补单未接入")
-            if settings.tmall_module1_return_claim_enabled and configured.shop_number in range(1, 7):
+            if (settings.tmall_module1_return_claim_enabled
+                    and configured.shop_number in range(1, 7)):
                 module1_erp = _requirements(
                     (
                         (configured.shop_number in range(1, 7), "该店暂未纳入ERP自动认领补单范围"),
@@ -559,10 +576,10 @@ class IntegrationCapabilityService:
             )
             for row in rows
         ]
-        from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
         from aftersales_workbench.services.shipment_watch_status import (
             decorate_shipment_capabilities,
         )
+        from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
 
         payload = decorate_capabilities(
             build_integration_capabilities(self.settings, snapshots), self.settings,
