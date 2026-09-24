@@ -25,7 +25,7 @@ def main():
 
     # 缩短单轮核验，避免旧批次占用十余分钟导致新到20小时的订单迟迟不能入队。
     options = {}
-    if "JD" in pointer.get("platforms", []):
+    if pointer.get("platforms"):
         options = {"platforms": pointer["platforms"],
                    "jd_carrier_map": pointer.get("jd_carrier_map", {}),
                    "jd_seller_ids": pointer.get("jd_seller_ids", {})}

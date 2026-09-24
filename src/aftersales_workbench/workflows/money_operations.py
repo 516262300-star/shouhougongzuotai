@@ -37,7 +37,18 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
     platform = str(shop.platform)
     if operation_type not in {"PLATFORM_REFUND", "ERP_REFUND"}:
         raise MoneyOperationBlocked("未适配的资金操作类型")
-    if operation_type == "ERP_REFUND" and platform != "PDD":
+    if operation_type == "ERP_REFUND" and platform == "DOUYIN":
+        from aftersales_workbench.workflows.douyin_module3 import SCOPE, validate_money_proof
+
+        if erp_adapter != SCOPE:
+            raise MoneyOperationBlocked("抖音未适配该ERP资金操作")
+        task = session.get(AftersalesActionTask, task_id)
+        proof = (task.payload or {}).get("douyin_module3_evidence", {}) if task else {}
+        try:
+            validate_money_proof(session, order, task_id, proof)
+        except ValueError as exc:
+            raise MoneyOperationBlocked(str(exc)) from exc
+    elif operation_type == "ERP_REFUND" and platform != "PDD":
         if platform != "TMALL" or erp_adapter not in {
             "tmall_module3_unshipped_v1", "tmall_module1_return_v1",
             "tmall_module2_grouped_return_v1",
@@ -106,6 +117,9 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
         # 六店ERP补单仍须通过上方专用适配器和逐单核验证据。
         else {f"tmall-shop-{n:02d}" for n in range(1, 7)}
         if platform == "TMALL"
+        else {f"douyin-third-party-{n:02d}" for n in range(1, 5)}
+        if platform == "DOUYIN" and operation_type == "ERP_REFUND"
+        and erp_adapter == "douyin_module3_unshipped_v1"
         else set()
     )
     if shop.shop_code not in allowed:

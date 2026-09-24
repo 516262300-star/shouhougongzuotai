@@ -16,12 +16,14 @@ from aftersales_workbench.integrations.logistics.kuaidi100 import (
     Kuaidi100Client,
     Kuaidi100Credentials,
 )
+from aftersales_workbench.integrations.marketplace.douyin import DouyinReadClient
 from aftersales_workbench.integrations.marketplace.jd import JdReadClient
 from aftersales_workbench.integrations.marketplace.shops import load_marketplace_shops
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
 from aftersales_workbench.integrations.tmall.client import TmallClient
 from aftersales_workbench.integrations.tmall.shops import load_configured_tmall_shops
+from aftersales_workbench.workflows.douyin_shipment_source import DouyinShipmentSource
 from aftersales_workbench.workflows.jd_shipment_source import JdShipmentSource
 from aftersales_workbench.workflows.shipment_watch import ShipmentWatch, utcnow
 from aftersales_workbench.workflows.shipment_watch_models import (
@@ -35,7 +37,7 @@ from aftersales_workbench.workflows.shipment_watch_sources import ShipmentSource
 def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
         platforms=("PDD", "TMALL"), jd_carrier_map=None, jd_seller_ids=None):
     platforms = tuple(dict.fromkeys(platforms))
-    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD"}:
+    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD", "DOUYIN"}:
         raise ValueError("普通订单提醒平台配置无效")
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     result = {"publish": publish, "sync_errors": {}, "synced": 0}
@@ -90,11 +92,15 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                 ("PDD", load_configured_pdd_shops, PddClient),
                 ("TMALL", load_configured_tmall_shops, TmallClient),
                 ("JD", None, JdReadClient),
+                ("DOUYIN", None, DouyinReadClient),
             ):
                 if platform not in platforms:
                     continue
+                if platform == "DOUYIN" and not cfg.douyin_shipment_reminder_enabled:
+                    continue
                 try:
-                    configured = (load_marketplace_shops(cfg, Platform.JD) if platform == "JD"
+                    configured = (load_marketplace_shops(cfg, Platform(platform))
+                                  if platform in {"JD", "DOUYIN"}
                                   else loader(cfg, require_all=False))
                 except Exception as exc:
                     result["sync_errors"][platform] = type(exc).__name__
@@ -107,7 +113,7 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                         ))
                         if shop is None:
                             raise ValueError("店铺不在有效工作台店铺列表")
-                        client = (JdReadClient(config, cfg) if platform == "JD"
+                        client = (client_type(config, cfg) if platform in {"JD", "DOUYIN"}
                                   else client_type(config.credentials(), read_max_attempts=2))
                         stack.callback(client.close)
                         if platform == "PDD":
@@ -116,6 +122,8 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                             identity = client.get_seller()["user_seller_get_response"]["user"][
                                 "user_id"
                             ]
+                        elif platform == "DOUYIN":
+                            identity = client.identity()[0]
                         else:
                             identity = config.platform_shop_id
                         if str(identity) != str(shop.platform_shop_id):
@@ -125,7 +133,9 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                             raise ValueError("京东真实商家编号尚未核实绑定")
                         source = (JdShipmentSource(client, seller_id=seller_id,
                                                    carrier_map=jd_carrier_map or {})
-                                  if platform == "JD" else ShipmentSource(platform, client))
+                                  if platform == "JD" else
+                                  DouyinShipmentSource(client, shop_id=identity)
+                                  if platform == "DOUYIN" else ShipmentSource(platform, client))
                         sources[config.shop_code] = source, shop.shop_name
                         result["synced"] += watch.sync(
                             config.shop_code, source, max_windows=max_windows,

@@ -696,6 +696,7 @@ class Module1WorkerRuntime:
                     refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
                 )
                 tmall_counts = {}
+                douyin_counts = {}
                 if self.settings.tmall_module3_erp_refund_enabled:
                     from aftersales_workbench.workflows.tmall_module3 import TmallModule3Service
 
@@ -709,10 +710,23 @@ class Module1WorkerRuntime:
                         setattr(run, field, getattr(run, field) + getattr(tmall_run, field))
                     tmall_counts = {f'tmall_{key}': getattr(tmall_run, key)
                                     for key in ('scanned', 'ready', 'applied', 'blocked')}
+                if self.settings.douyin_module3_enabled:
+                    from aftersales_workbench.workflows.douyin_module3 import DouyinModule3Service
+
+                    douyin_run = DouyinModule3Service(session, client, self.settings).run(
+                        limit=self.settings.module3_worker_batch_limit, dry_run=False,
+                        refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
+                    )
+                    for field in ("scanned", "ready", "already_completed", "not_required",
+                                  "applied", "not_found", "blocked", "unavailable"):
+                        setattr(run, field, getattr(run, field) + getattr(douyin_run, field))
+                    douyin_counts = {f'douyin_{key}': getattr(douyin_run, key)
+                                     for key in ('scanned', 'ready', 'applied', 'blocked')}
         finally:
             client.close()
         details = run.safe_dict()
         details.update(tmall_counts)
+        details.update(douyin_counts)
         if run.unavailable:
             return WorkerStageResult(
                 status="failed",

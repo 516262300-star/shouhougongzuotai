@@ -28,6 +28,12 @@ from aftersales_workbench.integrations.marketplace.models import (
 DOUYIN_AFTERSALE_LIST_PATH = "/afterSale/List"
 DOUYIN_AFTERSALE_DETAIL_PATH = "/afterSale/Detail"
 DOUYIN_TOKEN_CREATE_PATH = "/token/create"
+DOUYIN_ORDER_LIST_PATH = "/order/searchList"
+DOUYIN_ORDER_DETAIL_PATH = "/order/orderDetail"
+DOUYIN_READ_PATHS = frozenset({
+    DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH,
+    DOUYIN_ORDER_LIST_PATH, DOUYIN_ORDER_DETAIL_PATH,
+})
 
 
 def _sort_json(value: Any) -> Any:
@@ -105,9 +111,7 @@ class DouyinReadClient(RetryingJsonClient):
         *,
         access_token: str,
     ) -> dict[str, Any]:
-        if path not in {
-            DOUYIN_TOKEN_CREATE_PATH, DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH,
-        }:
+        if path not in DOUYIN_READ_PATHS | {DOUYIN_TOKEN_CREATE_PATH}:
             raise ValueError("抖音同步禁止调用写业务接口")
         app_key = self.config.app_key.get_secret_value().strip()
         app_secret = self.config.app_secret.get_secret_value().strip()
@@ -226,8 +230,8 @@ class DouyinReadClient(RetryingJsonClient):
         return self._access_token
 
     def execute_read(self, path: str, parameters: dict[str, Any]) -> dict[str, Any]:
-        if path not in {DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH}:
-            raise ValueError("抖音同步仅允许售后只读接口")
+        if path not in DOUYIN_READ_PATHS:
+            raise ValueError("抖音仅允许订单和售后只读接口")
         return self._request(
             path,
             parameters,
@@ -239,6 +243,41 @@ class DouyinReadClient(RetryingJsonClient):
             DOUYIN_AFTERSALE_DETAIL_PATH,
             {"after_sale_id": after_sales_id},
         )
+
+    def get_order_detail(self, order_sn: str) -> dict[str, Any]:
+        return self.execute_read(DOUYIN_ORDER_DETAIL_PATH, {"shop_order_id": order_sn})
+
+    def order_refunds(self, order_sn: str):
+        """按父单完整取售后；筛选失效、跨页重复、漏页均阻断，不默认为无退款。"""
+        seen, expected = set(), None
+        for page in range(100):
+            body = self.execute_read(DOUYIN_AFTERSALE_LIST_PATH, {
+                "order_id": order_sn, "page": page, "size": 100,
+            })
+            data = body.get("data")
+            if not isinstance(data, dict):
+                raise ValueError("抖音父单售后缺少data")
+            total, rows = data.get("total"), data.get("items")
+            if rows is None and total == 0:
+                rows = []
+            if (type(total) is not int or total < 0 or not isinstance(rows, list)
+                    or len(rows) > 100 or (expected is not None and total != expected)):
+                raise ValueError("抖音父单售后分页总数改变或列表不完整")
+            expected = total
+            for row in rows:
+                if not isinstance(row, dict):
+                    raise ValueError("抖音父单售后记录不完整")
+                rid = str((row.get("aftersale_info") or {}).get("aftersale_id") or "")
+                if (not rid.isdigit() or rid in seen
+                        or str((row.get("order_info") or {}).get("shop_order_id")) != order_sn):
+                    raise ValueError("抖音父单售后筛选失效或身份重复")
+                seen.add(rid)
+            if len(seen) > total or (len(seen) < total and len(rows) != 100):
+                raise ValueError("抖音父单售后分页提前结束")
+            yield from rows
+            if len(seen) == total:
+                return
+        raise ValueError("抖音父单售后超过分页上限")
 
     def fetch_window(
         self,

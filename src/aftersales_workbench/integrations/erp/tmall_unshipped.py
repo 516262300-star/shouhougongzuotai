@@ -60,7 +60,7 @@ def complete_table(document, required, *, allowed_unclosed_tags=frozenset()):
 
 def no_shipments(client, customer_id, erp_order, platform_order, *, prefix="tmx"):
     """扫描全部发货页，并回读首页检测取数漂移；空页必须有完整表头和分页。"""
-    if prefix not in {"tmx", "tbx"}:
+    if prefix not in {"tmx", "tbx", "dyx"}:
         raise ValueError("未适配的ERP平台前缀")
     first = None
     page_count = None
@@ -72,6 +72,23 @@ def no_shipments(client, customer_id, erp_order, platform_order, *, prefix="tmx"
         if len(pager) != 1:
             raise ValueError("ERP发货页分页缺失")
         current, total = map(int, pager.pop())
+        if prefix == "dyx" and index == 0 and (current, total) == (1, 0):
+            # 旧ERP零发货模板为 1/0、明确“当前没有单据”和空 tableprivate；
+            # 不把缺表头、权限页或普通空响应当成无发货，也不放宽其他平台。
+            nodes = list(_Page(page).root.nodes())
+            tables = [n for n in nodes if n.tag == "table"]
+            messages = [n for n in nodes if n.attrs.get("id") == "text"]
+            if (any(not n.closed for n in nodes if n.tag in {"html", "body"})
+                    or re.search(r"权限|登录失效|查询失败|加载失败|请求超时", nodes[0].text())
+                    or len(tables) != 1 or tables[0].attrs.get("id") != "tableprivate"
+                    or not tables[0].closed or tables[0].children or tables[0].text()
+                    or len(messages) != 1 or not messages[0].closed
+                    or messages[0].tag != "div" or messages[0].text() != "当前没有单据"):
+                raise ValueError("ERP零发货分页缺少完整空状态证据")
+            if client._get("/leedis2/public/customer/shipment",
+                           params={"kehuid": customer_id, "page": "0"}) != page:
+                raise ValueError("ERP零发货取数期间发生变化")
+            return
         if current != index + 1 or not 1 <= total <= 20 or page_count not in (None, total):
             raise ValueError("ERP发货分页变化或越界")
         page_count = total
@@ -187,12 +204,13 @@ def read_existing_refund(client, order_sn):
 
 def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, items, child_id,
                             source_mode="dedicated", platform="TMALL"):
-    # 淘宝仅供独立只读预演；资金服务仍单独限制TMALL，不能靠此参数获得写权限。
-    if platform not in {"TMALL", "TAOBAO"}:
+    # 本函数仅查询；资金服务须另过专用适配证据和持久化幂等保护。
+    if platform not in {"TMALL", "TAOBAO", "DOUYIN"}:
         raise ValueError("未适配的ERP平台")
-    label, prefix = ("天猫", "tmx") if platform == "TMALL" else ("淘宝", "tbx")
-    if platform == "TAOBAO" and source_mode != "existing_admin":
-        raise ValueError("淘宝只读预演必须使用现有管理账页，不能借用天猫专用接口")
+    label, prefix = {"TMALL": ("天猫", "tmx"), "TAOBAO": ("淘宝", "tbx"),
+                     "DOUYIN": ("抖音", "dyx")}[platform]
+    if platform != "TMALL" and source_mode != "existing_admin":
+        raise ValueError("该平台必须使用现有管理账页，不能借用天猫专用接口")
     # 列表未显示原始detail，但现有管理详情页已提供；不自动切换核验来源。
     if source_mode == "existing_admin":
         source = read_existing_refund(client, order_sn)
@@ -239,7 +257,12 @@ def inspect_tmall_unshipped(client, *, order_sn, refund_sn, expected_amount, ite
             or source.get("csname") != customer or source.get("log") != row["操作记录"]):
         raise ValueError("ERP只读执行记录与管理列表快照不一致")
     profile, customer_id = client._load_customer_profile(order_sn, customer)
-    balances = complete_table(profile, {"客户名字", "累计应收"})
+    # 抖音实测旧客户档案的详情链接缺少 </a>，行、列和表格本身完整。
+    # 仅在这一余额表兼容已知展示标签；其他结构和其他平台规则不变。
+    balances = complete_table(
+        profile, {"客户名字", "累计应收"},
+        allowed_unclosed_tags={"a"} if platform == "DOUYIN" else frozenset(),
+    )
     if len(balances) != 1 or balances[0]["客户名字"] != customer:
         raise ValueError("ERP客户余额不唯一")
     balance = Decimal(balances[0]["累计应收"])

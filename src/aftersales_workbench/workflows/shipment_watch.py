@@ -321,7 +321,7 @@ class ShipmentWatch:
         return sent
 
     def _resolve_sent_traces(self, order, source):
-        if source.platform not in {"TMALL", "JD"}:
+        if source.platform not in {"TMALL", "JD", "DOUYIN"}:
             return
         for notice in self.session.scalars(select(Notice).where(
             Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,
@@ -333,7 +333,7 @@ class ShipmentWatch:
             parcel = Parcel(notice.order_sn, notice.tracking_number, p["carrier"],
                             datetime.fromisoformat(p["shipped_at"]),
                             tuple(p.get("sub_order_ids", ())))
-            if source.platform == "JD":
+            if source.platform in {"JD", "DOUYIN"}:
                 proof = {"result": "HAS_TRACE" if self._trace_absent(parcel, source) is None
                          else "NO_TRACE", "tracking_number": parcel.tracking_number,
                          "order_sn": parcel.order_sn, "source": "KUAIDI100"}
