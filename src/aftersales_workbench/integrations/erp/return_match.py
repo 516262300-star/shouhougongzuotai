@@ -24,6 +24,8 @@ from aftersales_workbench.db.models import (
     AfterSalesType,
     AutomationActionType,
     AutomationTaskStatus,
+    Platform,
+    Shop,
     WorkflowStatus,
 )
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
@@ -697,6 +699,7 @@ class ErpReturnMatchSyncService:
                 # 模块2也共用此动作类型，但用退货运单和验货/退款流水核验。
                 # 必须在分页前限定模块1，不能用原发货运单查询覆盖模块2任务。
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                ~AfterSalesOrder.shop_id.in_(select(Shop.shop_id).where(Shop.platform == Platform.DOUYIN)),
             )
             .order_by(
                 AfterSalesOrder.forward_tracking_number,
@@ -797,6 +800,7 @@ class ErpReturnMatchSyncService:
             )
             .where(
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
+                ~AfterSalesOrder.shop_id.in_(select(Shop.shop_id).where(Shop.platform == Platform.DOUYIN)),
                 AfterSalesOrder.workflow_status.in_(
                     (
                         WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN,

@@ -14,7 +14,8 @@ from tests import test_shipment_watch as watch_tests
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_worker_dispatch_only_with_douyin_flag(monkeypatch, enabled):
+@pytest.mark.parametrize("synced", [False, True])
+def test_worker_dispatch_only_with_douyin_flag(monkeypatch, enabled, synced):
     from unittest.mock import MagicMock, Mock
 
     from aftersales_workbench.workflows import douyin_module3, module1_worker
@@ -25,6 +26,7 @@ def test_worker_dispatch_only_with_douyin_flag(monkeypatch, enabled):
     settings.tmall_module3_erp_refund_enabled = False
     runtime = object.__new__(module1_worker.Module1WorkerRuntime)
     runtime.settings = settings
+    runtime._douyin_ready_shop_codes = ("douyin-third-party-01",) if synced else ()
     monkeypatch.setattr(module1_worker, "SessionLocal", MagicMock())
     erp = Mock()
     monkeypatch.setattr(module1_worker, "build_erp_unshipped_refund_client", lambda _: erp)
@@ -35,9 +37,33 @@ def test_worker_dispatch_only_with_douyin_flag(monkeypatch, enabled):
     service.return_value.run.return_value = Module3ErpRefundRunResult(False, scanned=2, blocked=1)
     monkeypatch.setattr(douyin_module3, "DouyinModule3Service", service)
     result = runtime._process_module3_erp_refunds()
-    assert service.call_count == int(enabled)
-    assert result.details.get("douyin_scanned", 0) == (2 if enabled else 0)
+    assert service.call_count == int(enabled and synced)
+    assert result.details.get("douyin_scanned", 0) == (2 if enabled and synced else 0)
     erp.close.assert_called_once()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("synced", [False, True])
+def test_module12_worker_requires_current_cycle_shop_sync(monkeypatch, enabled, synced):
+    from unittest.mock import MagicMock, Mock
+
+    from aftersales_workbench.workflows import douyin_module12, module1_worker
+
+    settings = capabilities._settings()
+    settings.douyin_module1_enabled = enabled
+    settings.douyin_module12_shop_codes = ["douyin-third-party-01", "douyin-third-party-02"]
+    runtime = object.__new__(module1_worker.Module1WorkerRuntime)
+    runtime.settings = settings
+    runtime._douyin_ready_shop_codes = ("douyin-third-party-01",) if synced else ()
+    monkeypatch.setattr(module1_worker, "SessionLocal", MagicMock())
+    monkeypatch.setattr(module1_worker, "build_erp_unshipped_refund_client", Mock())
+    service = Mock()
+    service.return_value.run.return_value = {"scanned": 1}
+    monkeypatch.setattr(douyin_module12, "DouyinModule12Service", service)
+    runtime._process_douyin_module12()
+    assert service.call_count == int(enabled and synced)
+    if service.called:
+        assert service.call_args.args[2].douyin_module12_shop_codes == ["douyin-third-party-01"]
 
 
 @pytest.fixture
@@ -83,7 +109,7 @@ def test_module3_flags_do_not_enable_platform_refund_or_modules12():
 
     assert caps()["module3"]["state"] == "enabled"
     for key in ("refund_permission", "module1", "module1_erp", "module2"):
-        assert caps()[key]["state"] == "unsupported"
+        assert caps()[key]["state"] == "disabled"
     settings.douyin_module3_enabled = False
     assert caps()["module3"]["state"] == "disabled"
     settings.douyin_module3_enabled = True

@@ -37,7 +37,16 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
     platform = str(shop.platform)
     if operation_type not in {"PLATFORM_REFUND", "ERP_REFUND"}:
         raise MoneyOperationBlocked("未适配的资金操作类型")
-    if operation_type == "ERP_REFUND" and platform == "DOUYIN":
+    if platform == "DOUYIN" and erp_adapter == "douyin_module12_return_v1":
+        from aftersales_workbench.workflows.douyin_module12 import KEY, validate_money_proof
+
+        task = session.get(AftersalesActionTask, task_id) if task_id is not None else None
+        proof = (task.payload or {}).get(KEY, {}) if task else {}
+        try:
+            validate_money_proof(session, order, task_id, proof, operation_type)
+        except ValueError as exc:
+            raise MoneyOperationBlocked(str(exc)) from exc
+    elif operation_type == "ERP_REFUND" and platform == "DOUYIN":
         from aftersales_workbench.workflows.douyin_module3 import SCOPE, validate_money_proof
 
         if erp_adapter != SCOPE:
@@ -118,8 +127,9 @@ def run_money_write(session, order, *, operation_type, task_id, write, erp_adapt
         else {f"tmall-shop-{n:02d}" for n in range(1, 7)}
         if platform == "TMALL"
         else {f"douyin-third-party-{n:02d}" for n in range(1, 5)}
-        if platform == "DOUYIN" and operation_type == "ERP_REFUND"
-        and erp_adapter == "douyin_module3_unshipped_v1"
+        if platform == "DOUYIN" and (
+            erp_adapter == "douyin_module12_return_v1"
+            or (operation_type == "ERP_REFUND" and erp_adapter == "douyin_module3_unshipped_v1"))
         else set()
     )
     if shop.shop_code not in allowed:

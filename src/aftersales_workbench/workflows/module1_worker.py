@@ -150,6 +150,7 @@ class Module1WorkerCycleResult:
     sync: WorkerStageResult | None = None
     tmall_sync: WorkerStageResult | None = None
     marketplace_sync: WorkerStageResult | None = None
+    douyin_module12: WorkerStageResult | None = None
     module2_erp_intake: WorkerStageResult | None = None
     module2_refund_tasks: WorkerStageResult | None = None
     module2_exception_todos: WorkerStageResult | None = None
@@ -219,6 +220,11 @@ class Module1WorkerCycleResult:
             "marketplace_sync": self._stage_counts(
                 self.marketplace_sync,
                 ("shops_ok", "shops_failed", "records_seen", "records_created"),
+            ),
+            "douyin_module12": self._stage_counts(
+                self.douyin_module12,
+                ("scanned", "ready", "notices", "platform_accepted", "erp_applied",
+                 "completed", "waiting", "blocked"),
             ),
             "module2_erp_intake": self._stage_counts(
                 self.module2_erp_intake,
@@ -467,6 +473,7 @@ class Module1WorkerRuntime:
         self._pdd_sync_completed = False
         self._pdd_ready_shop_codes: tuple[str, ...] = ()
         self._tmall_sync_completed = False
+        self._douyin_ready_shop_codes: tuple[str, ...] = ()
 
     def run_cycle(self) -> Module1WorkerCycleResult:
         result = Module1WorkerCycleResult(started_at=_utc_iso())
@@ -475,6 +482,11 @@ class Module1WorkerRuntime:
         result.tmall_sync = self._capture(self._sync_tmall)
         self._tmall_sync_completed = result.tmall_sync.status == "completed"
         result.marketplace_sync = self._capture(self._sync_marketplaces)
+        self._douyin_ready_shop_codes = tuple(
+            s["shop_code"] for s in (result.marketplace_sync.details or {}).get("shops", [])
+            if s.get("platform") == "DOUYIN" and s.get("ok") is True
+        )
+        result.douyin_module12 = self._capture(self._process_douyin_module12)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
         result.module2_erp_intake = self._capture(self._sync_module2_erp_returns)
         result.module2_refund_tasks = self._capture(self._prepare_module2_refund_tasks)
@@ -510,6 +522,7 @@ class Module1WorkerRuntime:
             result.sync,
             result.tmall_sync,
             result.marketplace_sync,
+            result.douyin_module12,
             result.erp_sales_owners,
             result.module2_erp_intake,
             result.module2_refund_tasks,
@@ -710,10 +723,12 @@ class Module1WorkerRuntime:
                         setattr(run, field, getattr(run, field) + getattr(tmall_run, field))
                     tmall_counts = {f'tmall_{key}': getattr(tmall_run, key)
                                     for key in ('scanned', 'ready', 'applied', 'blocked')}
-                if self.settings.douyin_module3_enabled:
+                if self.settings.douyin_module3_enabled and self._douyin_ready_shop_codes:
                     from aftersales_workbench.workflows.douyin_module3 import DouyinModule3Service
 
-                    douyin_run = DouyinModule3Service(session, client, self.settings).run(
+                    scope = self.settings.model_copy(update={"douyin_module3_shop_codes": list(
+                        set(self.settings.douyin_module3_shop_codes) & set(self._douyin_ready_shop_codes))})
+                    douyin_run = DouyinModule3Service(session, client, scope).run(
                         limit=self.settings.module3_worker_batch_limit, dry_run=False,
                         refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,
                     )
@@ -923,6 +938,24 @@ class Module1WorkerRuntime:
                 error="多平台同步存在失败店铺: " + "; ".join(failures),
             )
         return WorkerStageResult.completed(summary)
+
+    def _process_douyin_module12(self) -> WorkerStageResult:
+        if not (self.settings.douyin_module1_enabled or self.settings.douyin_module2_enabled):
+            return WorkerStageResult.skipped("抖音模块1/2专用开关关闭")
+        allowed = set(self.settings.douyin_module12_shop_codes) & set(self._douyin_ready_shop_codes)
+        if not allowed:
+            return WorkerStageResult.skipped("本周期没有同步成功的抖音白名单店铺，禁止处理")
+        from aftersales_workbench.workflows.douyin_module12 import DouyinModule12Service
+
+        scoped = self.settings.model_copy(update={"douyin_module12_shop_codes": sorted(allowed)})
+        client = build_erp_unshipped_refund_client(scoped)
+        try:
+            with SessionLocal() as session:
+                run = DouyinModule12Service(session, client, scoped).run(
+                    limit=scoped.douyin_module12_batch_limit, dry_run=False)
+        finally:
+            client.close()
+        return WorkerStageResult.completed(run)
 
     def _sync_sales_owners(self) -> WorkerStageResult:
         if not self.settings.erp_sales_owner_sync_enabled:

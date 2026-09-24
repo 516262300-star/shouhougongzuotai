@@ -33,6 +33,7 @@ _MODULE_STAGES = {
         "sync",
         "tmall_sync",
         "marketplace_sync",
+        "douyin_module12",
         "erp_sales_owners",
         "intercept_tasks",
         "notification_preflight",

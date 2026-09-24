@@ -68,7 +68,7 @@ class NoticePackageGuard:
         if has_shared_package_hold(self.session, order):
             self._hold(order, None)
             return False
-        if shop.platform not in {"PDD", "TMALL", "TAOBAO"}:
+        if shop.platform not in {"PDD", "TMALL", "TAOBAO", "DOUYIN"}:
             # 本地只有售后单，不能证明包裹没有其他正常订单。
             # 此证据仅表示待人工核实，绝不能写成已确认部分退款。
             evidence = {
@@ -88,7 +88,13 @@ class NoticePackageGuard:
                 return False
         snapshot = order_snapshot(order)
         try:
-            if shop.platform in {"TMALL", "TAOBAO"}:
+            if shop.platform == "DOUYIN":
+                from aftersales_workbench.workflows.douyin_notice_package import DouyinNoticePackageVerifier
+
+                verifier = getattr(self, "douyin_verifier", None) or DouyinNoticePackageVerifier(
+                    self.session, self.settings)
+                evidence = verifier.inspect(order, shop)
+            elif shop.platform in {"TMALL", "TAOBAO"}:
                 from aftersales_workbench.workflows.tmall_notice_package import (
                     TmallNoticePackageVerifier,
                 )

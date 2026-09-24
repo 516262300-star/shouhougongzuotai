@@ -477,6 +477,7 @@ class Module1LogisticsGateService:
             select(AfterSalesOrder)
             .where(
                 sync_safe_order_filter(),
+                ~AfterSalesOrder.shop_id.in_(select(Shop.shop_id).where(Shop.platform == Platform.DOUYIN)),
                 candidate_filter,
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",

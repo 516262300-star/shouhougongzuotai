@@ -8,6 +8,7 @@ STAGE_LABELS = {
     "sync": "拼多多同步",
     "tmall_sync": "天猫同步与物流补全",
     "marketplace_sync": "其他平台同步",
+    "douyin_module12": "抖音独立拦截、仓库核验及平账",
     "erp_sales_owners": "ERP 业务员归属同步",
     "erp_return_matches": "ERP 退货闭环查询",
     "erp_scrap_sync": "ERP 退货报废同步",
@@ -43,6 +44,10 @@ def source_matches(row, stage_id):
     key = row["key"]
     action = row.get("action_type")
     origin = row.get("origin")
+    if stage_id == "douyin_module12":
+        return (row.get("platform") == "DOUYIN" and
+                (key.startswith("poll:douyin_module12_return_v1:")
+                 or origin == "douyin_module12_return_v1"))
     if stage_id in {"sync", "tmall_sync", "marketplace_sync"}:
         platforms = {"sync": {"PDD"}, "tmall_sync": {"TMALL"},
                      "marketplace_sync": {"TAOBAO", "1688", "JD", "DOUYIN"}}

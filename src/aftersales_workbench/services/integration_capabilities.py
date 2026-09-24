@@ -231,6 +231,10 @@ def _shop_capabilities(
         if sync_enabled
         else _disabled("开启售后同步后才能持续更新退款金额")
     )
+    if platform == Platform.DOUYIN:
+        from aftersales_workbench.services.douyin_capabilities import capabilities
+
+        return capabilities(settings, configured, sync, attribution, financial, sync_enabled)
     if not supports_modules:
         douyin_module3 = _unsupported("当前平台尚未接入模块 3 自动化")
         if platform == Platform.DOUYIN:
@@ -478,7 +482,8 @@ def build_integration_capabilities(
         if not shops:
             platform_state, platform_state_label = "missing", "未配置店铺"
         elif full_count == len(shops):
-            platform_state, platform_state_label = "enabled", "模块全开"
+            platform_state, platform_state_label = "enabled", (
+                "模块有限开启" if platform == Platform.DOUYIN else "模块全开")
         elif sync_count:
             platform_state, platform_state_label = "partial", "部分功能"
         else:

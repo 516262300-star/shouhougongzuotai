@@ -314,6 +314,10 @@ class Module1NotificationPreflightService:
         order.logistics_return_detected_at = checked_at
         platform_refunded = self._platform_refunded(order)
         platform = self._platform(payload)
+        if platform is Platform.DOUYIN:
+            # 抖音资金由独立仓库实收闸门接管；不借用拼多多资金/ERP任务。
+            order.workflow_status = WorkflowStatus.INTERCEPT_WAITING_RETURN
+            return
         if state is LogisticsState.RETURNING:
             if platform_refunded:
                 order.workflow_status = WorkflowStatus.INTERCEPT_REFUNDED_WAITING_RETURN
@@ -346,6 +350,8 @@ class Module1NotificationPreflightService:
         platform: Platform,
         state: LogisticsState,
     ) -> None:
+        if platform is Platform.DOUYIN:
+            return  # 即便直接调用也不能落入旧的默认拼多多分支。
         if platform is Platform.TMALL:
             if (getattr(order, "refund_amount", None)
                     != getattr(order, "platform_order_amount", None)):

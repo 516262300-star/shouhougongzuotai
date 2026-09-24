@@ -213,11 +213,17 @@ class Settings(BaseSettings):
     douyin_token_refresh_skew_seconds: int = Field(default=300, ge=60, le=3600)
     douyin_sync_enabled: bool = False
     douyin_shops_json: list[dict[str, str]] = Field(default_factory=list)
-    # 两项独立接入；不提供抖音平台退款写开关。
+    # 提醒、模块与资金写独立开关；默认关闭，不由售后同步隐式开启。
     douyin_shipment_reminder_enabled: bool = False
     douyin_module3_enabled: bool = False
     douyin_module3_shop_codes: list[str] = Field(default_factory=list)
     douyin_module3_min_order_id: int = Field(default=0, ge=0)
+    douyin_module1_enabled: bool = False
+    douyin_module2_enabled: bool = False
+    douyin_refund_execution_enabled: bool = False
+    douyin_module12_shop_codes: list[str] = Field(default_factory=list)
+    douyin_module12_min_order_id: int = Field(default=0, ge=0)
+    douyin_module12_batch_limit: int = Field(default=20, ge=1, le=500)
 
 
 @lru_cache
