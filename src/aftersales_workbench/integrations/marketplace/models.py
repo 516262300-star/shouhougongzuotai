@@ -68,6 +68,10 @@ class NormalizedMarketplaceRefund:
     platform_after_sales_status_text: str | None
     platform_order_status_text: str | None
     items: tuple[NormalizedMarketplaceItem, ...]
+    # 平台明确资金事实；不可把申请金额或售后更新时间当作实退金额/时间。
+    refund_financial_status: str | None = None
+    actual_refund_amount: Decimal | None = None
+    refund_completed_at: datetime | None = None
 
 
 @dataclass(slots=True)

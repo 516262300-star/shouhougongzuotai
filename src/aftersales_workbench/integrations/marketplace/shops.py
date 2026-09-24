@@ -84,7 +84,9 @@ def load_marketplace_shops(
                 app_key=SecretStr(app_key),
                 app_secret=SecretStr(app_secret),
                 access_token=(
-                    SecretStr(token) if token_field == "access_token" else None
+                    SecretStr(token)
+                    if token and (token_field == "access_token" or platform is Platform.DOUYIN)
+                    else None
                 ),
                 session_key=(
                     SecretStr(token) if token_field == "session_key" else None

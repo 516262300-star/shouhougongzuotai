@@ -113,7 +113,8 @@ def test_douyin_self_authorization_is_cached(tmp_path: Path) -> None:
                 200,
                 json={
                     "code": 10000,
-                    "data": {"access_token": "generated-token", "expires_in": 604800},
+                    "data": {"access_token": "generated-token", "expires_in": 604800,
+                             "shop_id": 123456, "shop_name": "测试店"},
                 },
                 request=request,
             )

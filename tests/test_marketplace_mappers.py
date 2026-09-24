@@ -96,6 +96,7 @@ def test_normalize_douyin_refund_uses_detail_sku_and_return_tracking() -> None:
         },
         {
             "order_info": {
+                "shop_order_id": "DO-1",
                 "sku_order_infos": [
                     {
                         "shop_sku_code": "SKU-DY",
@@ -105,6 +106,10 @@ def test_normalize_douyin_refund_uses_detail_sku_and_return_tracking() -> None:
                 ]
             },
             "process_info": {
+                "after_sale_info": {
+                    "after_sale_id": "D-1", "after_sale_type": 0,
+                    "refund_total_amount": 188, "refund_status": 1,
+                },
                 "logistics_info": {
                     "return": {"tracking_no": "RET-DY", "company_name": "圆通"}
                 }
