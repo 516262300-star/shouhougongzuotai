@@ -481,9 +481,16 @@ class DesktopNoticeSendService:
         self.pdd_shop_codes = pdd_shop_codes
         self.parcel_store = parcel_store or ParcelNoticeStore(session)
 
-    def run(self, plans: list[DesktopNoticePlan]) -> DesktopNoticeSendResult:
-        result = DesktopNoticeSendResult(scanned=len(plans))
+    def run(
+        self, plans: list[DesktopNoticePlan], *, send_limit: int | None = None,
+    ) -> DesktopNoticeSendResult:
+        if send_limit is not None and send_limit < 1:
+            raise ValueError("send_limit 必须大于0")
+        result = DesktopNoticeSendResult()
         for plan in plans:
+            if send_limit is not None and result.sent >= send_limit:
+                break
+            result.scanned += 1
             plan_hash = desktop_notice_plan_hash(plan)
             latest = self.ledger.latest(plan.task_id)
             if latest is not None and latest.plan_hash != plan_hash:

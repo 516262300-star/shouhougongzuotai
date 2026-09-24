@@ -203,6 +203,35 @@ class _AfterPasteFailureGateway:
         raise DesktopAmbiguousSendError("输入后无法确认")
 
 
+def test_package_failure_does_not_consume_the_single_send_budget(tmp_path):
+    session = _FakeSession()
+    session.add_notification_task(task_id=62, after_sales_sn="after-2", tracking_number="JT456")
+    session.add_notification_task(task_id=63, after_sales_sn="after-3", tracking_number="JT789")
+    gateway = _SuccessfulGateway()
+    service = DesktopNoticeSendService(session, gateway, DesktopNoticeLedger(tmp_path / "ledger"))
+    service._package_notice_ready = lambda plan: plan.task_id != 61
+    result = service.run([
+        _plan(),
+        _plan(task_id=62, after_sales_sn="after-2", tracking_number="JT456"),
+        _plan(task_id=63, after_sales_sn="after-3", tracking_number="JT789"),
+    ], send_limit=1)
+    assert result.sent == 1 and result.blocked_package == 1 and result.scanned == 2
+    assert gateway.calls == 1
+    assert session.tasks[61].attempts == session.tasks[63].attempts == 0
+    assert session.tasks[62].action_status == AutomationTaskStatus.SUCCEEDED
+
+
+def test_ambiguous_result_still_stops_following_plans_with_send_budget(tmp_path):
+    session = _FakeSession()
+    session.add_notification_task(task_id=62, after_sales_sn="after-2", tracking_number="JT456")
+    gateway = _AfterPasteFailureGateway()
+    service = DesktopNoticeSendService(session, gateway, DesktopNoticeLedger(tmp_path / "ledger"))
+    result = service.run([_plan(), _plan(task_id=62, after_sales_sn="after-2",
+                                       tracking_number="JT456")], send_limit=1)
+    assert result.paused == 1 and result.sent == 0 and gateway.calls == 1
+    assert session.tasks[62].attempts == 0
+
+
 def test_ledger_does_not_store_message_or_order_identifiers(tmp_path) -> None:
     plan = _plan()
     ledger = DesktopNoticeLedger(tmp_path / "ledger.jsonl")

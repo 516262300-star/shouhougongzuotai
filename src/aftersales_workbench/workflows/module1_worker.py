@@ -1049,7 +1049,7 @@ class Module1WorkerRuntime:
                         self.settings.module1_notification_min_task_id
                     ),
                     pdd_shop_codes=self._active_pdd_shop_codes,
-                ).run(limit=limit)
+                ).run(limit=min(100, max(limit, self.options.task_limit)))
                 details: dict[str, Any] = {
                     "transport": "desktop",
                     "batch_limit": limit,
@@ -1065,7 +1065,7 @@ class Module1WorkerRuntime:
                     ),
                     ledger,
                     pdd_shop_codes=self._active_pdd_shop_codes,
-                ).run(preview.plans)
+                ).run(preview.plans, send_limit=limit)
         details.update(run.safe_dict())
         if run.paused or run.error:
             return WorkerStageResult(

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -68,6 +69,7 @@ class DesktopNoticePreviewResult:
     blocked_missing_group: int
     plans: list[DesktopNoticePlan]
     blocked_tasks: list[dict[str, Any]] = field(default_factory=list)
+    blocked_package_retry: int = 0
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -77,6 +79,7 @@ class DesktopNoticePreviewResult:
             "ready": self.ready,
             "blocked_preflight": self.blocked_preflight,
             "blocked_missing_group": self.blocked_missing_group,
+            "blocked_package_retry": self.blocked_package_retry,
             "blocked_tasks": self.blocked_tasks,
             "plans": [plan.safe_dict() for plan in self.plans],
             "messages_drafted": 0,
@@ -168,6 +171,12 @@ class DesktopNoticePreviewService:
     def run(self, *, limit: int = 20) -> DesktopNoticePreviewResult:
         if limit < 1 or limit > 100:
             raise ValueError("limit 必须在 1–100 之间")
+        package = AftersalesActionTask.payload["notice_package_check"]
+        checked = case(
+            (package["result"].as_string() == "UNAVAILABLE",
+             func.coalesce(package["checked_at"].as_string(), "")),
+            else_="",
+        )
         statement = (
             select(
                 AftersalesActionTask.id,
@@ -177,6 +186,7 @@ class DesktopNoticePreviewService:
                 AfterSalesOrder.forward_tracking_number,
                 AfterSalesOrder.carrier_code,
                 AftersalesActionTask.payload,
+                checked.label("package_checked_at"),
             )
             .join(
                 AfterSalesOrder,
@@ -189,7 +199,7 @@ class DesktopNoticePreviewService:
                 == AutomationActionType.QYWX_INTERCEPT_NOTIFY,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
             )
-            .order_by(AftersalesActionTask.id)
+            .order_by(checked, AftersalesActionTask.id)
             .limit(100)
         )
         if self.notification_min_task_id:
@@ -199,17 +209,26 @@ class DesktopNoticePreviewService:
         plans: list[DesktopNoticePlan] = []
         blocked_preflight = 0
         blocked = 0
+        blocked_package_retry = 0
         blocked_tasks: list[dict[str, Any]] = []
         scanned = 0
         last_id = None
+        last_checked = ""
+        now = datetime.now(UTC)
         while len(plans) < limit:
             page = statement
             if last_id is not None:
-                page = page.where(AftersalesActionTask.id > last_id)
+                page = page.where(or_(
+                    checked > last_checked,
+                    and_(checked == last_checked, AftersalesActionTask.id > last_id),
+                ))
             rows = self.session.execute(page).all()
             for row in rows:
                 scanned += 1
-                if not notification_preflight_ready(row.payload):
+                if _package_retry_waiting(row.payload, now):
+                    blocked_package_retry += 1
+                    reason = "同包裹核验等待到期重查，先处理其他通知"
+                elif not notification_preflight_ready(row.payload):
                     blocked_preflight += 1
                     reason = "物流预检尚未通过，等待预检更新"
                 else:
@@ -235,6 +254,7 @@ class DesktopNoticePreviewService:
             if len(rows) < 100:
                 break
             last_id = rows[-1].id
+            last_checked = getattr(rows[-1], "package_checked_at", "") or ""
         return DesktopNoticePreviewResult(
             read_only=True,
             notification_min_task_id=self.notification_min_task_id,
@@ -244,4 +264,18 @@ class DesktopNoticePreviewService:
             blocked_missing_group=blocked,
             plans=plans,
             blocked_tasks=blocked_tasks,
+            blocked_package_retry=blocked_package_retry,
         )
+
+
+def _package_retry_waiting(payload, now: datetime) -> bool:
+    package = (payload or {}).get("notice_package_check") or {}
+    if package.get("result") != "UNAVAILABLE":
+        return False
+    try:
+        retry = datetime.fromisoformat(str(package.get("retry_after") or ""))
+    except ValueError:
+        return False  # 缺失/坏时间只允许重新核验，不能直接放行发送。
+    if retry.tzinfo is None:
+        retry = retry.replace(tzinfo=UTC)
+    return retry > now
