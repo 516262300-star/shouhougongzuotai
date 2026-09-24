@@ -9,6 +9,7 @@ from aftersales_workbench.integrations.marketplace.alibaba_1688 import (
     ORDER_DETAIL_API,
     Alibaba1688ReadClient,
 )
+from aftersales_workbench.integrations.marketplace.models import MarketplaceApiError
 from aftersales_workbench.workflows.shipment_refund import ShipmentSnapshot
 from aftersales_workbench.workflows.shipment_watch_sources import Parcel
 
@@ -62,7 +63,16 @@ class Alibaba1688ShipmentClient(Alibaba1688ReadClient):
     def execute_read(self, namespace, api, **parameters):
         if namespace != "com.alibaba.trade" or api not in {ORDER_LIST_API, ORDER_DETAIL_API}:
             raise ValueError("1688提醒只读客户端不允许此接口")
-        return super().execute_read(namespace, api, **parameters)
+        for attempt in range(self.read_max_attempts):
+            try:
+                return super().execute_read(namespace, api, **parameters)
+            except MarketplaceApiError as exc:
+                # 实测500_1为“查询订单失败，请稍后再试”；只对两个读取接口有限重查。
+                if (not str(exc).startswith("1688 API error: code=500_1, ")
+                        or attempt + 1 >= self.read_max_attempts):
+                    raise
+                self._sleep(min(2 ** attempt, 4))
+        raise ValueError("1688读取尝试次数无效")
 
 
 class Alibaba1688ShipmentSource:

@@ -6,6 +6,7 @@ from unittest.mock import Mock
 import pytest
 from sqlalchemy import select
 
+from aftersales_workbench.integrations.marketplace.models import MarketplaceApiError
 from aftersales_workbench.workflows.alibaba_1688_shipment_source import (
     ORDER_LIST_API,
     Alibaba1688ShipmentClient,
@@ -215,6 +216,25 @@ def test_read_client_rejects_business_writes(api):
     client = object.__new__(Alibaba1688ShipmentClient)
     with pytest.raises(ValueError, match='只读'):
         client.execute_read('com.alibaba.trade', api)
+
+
+@pytest.mark.parametrize('code,recover,expected', [('500_1', True, 2),
+                                                 ('500_1', False, 3),
+                                                 ('NO_PERMISSION', False, 1)])
+def test_transient_read_api_only_retries_bounded(monkeypatch, code, recover, expected):
+    from aftersales_workbench.integrations.marketplace.alibaba_1688 import Alibaba1688ReadClient
+    client = object.__new__(Alibaba1688ShipmentClient)
+    client.read_max_attempts = 3
+    client._sleep = Mock()
+    error = MarketplaceApiError(f'1688 API error: code={code}, message=synthetic')
+    call = Mock(side_effect=[error, {'success': True}] if recover else error)
+    monkeypatch.setattr(Alibaba1688ReadClient, 'execute_read', call)
+    if recover:
+        assert client.execute_read('com.alibaba.trade', ORDER_LIST_API)['success'] is True
+    else:
+        with pytest.raises(MarketplaceApiError):
+            client.execute_read('com.alibaba.trade', ORDER_LIST_API)
+    assert call.call_count == expected
 
 
 @pytest.fixture
