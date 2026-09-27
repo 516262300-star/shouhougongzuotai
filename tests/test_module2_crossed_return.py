@@ -194,3 +194,33 @@ def test_never_sent_false_alarm_cancelled_but_unknown_attempt_preserved(db,monke
     assert tasks[0].action_status=='CANCELLED'
     assert tasks[1].action_status=='PENDING' and tasks[1].attempts==1
     assert check_balance_todo_before_publish(db,tasks[1].payload,tasks[1].after_sales_sn)[0]=='WAIT'
+
+
+@pytest.mark.parametrize('condition',['not_crossed','missing_customer','incomplete_batch','network_failure'])
+def test_legacy_fail_only_reviews_crossed_evidence_without_single_parcel_fallback(
+    db,monkeypatch,tmp_path,condition,
+):
+    orders,rows,bills,matcher,reads=crossed(db,monkeypatch,tmp_path)
+    receipt=legacy_receipt(db,orders[0],rows,1)
+    original=(orders[0].workflow_status,orders[0].exception_type,receipt.inspection_note,
+              receipt.inspected_at,orders[0].items[0].item_status)
+    matcher.lookup=lambda **kw: pytest.fail('historical FAIL must not re-enter single-parcel intake')
+    if condition=='not_crossed':
+        for n in (0,1):rows[2*n+1]=replace(rows[2*n+1],order_ref=f'parcel-{n}')
+    elif condition=='missing_customer':
+        matcher._lookup_customer=lambda *a:(None,'not found')
+    elif condition=='incomplete_batch':
+        rows[1]=replace(rows[1],quantity=Decimal(2))
+    else:
+        def network_failure(*args):raise TimeoutError('ERP unavailable')
+        matcher._lookup_customer=network_failure
+    service=Service(db,matcher)
+    monkeypatch.setattr(service,'_list_candidates',lambda **kw:[(orders[0],'shop',None)])
+    result=service.run(dry_run=False)
+    assert result.unavailable==(1 if condition=='network_failure' else 0)
+    assert result.ambiguous==(0 if condition=='network_failure' else 1)
+    assert result.receipts_created==result.inspections_failed==result.inspections_passed==0
+    assert (orders[0].workflow_status,orders[0].exception_type,receipt.inspection_note,
+            receipt.inspected_at,orders[0].items[0].item_status)==original
+    assert db.scalar(select(func.count()).select_from(Task))==0
+    assert not (tmp_path/'.runtime').exists()

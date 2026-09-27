@@ -15,6 +15,8 @@
 
 允许原系统ERP核对产生的FAIL再次进入核验。只有原始系统文案可重现、收货单号/运单/商品与ERP实际包裹一致、没有人工质量结论或证据附件，且整批商品可唯一分配时，才撤销单票错配结论。
 
+历史FAIL只补查交叉包裹，不回落单票重验。没有交叉证据、客户归属不唯一或整批证据不完整时，保留原状态及原验货结论，将待核原因写入轮询记录；真实ERP连接故障仍报告执行失败，不掩盖故障。
+
 原收货登记、平台填写单号和实际商品均保留；质检状态回到PENDING，原结论追加在收货备注的“跨包裹纠偏原始审计”中，不变成PASS。人工失败和真实数量/商品差异不能借此撤销。
 
 已发送待办保留原文、外部回执和发送时间，只追加纠偏事实；工作台显示“单票错退判断已撤销”。这不等于远端待办已办结，也不重新发送。未尝试、无回执的原误判通知才可取消；已发起或结果未知的通知不能盲目重发。
@@ -35,4 +37,4 @@
 .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_module2_crossed_return.py tests/test_module2_shared_return.py tests/test_module2_erp_intake.py tests/test_module2_post_refund.py tests/test_module2_safety.py tests/test_module2_refund.py tests/test_erp_return_match.py tests/test_return_match_module_scope.py tests/test_return_sales_identity.py tests/test_return_quantity.py tests/test_return_todo_policy.py tests/test_module2_todo_queue.py tests/test_manual_todo_audit.py tests/test_module2.py -q
 ```
 
-本地相关回归185项通过。生产预演与上线结果以本次验收记录为准。
+首版本地相关回归185项、正式机隔离worker测试172项和web测试13项通过；生产已完成限定个案预演与纠偏，待办接口显示纠偏状态且原外部回执/时间未改。补充历史FAIL不回落单票流程的4项回归，发布后继续核验完整后台周期。生产验收证据仅存放在本机审计目录。

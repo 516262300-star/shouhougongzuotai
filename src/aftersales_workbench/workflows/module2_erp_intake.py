@@ -205,6 +205,17 @@ class Module2ErpIntakeService:
 
     def _inspect_candidate(self, order, platform, shared_tracking, result, dry_run):
         tracking = str(order.return_tracking_number or "").strip()
+        can_review_batch = (callable(getattr(self.matcher, "_get", None))
+                            and callable(getattr(self.matcher, "_lookup_customer", None)))
+        if order.workflow_status == WorkflowStatus.RETURN_INSPECTED_FAIL:
+            # 历史系统 FAIL 只补查交叉包裹，未核实前保留原记录。
+            # 不能回落单票流程，否则会重验无关旧单并改写原人工处理状态。
+            if can_review_batch:
+                crossed, error = self._inspect_crossed_candidate(order, result, dry_run)
+                if crossed:
+                    return error
+            result.ambiguous += 1
+            return "历史系统验货结论保留，未发现可核实的交叉包裹分配"
         if tracking in shared_tracking:
             return self._inspect_shared_candidate(order, result, dry_run)
         lookup = self.matcher.lookup(
@@ -212,8 +223,7 @@ class Module2ErpIntakeService:
             tracking_number=tracking,
             expected_items=self._expected_items(order),
         )
-        if (callable(getattr(self.matcher, "_get", None))
-                and callable(getattr(self.matcher, "_lookup_customer", None)) and lookup.customer_name
+        if (can_review_batch and lookup.customer_name
                 and (lookup.source_location == "customer_profile"
                      or lookup.status is ErpReturnMatchStatus.NOT_FOUND)):
             crossed, error = self._inspect_crossed_candidate(order, result, dry_run)
@@ -325,7 +335,7 @@ class Module2ErpIntakeService:
         except SharedReturnIncomplete as exc:
             result.ambiguous += 1
             message = f"整批退货核验：{exc}"
-            if not dry_run:
+            if not dry_run and order.workflow_status != WorkflowStatus.RETURN_INSPECTED_FAIL:
                 # 全文由轮询审计保存，数据库摘要只有50字符。
                 order.exception_type = message[:50]
             return True, message
@@ -349,7 +359,8 @@ class Module2ErpIntakeService:
             order.workflow_status = (WorkflowStatus.RETURN_RECEIVED_ASSIGNED if accounting
                                      else WorkflowStatus.MANUAL_PROCESSING)
             order.exception_type = (VERIFIED_NOTE if accounting else message)[:50]
-        elif message and not dry_run:
+        elif (message and not dry_run
+              and order.workflow_status != WorkflowStatus.RETURN_INSPECTED_FAIL):
             order.exception_type = message[:50]
         if accounting:
             result.post_refund_verified += 1
