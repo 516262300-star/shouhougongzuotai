@@ -22,6 +22,7 @@ class CustomerSales:
 
 class ErpPackageOrderSource(ErpWebReturnMatcher):
     MAX_PAGES = 20
+    OWNER_MAX_PAGES = 200
     HEADERS = {"编号", "完成日期", "型号", "颜色", "订单编号", "客户编号", "入库化只", "归属业务员"}
 
     def __init__(self, *, platform="PDD", **kwargs):
@@ -35,6 +36,8 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
     ) -> CustomerSales:
         if for_owner_lookup and not only_order:
             raise ValueError("业务员查询必须限定目标订单，不能用于整包裹数量核验")
+        # 查原销售业务员可读取较长的客户历史；整包裹及资金核验仍用原上限。
+        page_limit = self.OWNER_MAX_PAGES if for_owner_lookup else self.MAX_PAGES
         payload = customer_payload if customer_payload is not None else self._get_response(
             "/leedis2/public/customer/GetCustomerName", params={"keyword": order_sn}
         ).json()
@@ -58,7 +61,7 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
         all_rows, fingerprints = [], set()
         first_page = None
         expected_pages = None
-        for page in range(self.MAX_PAGES):
+        for page in range(page_limit):
             document = self._get(
                 "/leedis2/public/customer/shipment",
                 params={"kehuid": customer_id, "page": str(page)},
@@ -69,7 +72,7 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
             if len(pager) != 1:
                 raise ValueError("ERP 销售页缺少唯一分页信息")
             current, pages = map(int, pager.pop())
-            if current != page + 1 or not 1 <= pages <= self.MAX_PAGES:
+            if current != page + 1 or not 1 <= pages <= page_limit:
                 raise ValueError("ERP 销售分页越界或超过安全取数上限")
             if expected_pages is not None and expected_pages != pages:
                 raise ValueError("ERP 销售记录分页发生变化，需重新核查")
@@ -105,15 +108,18 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                     quantity = Decimal(row["入库化只"])
                 except InvalidOperation as exc:
                     raise ValueError("ERP 原销售数量格式无效") from exc
+                sale_id = row["订单编号"].strip()
+                valid_sale_id = (bool(re.fullmatch(r"[0-9]+[A-Za-z]*", sale_id))
+                                 if for_owner_lookup else sale_id.isdigit())
                 if (not quantity.is_finite() or quantity < 0
                         or (quantity == 0 and not for_owner_lookup)
-                        or not row["订单编号"].isdigit()):
+                        or not valid_sale_id):
                     raise ValueError("ERP 原销售关联或数量无效")
                 all_rows.append(
                     {
                         "order_sn": sn,
                         "sale_sn": row["编号"],
-                        "sale_id": row["订单编号"],
+                        "sale_id": sale_id,
                         "product": row["型号"],
                         "color": row["颜色"],
                         "quantity": str(quantity),

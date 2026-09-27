@@ -88,6 +88,11 @@ def prepare_manual_todo(
     shop = str(payload.get("shop_name") or _field(old_content, "店铺") or "待核实")
     raw_reason = str(payload.get("reason_text") or payload.get("exception_message")
                      or _field(old_content, "原因"))
+    if (payload.get("reason_code") == "PACKAGE_NOTICE_REVIEW_REQUIRED"
+            and (payload.get("package_evidence") or {}).get("unavailable_check")):
+        # 本函数仅用于新建/未发送内容；不能把已生成待办写成已经送达业务员。
+        raw_reason = raw_reason.replace("已转原销售业务员", "待原销售业务员")
+        payload = {**payload, "reason_text": raw_reason}
     reason = _short_reason(raw_reason, platform_order_sn, after_sales_sn, "售后异常需核对")
     if origin == "module1" and payload.get("task_scope") == "shared_package":
         marker = (str(payload.get("routing_marker") or "")
@@ -107,7 +112,12 @@ def prepare_manual_todo(
             "同包裹仅部分订单退款，需人工协调处理。" if notice_only
             else "整包裹退款条件未满足，已暂停自动退款。")
         if review:
-            content += "请核对同一发货包裹的全部订单；仅部分订单退款时，请联系客户协调处理。"
+            if evidence.get("unavailable_check"):
+                content += ("拦截通知超过30分钟尚未发出。请先查看快递群是否已人工发送；"
+                            "如已发送请勿重复发送。核实整包裹符合拦截条件后及时人工通知快递；"
+                            "仅部分订单退款时，请联系客户协调处理。")
+            else:
+                content += "请核对同一发货包裹的全部订单；仅部分订单退款时，请联系客户协调处理。"
         elif evidence.get("phase") == "before_notice":
             content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
         elif evidence.get("phase") == "after_notice":

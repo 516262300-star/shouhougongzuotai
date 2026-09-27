@@ -146,7 +146,7 @@ class NoticePackageGuard:
                         "customer_id": "unverified-parcel", "sales_rows": [], "blockers": [],
                         "package_orders": [], "unavailable_check": failure,
                         "message": "拦截通知超过30分钟未发出，整包裹关联仍无法核实，"
-                                   "已转原销售业务员核实并及时处理；如已人工发群请勿重复发送",
+                                   "待原销售业务员核实并及时处理；如已人工发群请勿重复发送",
                     })
                     return False
                 self.session.commit()

@@ -73,6 +73,30 @@ def test_zero_quantity_bad_sale_identity_is_not_ignored():
     assert resolve([row("6"), row("0", sale_id="bad")]).status == "unavailable"
 
 
+def test_owner_accepts_sales_reference_suffix_without_stripping_identity():
+    source = ErpPackageOrderSource(base_url="https://erp.example",username="test",password="test",
+                                  http_client=client([row("6",sale_id="101Y")]))
+    try:
+        result=source.read(SN,only_order=True,for_owner_lookup=True)
+        assert result.sales_owner=='原销售业务员' and result.rows[0]['sale_id']=='101Y'
+    finally:source.close()
+
+
+@pytest.mark.parametrize('sale_id',['','Y101','101/102','101Y 102'])
+def test_owner_still_rejects_invalid_sales_reference(sale_id):
+    assert resolve([row('6',sale_id=sale_id)]).status=='unavailable'
+
+
+@pytest.mark.parametrize('only_order',[False,True])
+def test_sales_reference_suffix_does_not_relax_package_or_funds_checks(only_order):
+    source=ErpPackageOrderSource(platform='TMALL',base_url='https://erp.example',username='test',
+                                password='test',http_client=client([row('6',sale_id='101Y')]))
+    try:
+        with pytest.raises(ValueError,match='原销售关联或数量无效'):
+            source.read(SN,only_order=only_order)
+    finally:source.close()
+
+
 @pytest.mark.parametrize("only_order", [True, False])
 def test_package_and_refund_quantity_validation_stays_strict(only_order):
     source = ErpPackageOrderSource(platform="TMALL", base_url="https://erp.example",

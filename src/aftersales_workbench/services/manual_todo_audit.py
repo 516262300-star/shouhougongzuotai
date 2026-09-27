@@ -7,6 +7,7 @@ from sqlalchemy import String, case, cast, func, inspect, literal, or_, select, 
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder, Shop
 from aftersales_workbench.services.return_todo_policy import return_problem_state
+from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.services.shipment_todo_text import visible_shipment_text
 from aftersales_workbench.workflows.shipment_watch_models import ShipmentNoTraceNotice as Notice
 
@@ -161,6 +162,25 @@ def _shipment_item(notice, shop):
     }
 
 
+def _pending_delivery_state(task, item):
+    """只读展示尚未领取发送的阻塞原因，不改数据库状态或历史回执。"""
+    if task.action_status != "PENDING":
+        return item
+    payload = task.payload if isinstance(task.payload, dict) else {}
+    if task.attempts or payload.get("external_todo_id"):
+        return item  # 已尝试/未知结果由原发送流程回查，不能标为尚未尝试。
+    if payload.get("reason_code") == "PACKAGE_NOTICE_REVIEW_REQUIRED":
+        prepared = prepare_manual_todo(payload, platform_order_sn=item['platform_order_sn'],
+                                       after_sales_sn=item['after_sales_sn'])
+        item = {**item, 'reason': prepared.get('reason_text') or item['reason'],
+                'content': prepared.get('content') or item['content']}
+    owner_state = str(payload.get("owner_routing_status") or "").upper()
+    if owner_state == "UNAVAILABLE" or item.get("assignee") == "未匹配业务员":
+        return {**item, "status_label": "等待业务员归属核验", "status_tone": "warning",
+                "last_error": task.last_error or "尚未唯一匹配原销售业务员，核实后自动继续发送"}
+    return item
+
+
 def list_manual_todos(
     service,
     *,
@@ -242,11 +262,11 @@ def list_manual_todos(
                 ),
                 None,
             )
-            items_by_ref[("aftersales", str(task.id))] = {
+            items_by_ref[("aftersales", str(task.id))] = _pending_delivery_state(task, {
                 **service._serialize_manual_todo(task, order, shop),
                 **return_problem_state(task.payload or {}, order, match),
                 "source": "aftersales",
-            }
+            })
     notice_keys = [key for source, key in refs if source == "shipment_reminder"]
     if notice_keys:
         for notice, shop in session.execute(
