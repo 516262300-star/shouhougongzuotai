@@ -19,6 +19,9 @@ from aftersales_workbench.workflows.uncollected_refund import order_snapshot, ut
 SCOPE = "shared_package"
 REASON = "SHARED_PACKAGE_UNREFUNDED_ORDERS"
 HOLD_REASON = "同包裹仍有订单未申请全额仅退款，已暂停自动退款，请业务员联系客户"
+NOTICE_REVIEW_REASONS = frozenset({
+    "拦截通知超过30分钟未发出，待业务员核实", "同包裹范围待核实，待业务员处理",
+})
 KEY = "shared_package_check"
 GATES = {"DUAL_NO_TRACE_RISK", "UNCOLLECTED", "CONFIRMED_UNCOLLECTED"}
 
@@ -84,7 +87,7 @@ def redundant_refund_failure_todo(session, payload, after_sales_sn):
     """同包裹已转业务员时，普通退款失败提醒没有额外处理事项。"""
     if (payload.get("origin") != "module1" or payload.get("task_scope") == SCOPE
             or payload.get("reason_code") != "MANUAL_PROCESSING"
-            or payload.get("reason_text") not in {
+            or payload.get("reason_text") not in NOTICE_REVIEW_REASONS | {
                 HOLD_REASON, "退款失败或平台状态变化，需人工核验",
             }):
         return False
@@ -92,7 +95,8 @@ def redundant_refund_failure_todo(session, payload, after_sales_sn):
         AfterSalesOrder.after_sales_sn == after_sales_sn,
     ))
     return (order is not None and has_shared_package_hold(session, order)
-            and not has_refund_request_evidence(session, order))
+            and (payload.get("reason_text") in NOTICE_REVIEW_REASONS
+                 or not has_refund_request_evidence(session, order)))
 
 
 class SharedPackageVerifier:

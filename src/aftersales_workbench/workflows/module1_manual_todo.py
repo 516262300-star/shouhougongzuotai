@@ -28,6 +28,7 @@ from aftersales_workbench.services.manual_todo_text import module1_todo_marker, 
 from aftersales_workbench.services.return_todo_policy import MANUAL_REASONS, manual_balance_reason
 from aftersales_workbench.workflows.pdd_refund_cases import CASE_MESSAGES, RELATED_SUCCESS
 from aftersales_workbench.workflows.polling import due_first, record_poll
+from aftersales_workbench.workflows.shared_package import NOTICE_REVIEW_REASONS
 
 
 class ManualTodoEnqueueResult(StrEnum):
@@ -281,6 +282,11 @@ class SqlAlchemyModule1ManualTodoRepository:
                 AfterSalesOrder.forward_tracking_number.is_not(None),
                 AfterSalesOrder.forward_tracking_number != "",
                 or_(manual_state, logistics_state, return_match_state),
+                ~and_(
+                    AfterSalesOrder.workflow_status == WorkflowStatus.MANUAL_PROCESSING,
+                    func.coalesce(AfterSalesOrder.exception_type, "").in_(NOTICE_REVIEW_REASONS),
+                    package_hold,
+                ),
                 ~and_(
                     AfterSalesOrder.workflow_status == WorkflowStatus.MANUAL_PROCESSING,
                     func.coalesce(AfterSalesOrder.exception_type, "")

@@ -12,7 +12,11 @@ from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendService,
 )
+from aftersales_workbench.workflows.module1_manual_todo import (
+    SqlAlchemyModule1ManualTodoRepository,
+)
 from aftersales_workbench.workflows.notice_package_guard import KEY, unavailable_check
+from aftersales_workbench.workflows.shared_package import redundant_refund_failure_todo
 from tests import test_tmall_notice_package as base
 
 db = base.db
@@ -228,6 +232,50 @@ def test_long_review_details_remain_complete_outside_summary_column(case):
     tasks = base.todos(case.db)
     assert len(tasks) == 1 and tasks[0].payload["reason_text"] == message
     assert tasks[0].payload["package_evidence"]["message"] == message
+
+
+def test_notice_review_has_one_dedicated_todo_even_if_already_refunded(case):
+    order = case.orders[0]
+    order.order_shipping_status = "IN_TRANSIT"
+    order.workflow_status = "MANUAL_PROCESSING"
+    order.exception_type = "拦截通知超过30分钟未发出，待业务员核实"
+    case.db.commit()
+    repository = SqlAlchemyModule1ManualTodoRepository(case.db)
+    payload = {
+        "origin": "module1",
+        "reason_code": "MANUAL_PROCESSING",
+        "reason_text": order.exception_type,
+    }
+    assert any(
+        c.after_sales_sn == order.after_sales_sn
+        for c in repository.list_candidates(shop_codes=None, limit=20)
+    )
+    assert not redundant_refund_failure_todo(case.db, payload, order.after_sales_sn)
+    case.guard._hold(
+        order,
+        {
+            "platform": case.shop.platform,
+            "result": "REVIEW_REQUIRED",
+            "unavailable_check": {"failure_count": 4},
+            "message": "完整待办说明",
+            "sales_rows": [],
+            "blockers": [],
+            "customer_id": "review-test",
+        },
+    )
+    assert order.refund_financial_status == "SUCCESS"
+    assert not any(
+        c.after_sales_sn == order.after_sales_sn
+        for c in repository.list_candidates(shop_codes=None, limit=20)
+    )
+    assert redundant_refund_failure_todo(case.db, payload, order.after_sales_sn)
+    dedicated = base.todos(case.db)[0]
+    assert not redundant_refund_failure_todo(case.db, dedicated.payload, order.after_sales_sn)
+    assert not redundant_refund_failure_todo(
+        case.db,
+        {**payload, "reason_text": "其他独立财务异常"},
+        order.after_sales_sn,
+    )
 
 
 def test_retry_preserves_failure_start_and_success_resets_counter():
