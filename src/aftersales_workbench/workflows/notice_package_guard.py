@@ -25,6 +25,26 @@ from aftersales_workbench.workflows.uncollected_refund import order_snapshot
 KEY = "notice_package_check"
 
 
+def unavailable_check(previous, now, message):
+    """连续失败保留起点；冷却重试不能无限覆盖异常已经持续多久。"""
+    first, count = now, 1
+    if previous.get("result") == "UNAVAILABLE":
+        try:
+            first = datetime.fromisoformat(previous.get("first_unavailable_at")
+                                           or previous["checked_at"])
+            if first.tzinfo is None:
+                first = first.replace(tzinfo=UTC)
+            count = max(1, int(previous.get("failure_count", 1))) + 1
+            if first > now:
+                first, count = now, 1
+        except (KeyError, TypeError, ValueError, OverflowError):
+            first, count = now, 1
+    return {"result": "UNAVAILABLE", "checked_at": now.isoformat(),
+            "first_unavailable_at": first.isoformat(), "failure_count": count,
+            "retry_after": (now + timedelta(minutes=5)).isoformat(), "message": message}, (
+        count >= 3 and now - first >= timedelta(minutes=30))
+
+
 class NoticePackageEvidenceExpired(ValueError):
     """身份仍一致，但输入前证据超时；下轮必须重新获取完整证据。"""
 
@@ -114,12 +134,21 @@ class NoticePackageGuard:
             task = self.session.get(Task, plan.task_id, populate_existing=True)
             if task is not None and task.action_status == "PENDING":
                 reason = "发送前同包裹核验未完成，尚未发送，稍后自动重查：" + str(exc)[:300]
-                task.payload = {**(task.payload or {}), KEY: {
-                    "result": "UNAVAILABLE", "checked_at": self.now().isoformat(),
-                    "retry_after": (self.now() + timedelta(minutes=5)).isoformat(),
-                    "message": reason,
-                }}
+                failure, overdue = unavailable_check(previous, self.now(), reason)
+                task.payload = {**(task.payload or {}), KEY: failure}
                 task.last_error = reason
+                current = self._order(task)
+                if (overdue and shop.platform in {"TMALL", "TAOBAO"} and current is not None
+                        and order_snapshot(current) == snapshot):
+                    self._hold(current, {
+                        "platform": str(shop.platform), "result": "REVIEW_REQUIRED",
+                        "phase": "before_notice", "started_at": self.now().isoformat(),
+                        "customer_id": "unverified-parcel", "sales_rows": [], "blockers": [],
+                        "package_orders": [], "unavailable_check": failure,
+                        "message": "拦截通知超过30分钟未发出，整包裹关联仍无法核实，"
+                                   "已转原销售业务员核实并及时处理；如已人工发群请勿重复发送",
+                    })
+                    return False
                 self.session.commit()
             return False
         evidence = {**evidence, "phase": "before_notice"}

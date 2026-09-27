@@ -1,5 +1,6 @@
 """天猫、淘宝发群前逐笔核对客户原销售对应的完整发货包裹；不执行退款。"""
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
@@ -71,8 +72,8 @@ def inspect_refunds(client, trade):
             "buyer_paid": str(paid), "reason": "；".join(dict.fromkeys(reasons))}
 
 
-def shipment_identity(client, sn):
-    body = client.get_logistics_orders(tid=int(sn))
+def shipment_identity(client, sn, *, body=None):
+    body = client.get_logistics_orders(tid=int(sn)) if body is None else body
     response = body.get("logistics_orders_get_response", {})
     rows = response.get("shippings", {}).get("shipping")
     if (not isinstance(rows, list) or not 1 <= len(rows) < 40
@@ -98,6 +99,50 @@ def shipment_identity(client, sn):
     if not tracking or not carrier:
         raise ValueError("天猫运单缺失或存在多包裹，不能自动拦截")
     return tracking, carrier
+
+
+def historical_shipment_exclusion(sales, target_sn, sn, trade, known, body):
+    """仅排除有完整ERP已完成发货证据、相隔至少90天的旧批次。
+
+    平台空物流本身不构成排除依据；缺时间、补发、已知同运单均保持原保护。
+    """
+    if sn == target_sn or sn in known:
+        return None
+    response = body.get("logistics_orders_get_response") if isinstance(body, dict) else None
+    if (not isinstance(response, dict) or not response.get("request_id")
+            or set(response) - {"request_id", "shippings", "total_results", "has_next"}
+            or str(response.get("has_next", False)).lower() not in {"false", "0"}
+            or str(response.get("total_results", 0)) != "0"
+            or response.get("shippings") not in (None, {}, {"shipping": []})):
+        return None
+
+    def completed(order_sn):
+        rows = [r for r in sales.rows if r["order_sn"] == order_sn]
+        if not rows:
+            raise ValueError("Missing sales")
+        times = []
+        for row in rows:
+            stamp = datetime.strptime(row["completed_at"], "%Y-%m-%d %H:%M:%S")
+            match = re.fullmatch(r"RC-\d+-(\d{4}-\d{2}-\d{2})", row["sale_sn"])
+            if match is None or match[1] != stamp.strftime("%Y-%m-%d"):
+                raise ValueError("Shipment completion identity differs")
+            times.append(stamp)
+        return min(times), max(times)
+
+    try:
+        target_first, target_last = completed(target_sn)
+        first, last = completed(sn)
+        consign = datetime.strptime(trade["consign_time"], "%Y-%m-%d %H:%M:%S")
+    except (KeyError, TypeError, ValueError):
+        return None
+    if (not consign - timedelta(days=1) <= target_first <= target_last <= consign
+            or last > target_first - timedelta(days=90)):
+        return None
+    return {"order_sn": sn, "basis": "complete_erp_historical_shipment",
+            "first_completed_at": first.isoformat(), "last_completed_at": last.isoformat(),
+            "target_completed_at": target_first.isoformat(),
+            "target_consign_time": consign.isoformat(),
+            "platform_logistics_empty": True, "minimum_separation_days": 90}
 
 
 class TmallNoticePackageVerifier:
@@ -137,23 +182,34 @@ class TmallNoticePackageVerifier:
         )))
         if not known.issubset(set(sns)):
             raise ValueError("已知同运单订单未被客户原销售覆盖，须核实跨客户或跨店合包")
-        package, excluded, blockers = [], [], []
+        package, excluded, blockers, historical = [], [], [], []
         with self.client_factory(shop) as client:
             seller = client.get_seller().get("user_seller_get_response", {}).get("user", {})
             if str(seller.get("user_id")) != str(shop.platform_shop_id):
                 raise ValueError("天猫整包裹核验店铺授权身份不符")
+            target_trade = unwrap_trade(client.get_trade_fullinfo(tid=int(order.platform_order_sn)))
+            if str(target_trade.get("tid")) != order.platform_order_sn:
+                raise ValueError("天猫目标销售订单平台身份不符")
             for sn in sns:
                 if self.now() - started > timedelta(seconds=75):
                     raise ValueError("天猫整包裹核验超时，不能使用过期证据")
-                trade = unwrap_trade(client.get_trade_fullinfo(tid=int(sn)))
-                if str(trade.get("tid")) != sn:
-                    raise ValueError("天猫关联销售订单平台身份不符")
-                tracking, carrier = shipment_identity(client, sn)
+                body = client.get_logistics_orders(tid=int(sn))
+                history = historical_shipment_exclusion(
+                    sales, order.platform_order_sn, sn, target_trade, known, body)
+                if history is not None:
+                    excluded.append(sn)
+                    historical.append(history)
+                    continue
+                tracking, carrier = shipment_identity(client, sn, body=body)
                 if (tracking, carrier) != (order.forward_tracking_number, order.carrier_code):
                     if tracking == order.forward_tracking_number:
                         raise ValueError("天猫同运单快递公司信息冲突")
                     excluded.append(sn)
                     continue
+                trade = target_trade if sn == order.platform_order_sn else unwrap_trade(
+                    client.get_trade_fullinfo(tid=int(sn)))
+                if str(trade.get("tid")) != sn:
+                    raise ValueError("天猫关联销售订单平台身份不符")
                 if classify_shipping({}, trade).value != "IN_TRANSIT":
                     raise ValueError("同包裹交易未确认在途或已签收，不自动发群拦截")
                 entry = {"order_sn": sn, "tracking_number": tracking, "carrier_code": carrier,
@@ -176,4 +232,5 @@ class TmallNoticePackageVerifier:
                 "checked_at": self.now().isoformat(), "customer_id": sales.customer_id,
                 "customer_name": sales.customer_name, "assignee": sales.sales_owner,
                 "pages": sales.pages, "sales_rows": list(sales.rows),
-                "package_orders": package, "excluded_order_sns": excluded, "blockers": blockers}
+                "package_orders": package, "excluded_order_sns": excluded,
+                "historical_exclusions": historical, "blockers": blockers}

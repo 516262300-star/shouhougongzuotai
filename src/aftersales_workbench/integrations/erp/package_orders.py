@@ -118,6 +118,7 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
                         "color": row["颜色"],
                         "quantity": str(quantity),
                         "sales_owner": row["归属业务员"].strip(),
+                        "completed_at": row["完成日期"].strip(),
                     }
                 )
             if current == pages:
