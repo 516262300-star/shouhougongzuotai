@@ -49,7 +49,8 @@ def _orders(session, tracking, platform_orders):
     )
 
 
-def _check_local_conflicts(session, members, tracking):
+def _check_local_conflicts(session, members, tracking, *, selected=(), customer=None,
+                           allow_system_review=False, expected_receipts=None):
     ids = [o.id for o in members]
     safe = set(
         session.scalars(
@@ -68,17 +69,32 @@ def _check_local_conflicts(session, members, tracking):
         .limit(1)
     ):
         raise SharedReturnIncomplete("相关售后存在同步隔离、人工争议或结果未知的资金记录")
-    if session.scalar(
-        select(WarehouseReturnRecord.id)
+    receipt_query = (
+        select(WarehouseReturnRecord)
+        .options(selectinload(WarehouseReturnRecord.items))
         .where(
             or_(
                 WarehouseReturnRecord.return_tracking_number.in_(tracking),
                 WarehouseReturnRecord.after_sales_sn.in_(names),
             )
         )
-        .limit(1)
-    ):
+        .execution_options(populate_existing=True)
+    )
+    if expected_receipts is not None:
+        receipt_query = receipt_query.with_for_update()
+    receipts = list(session.scalars(receipt_query))
+    from aftersales_workbench.workflows.crossed_return_review import (
+        receipt_snapshot, system_receipt_reviewable,
+    )
+    snapshots = [receipt_snapshot(r) for r in receipts]
+    if expected_receipts is not None:
+        if sorted(snapshots, key=lambda r: r['id']) != sorted(expected_receipts, key=lambda r: r['id']):
+            raise SharedReturnIncomplete("整批仓库记录已变化，等待重新核验")
+    elif receipts and (not allow_system_review or not all(
+        system_receipt_reviewable(r, members, selected, customer) for r in receipts
+    )):
         raise SharedReturnIncomplete("整批实收关联已有仓库分配/质检记录，须核实占用及争议")
+    return snapshots
 
 
 def _snapshot(order, expected_items):
@@ -114,19 +130,25 @@ def recheck_local_evidence(session, evidence, expected_items):
             )
         )
         .execution_options(populate_existing=True)
+        .with_for_update()
     )
     members = list(session.scalars(statement))
     current = sorted((_snapshot(o, expected_items) for o in members), key=lambda o: o["id"])
     if current != evidence["local_snapshot"]:
         raise SharedReturnIncomplete("整批订单状态或申请明细已变化，等待重新核验")
-    _check_local_conflicts(session, members, evidence["tracking_scope"])
+    _check_local_conflicts(session, members, evidence["tracking_scope"],
+                           expected_receipts=evidence.get("system_receipts"))
 
 
-def verify_group(session, matcher, target, expected_items):
+def verify_group(session, matcher, target, expected_items, *, crossed_only=False,
+                 customer_rows=None, receipt_review=False):
     customer, _ = matcher._lookup_customer(target.platform_order_sn)
     if not customer:
         raise SharedReturnIncomplete("平台订单未唯一对应 ERP 客户，整批归属待核实")
-    rows, pages = read_customer_rows(matcher, customer)
+    rows, pages = (customer_rows[customer] if customer_rows is not None and customer in customer_rows
+                   else read_customer_rows(matcher, customer))
+    if customer_rows is not None:
+        customer_rows[customer] = (rows, pages)
     sales = [r for r in rows if not r.returned]
     returns = [r for r in rows if r.returned]
     tracking = {target.return_tracking_number}
@@ -137,6 +159,13 @@ def verify_group(session, matcher, target, expected_items):
         old_scope = (set(tracking), set(platform_orders))
         platform_orders.update(o.platform_order_sn for o in members)
         tracking.update(o.return_tracking_number for o in members if o.return_tracking_number)
+        if crossed_only:
+            # 同一原销售出库批次的相关退货售后一并核对；不把同客户全部历史订单混成一批。
+            documents = {r.document for r in sales if r.customer_ref in platform_orders}
+            batch_sns = {r.customer_ref for r in sales if r.document in documents}
+            platform_orders.update(o.platform_order_sn for o in _orders(session, set(), batch_sns)
+                                   if o.after_sales_type == AfterSalesType.RETURN_AND_REFUND
+                                   and o.return_tracking_number)
         sale_ids = {r.order_ref for r in sales if r.customer_ref in platform_orders}
         selected = [r for r in returns if r.order_ref in tracking or r.customer_ref in sale_ids]
         tracking.update(r.order_ref for r in selected)
@@ -146,15 +175,25 @@ def verify_group(session, matcher, target, expected_items):
             break
     else:
         raise SharedReturnIncomplete("相关订单包裹范围过大，整批范围须人工确认")
+    declared = {o.platform_order_sn: o.return_tracking_number for o in members}
+    crossed = any(r.customer_ref in declared and returned.order_ref != declared[r.customer_ref]
+                  for returned in selected for r in sales if r.order_ref == returned.customer_ref)
+    if crossed_only and not crossed:
+        return {}  # 无跨包裹原销售证据，继续原有单票流程。
     if Counter(o.platform_order_sn for o in members) != Counter(dict.fromkeys(platform_orders, 1)):
         raise SharedReturnIncomplete("相关实收存在缺失售后或重复/重开售后，无法唯一分配")
     if any(o.after_sales_type != AfterSalesType.RETURN_AND_REFUND for o in members):
         raise SharedReturnIncomplete("相关订单存在其他售后类型，须核实占用及争议")
+    if len({o.shop_id for o in members}) != 1:
+        raise SharedReturnIncomplete("整批原销售涉及不同店铺，须核实归属及实收占用")
     for order in members:
         found, _ = matcher._lookup_customer(order.platform_order_sn)
         if found != customer or (order.erp_customer_name and order.erp_customer_name != customer):
             raise SharedReturnIncomplete("同批订单的 ERP 客户归属冲突")
-    _check_local_conflicts(session, members, tracking)
+    receipt_snapshots = _check_local_conflicts(
+        session, members, tracking, selected=selected, customer=customer,
+        allow_system_review=crossed and receipt_review,
+    )
     names = [o.after_sales_sn for o in members]
     mapping = {}
     for row in selected:
@@ -179,13 +218,32 @@ def verify_group(session, matcher, target, expected_items):
             or any(original[k] < q for k, q in wanted.items())
         ):
             error = "整批已核验：本笔原销售与实收型号、颜色或数量不一致"
-        elif (
+        else:
+            receipt_evidence = {
+                "after_sales_sn": order.after_sales_sn, "shop_id": order.shop_id,
+                "platform_order_sn": order.platform_order_sn, "customer": customer,
+                "pages": pages, "related_after_sales": names,
+                "tracking_scope": sorted(tracking), "order_scope": sorted(platform_orders),
+                "local_snapshot": sorted((_snapshot(o, expected_items) for o in members), key=lambda o: o["id"]),
+                "declared_tracking": order.return_tracking_number,
+                "rows": [asdict(r) for r in allocated], "system_receipts": receipt_snapshots,
+                "crossed_tracking": crossed, "verification_kind": "receipt_review",
+                "quality_verified": False, "refund_authorized": False,
+                "checked_at": datetime.now(UTC).isoformat(),
+            }
+            if receipt_review:
+                evidence = receipt_evidence
+        if error:
+            outcomes[order.after_sales_sn] = (error, None)
+            continue
+        if (
             session.get(Shop, order.shop_id).platform != Platform.PDD
             or order.platform_after_sales_status != 10
             or order.platform_order_refund_status != 4
             or order.refund_financial_status != "SUCCESS"
         ):
-            error = "整批实收归属及数量已核实；本笔退款未确认，待独立质检及人工核验"
+            error = ("退货单号交叉填写，整批实收已按原销售核实，待独立质检及人工核验"
+                     if crossed else "整批实收归属及数量已核实；本笔退款未确认，待独立质检及人工核验")
         else:
             bill = matcher.inspect_post_refund_bill(order, expected)
             amount = order.merchant_receivable_amount
@@ -211,6 +269,8 @@ def verify_group(session, matcher, target, expected_items):
             else:
                 references.add(bill.reference_sn)
                 evidence = {
+                    **receipt_evidence,
+                    "verification_kind": "post_refund_accounting",
                     "after_sales_sn": order.after_sales_sn,
                     "shop_id": order.shop_id,
                     "platform_order_sn": order.platform_order_sn,

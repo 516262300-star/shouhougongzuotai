@@ -113,6 +113,7 @@ class Module2ErpIntakeService:
         self._shared_results = {}
         self._shared_failures = {}
         self._shared_service_error = None
+        self._customer_rows = {}
 
     def run(
         self,
@@ -131,6 +132,7 @@ class Module2ErpIntakeService:
         self._shared_results = {}
         self._shared_failures = {}
         self._shared_service_error = None
+        self._customer_rows = {}
         candidates = self._list_candidates(
             shop_codes=shop_codes,
             min_order_id=min_order_id,
@@ -210,6 +212,13 @@ class Module2ErpIntakeService:
             tracking_number=tracking,
             expected_items=self._expected_items(order),
         )
+        if (callable(getattr(self.matcher, "_get", None))
+                and callable(getattr(self.matcher, "_lookup_customer", None)) and lookup.customer_name
+                and (lookup.source_location == "customer_profile"
+                     or lookup.status is ErpReturnMatchStatus.NOT_FOUND)):
+            crossed, error = self._inspect_crossed_candidate(order, result, dry_run)
+            if crossed:
+                return error
         if lookup.status not in self._RECEIVED_STATUSES:
             if lookup.status is ErpReturnMatchStatus.NOT_FOUND:
                 result.not_found += 1
@@ -298,12 +307,59 @@ class Module2ErpIntakeService:
                 result.tmall_refunds_ready += 1
         return None
 
+    def _inspect_crossed_candidate(self, order, result, dry_run):
+        from aftersales_workbench.integrations.erp.shared_returns import SharedReturnIncomplete
+        from aftersales_workbench.workflows.module2_shared_return import verify_group
+
+        try:
+            if self._shared_service_error:
+                raise SharedReturnIncomplete("本轮 ERP 整批查询已失败，等待下轮重查")
+            outcomes = verify_group(
+                self.session, self.matcher, order, self._expected_items,
+                crossed_only=True, customer_rows=self._customer_rows, receipt_review=True,
+            )
+            if not outcomes:
+                return False, None
+            message, evidence = outcomes[order.after_sales_sn]
+            return True, self._apply_group_outcome(order, message, evidence, result, dry_run)
+        except SharedReturnIncomplete as exc:
+            result.ambiguous += 1
+            message = f"整批退货核验：{exc}"
+            if not dry_run:
+                # 全文由轮询审计保存，数据库摘要只有50字符。
+                order.exception_type = message[:50]
+            return True, message
+        except Exception:
+            self._shared_service_error = True
+            raise
+
+    def _apply_group_outcome(self, order, message, evidence, result, dry_run):
+        from aftersales_workbench.workflows.module2_shared_return import (
+            VERIFIED_NOTE, recheck_local_evidence, save_allocation,
+        )
+        from aftersales_workbench.workflows.crossed_return_review import correct_system_receipt
+
+        accounting = bool(evidence and evidence.get("verification_kind", "post_refund_accounting")
+                          == "post_refund_accounting")
+        if evidence and not dry_run:
+            recheck_local_evidence(self.session, evidence, self._expected_items)
+            save_allocation(evidence)
+            if evidence.get("crossed_tracking"):
+                correct_system_receipt(self.session, order, evidence)
+            order.workflow_status = (WorkflowStatus.RETURN_RECEIVED_ASSIGNED if accounting
+                                     else WorkflowStatus.MANUAL_PROCESSING)
+            order.exception_type = (VERIFIED_NOTE if accounting else message)[:50]
+        elif message and not dry_run:
+            order.exception_type = message[:50]
+        if accounting:
+            result.post_refund_verified += 1
+        else:
+            result.ambiguous += 1
+        return message
+
     def _inspect_shared_candidate(self, order, result, dry_run):
         from aftersales_workbench.integrations.erp.shared_returns import SharedReturnIncomplete
         from aftersales_workbench.workflows.module2_shared_return import (
-            VERIFIED_NOTE,
-            recheck_local_evidence,
-            save_allocation,
             verify_group,
         )
 
@@ -317,24 +373,13 @@ class Module2ErpIntakeService:
                 self._shared_results.update(verify_group(
                     self.session, self.matcher, order, self._expected_items))
             message, evidence = self._shared_results[order.after_sales_sn]
-            if evidence and not dry_run:
-                recheck_local_evidence(self.session, evidence, self._expected_items)
-                save_allocation(evidence)
-                order.workflow_status = WorkflowStatus.RETURN_RECEIVED_ASSIGNED
-                order.exception_type = VERIFIED_NOTE
-            elif message and not dry_run:
-                order.exception_type = message
-            if evidence:
-                result.post_refund_verified += 1
-            else:
-                result.ambiguous += 1
-            return message
+            return self._apply_group_outcome(order, message, evidence, result, dry_run)
         except SharedReturnIncomplete as exc:
             self._shared_failures[tracking] = str(exc)
             result.ambiguous += 1
             message = f"整批退货核验：{exc}"
             if not dry_run:
-                order.exception_type = message
+                order.exception_type = message[:50]
             return message
         except Exception:
             self._shared_service_error = True
@@ -374,7 +419,18 @@ class Module2ErpIntakeService:
                     ),
                 ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
-                AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
+                or_(
+                    AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
+                    and_(
+                        AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_FAIL,
+                        select(WarehouseReturnRecord.id).where(
+                            WarehouseReturnRecord.after_sales_sn == AfterSalesOrder.after_sales_sn,
+                            WarehouseReturnRecord.inspected_by == "系统ERP核对",
+                            WarehouseReturnRecord.operator == "ERP自动同步",
+                            WarehouseReturnRecord.inspection_status == "FAIL",
+                        ).exists(),
+                    ),
+                ),
                 AfterSalesOrder.return_tracking_number.is_not(None),
                 AfterSalesOrder.return_tracking_number != "",
             )

@@ -57,6 +57,16 @@ def manual_balance_reason(payload, *, now=None):
 
 def return_problem_state(todo_payload, order, match_task):
     """只投影当前事实，不改写已发送原文、发送时间或远端待办完成状态。"""
+    review = todo_payload.get("crossed_return_review") or {}
+    if (todo_payload.get("origin") == "module2" and review.get("checked_at")
+            and review.get("message") and order.after_sales_sn in review.get("related_after_sales", [])
+            and str(order.exception_type or "").startswith(("整批退款后核账已核实", "退货单号交叉填写"))):
+        return {
+            "problem_status": "CORRECTED", "problem_label": "单票错退判断已撤销",
+            "problem_tone": "info", "problem_resolved_at": review["checked_at"],
+            "reason": "退货单号交叉填写，整批实收已按原销售核验",
+            "problem_message": review["message"] + "。旧待办原文及发送记录保留；不代表远端待办已办结。",
+        }
     if (
         todo_payload.get("origin") != "module1"
         or todo_payload.get("task_scope") == "shared_package"
@@ -107,6 +117,11 @@ def return_problem_state(todo_payload, order, match_task):
 
 def check_balance_todo_before_publish(session, todo_payload, after_sales_sn):
     """发布口兜底：旧积压消息也必须重查当前核验结果。"""
+    review = todo_payload.get("crossed_return_review") or {}
+    if (todo_payload.get("origin") == "module2" and review.get("checked_at")
+            and after_sales_sn in review.get("related_after_sales", [])):
+        # 已尝试的历史通知不能伪装未发送而取消；保留凭证，禁止继续投递旧错退正文。
+        return "WAIT", review.get("message")
     if (
         todo_payload.get("origin") != "module1"
         or todo_payload.get("reason_code") != BALANCE_REASON
