@@ -37,4 +37,6 @@
 .\.venv\Scripts\python.exe -X utf8 -m pytest tests/test_module2_crossed_return.py tests/test_module2_shared_return.py tests/test_module2_erp_intake.py tests/test_module2_post_refund.py tests/test_module2_safety.py tests/test_module2_refund.py tests/test_erp_return_match.py tests/test_return_match_module_scope.py tests/test_return_sales_identity.py tests/test_return_quantity.py tests/test_return_todo_policy.py tests/test_module2_todo_queue.py tests/test_manual_todo_audit.py tests/test_module2.py -q
 ```
 
-首版本地相关回归185项、正式机隔离worker测试172项和web测试13项通过；生产已完成限定个案预演与纠偏，待办接口显示纠偏状态且原外部回执/时间未改。补充历史FAIL不回落单票流程的4项回归，发布后继续核验完整后台周期。生产验收证据仅存放在本机审计目录。
+最终本地189项回归通过，正式机隔离worker测试176项、web测试13项通过。已完成限定个案预演与纠偏，待办接口显示纠偏状态；原外部回执、正文、发送时间及尝试次数逐项核对未改，实收分配唯一性和账本完整性通过。
+
+2026-09-27 13:55:21新正式机发布 `crossed-return-worker-v2-20260927`（代码 `fd9bcf1`），web使用 `crossed-return-web-20260927`（代码 `440c574`），独立揽收提醒保持原发布。13:58:26首个完整后台周期执行正常，网页与数据库健康，待确认发送为0；13:59:56验收通过。发布前24张表及11个运行文件备份通过，并单独备份实收分配SQLite账本。上述代码已推送GitHub；完整生产验收证据仅存放在 Git 忽略的本机审计目录。
