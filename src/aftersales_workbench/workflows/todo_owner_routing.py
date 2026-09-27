@@ -103,7 +103,9 @@ def enqueue_shared_owner_todos(session, order, evidence):
         reason_code=("PACKAGE_NOTICE_REVIEW_REQUIRED"
                      if evidence.get("result") == "REVIEW_REQUIRED"
                      else "SHARED_PACKAGE_UNREFUNDED_ORDERS"),
-        reason_text=order.exception_type,
+        reason_text=((evidence.get("message") or order.exception_type)
+                     if evidence.get("result") == "REVIEW_REQUIRED"
+                     else order.exception_type),
         started_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         shop_name=shop.shop_name,
         tracking_number=order.forward_tracking_number,

@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
+from sqlalchemy import text
 
+from aftersales_workbench.db.models import AfterSalesOrder
 from aftersales_workbench.workflows.desktop_sender import (
     DesktopNoticeLedger,
     DesktopNoticeSendService,
@@ -15,6 +17,21 @@ from tests import test_tmall_notice_package as base
 
 db = base.db
 case = base.case
+
+
+def enforce_exception_type_limit(db):
+    # SQLite不执行VARCHAR(n)长度限制；显式模拟正式MySQL的存储边界。
+    limit = AfterSalesOrder.__table__.c.exception_type.type.length
+    db.execute(
+        text(f"""
+        CREATE TRIGGER enforce_exception_type_length
+        BEFORE UPDATE OF exception_type ON aftersales_orders
+        WHEN length(NEW.exception_type) > {limit}
+        BEGIN SELECT RAISE(ABORT, 'exception_type exceeds declared length'); END
+    """)
+    )
+    db.commit()
+    return limit
 
 
 def history(case):
@@ -156,6 +173,7 @@ def test_different_verified_waybill_does_not_need_other_trade_permission(case):
 
 
 def test_long_unavailable_notice_routes_once_without_ui_or_refund(case, tmp_path):
+    limit = enforce_exception_type_limit(case.db)
     now = datetime(2026, 9, 27, tzinfo=UTC)
     case.guard.now = lambda: now
     case.source.read.side_effect = ValueError("Historical relationship unavailable")
@@ -177,13 +195,39 @@ def test_long_unavailable_notice_routes_once_without_ui_or_refund(case, tmp_path
     assert case.task.action_status == "CANCELLED" and case.task.attempts == 0
     assert case.task.payload[KEY]["result"] == "REVIEW_REQUIRED"
     assert case.orders[0].refund_financial_status == "SUCCESS"
+    case.db.refresh(case.orders[0])
+    assert len(case.orders[0].exception_type) <= limit
     todos = base.todos(case.db)
     assert len(todos) == 1
     assert "超过30分钟未发出" in todos[0].payload["reason_text"]
+    assert todos[0].payload["reason_text"] == case.task.payload[KEY]["message"]
+    assert "如已人工发群请勿重复发送" in todos[0].payload["reason_text"]
     assert "尚未核实" in todos[0].payload["content"]
     assert "同包裹仅部分订单退款" not in todos[0].payload["content"]
     assert todos[0].payload["assigned_order_sns"] == ["8001"]
     case.client.agree_refund.assert_not_called()
+
+
+def test_long_review_details_remain_complete_outside_summary_column(case):
+    limit = enforce_exception_type_limit(case.db)
+    message = "包裹关联需要人工核实。" * 20 + "末尾完整说明"
+    evidence = {
+        "platform": case.shop.platform,
+        "result": "REVIEW_REQUIRED",
+        "message": message,
+        "sales_rows": [],
+        "blockers": [],
+        "customer_id": "review-test",
+    }
+    case.guard._hold(case.orders[0], evidence)
+    case.db.refresh(case.orders[0])
+    assert case.orders[0].workflow_status == "MANUAL_PROCESSING"
+    assert len(case.orders[0].exception_type) <= limit
+    assert case.task.payload[KEY]["message"] == message
+    assert case.task.last_error == message
+    tasks = base.todos(case.db)
+    assert len(tasks) == 1 and tasks[0].payload["reason_text"] == message
+    assert tasks[0].payload["package_evidence"]["message"] == message
 
 
 def test_retry_preserves_failure_start_and_success_resets_counter():

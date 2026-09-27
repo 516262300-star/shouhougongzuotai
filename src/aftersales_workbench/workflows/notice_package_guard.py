@@ -240,6 +240,10 @@ class NoticePackageGuard:
                 Order.carrier_code == order.carrier_code).with_for_update()).all()
         review = evidence and evidence.get("result") == "REVIEW_REQUIRED"
         if review:
+            # exception_type为VARCHAR(50)，完整说明保存在任务和待办JSON中。
+            review_reason = ("拦截通知超过30分钟未发出，待业务员核实"
+                             if evidence.get("unavailable_check")
+                             else "同包裹范围待核实，待业务员处理")
             evidence = {**evidence, "package_orders": [
                 {"order_sn": sn, "refund_requested": True}
                 for sn in sorted({order.platform_order_sn}
@@ -251,7 +255,7 @@ class NoticePackageGuard:
                                "同包裹部分订单未申请退款，不自动拦截，已转业务员核实")
             task.payload = {**(task.payload or {}), KEY: evidence or {"result": "HELD"}}
             sibling.workflow_status = "MANUAL_PROCESSING"
-            sibling.exception_type = (evidence["message"] if review else (
+            sibling.exception_type = (review_reason if review else (
                 "同包裹仅部分订单退款，已停止自动拦截，请业务员核实"
                 if evidence and evidence.get("platform") in {"TMALL", "TAOBAO"}
                 else HOLD_REASON if evidence else sibling.exception_type or HOLD_REASON))
