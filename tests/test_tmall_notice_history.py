@@ -206,7 +206,7 @@ def test_long_unavailable_notice_routes_once_without_ui_or_refund(case, tmp_path
     assert "超过30分钟未发出" in todos[0].payload["reason_text"]
     assert todos[0].payload["reason_text"] == case.task.payload[KEY]["message"]
     assert "如已人工发群请勿重复发送" in todos[0].payload["reason_text"]
-    assert "尚未核实" in todos[0].payload["content"]
+    assert "请核实包裹内全部商品均申请全额仅退款后" in todos[0].payload["content"]
     assert "同包裹仅部分订单退款" not in todos[0].payload["content"]
     assert todos[0].payload["assigned_order_sns"] == ["8001"]
     case.client.agree_refund.assert_not_called()

@@ -107,31 +107,36 @@ def prepare_manual_todo(
         ))
         notice_only = evidence.get("platform") not in {None, "PDD"}
         review = evidence.get("result") == "REVIEW_REQUIRED"
+        overdue_review = review and bool(evidence.get("unavailable_check"))
         content = f"{marker} 店铺：{shop}；" + (
+            "系统尚未发送拦截通知。" if overdue_review else
             "发货包裹的订单及退款范围尚未核实，已停止自动拦截。" if review else
             "同包裹仅部分订单退款，需人工协调处理。" if notice_only
             else "整包裹退款条件未满足，已暂停自动退款。")
-        if review:
-            if evidence.get("unavailable_check"):
-                content += ("拦截通知超过30分钟尚未发出。请先查看快递群是否已人工发送；"
-                            "如已发送请勿重复发送。核实整包裹符合拦截条件后及时人工通知快递；"
-                            "仅部分订单退款时，请联系客户协调处理。")
-            else:
-                content += "请核对同一发货包裹的全部订单；仅部分订单退款时，请联系客户协调处理。"
-        elif evidence.get("phase") == "before_notice":
+        if review and not overdue_review:
+            content += "请核对同一发货包裹的全部订单；仅部分订单退款时，请联系客户协调处理。"
+        elif not review and evidence.get("phase") == "before_notice":
             content += "同包裹仅部分订单申请退款，不自动拦截整包裹，请联系客户确认处理方案。"
-        elif evidence.get("phase") == "after_notice":
+        elif not review and evidence.get("phase") == "after_notice":
             content += (
                 "该包裹此前已发出快递拦截通知，请先核实快递处理进度；"
                 "如其他订单仍需正常收货，请及时协调快递撤销整包裹拦截。")
         if notice_only and payload.get("tracking_number"):
             content += f"发货运单：{payload['tracking_number']}。"
-        if payload.get("assigned_order_sns"):
-            content += f"您负责的退款申请订单：{'、'.join(payload['assigned_order_sns'])}。"
+        assigned = payload.get("assigned_order_sns") or []
+        if overdue_review:
+            # 首单已在原幂等标识中，不重复列出；其他归属订单仍完整展示。
+            assigned = list(dict.fromkeys(str(sn) for sn in assigned
+                                         if sn and str(sn) != platform_order_sn))
+        if assigned:
+            content += f"您负责的退款申请订单：{'、'.join(assigned)}。"
         if related:
             # 只删商品清单，不省略业务员需要联系处理的关联订单。
             content += f"关联订单：{'、'.join(related)}。"
-        if notice_only:
+        if overdue_review:
+            content += ("请核实包裹内全部商品均申请全额仅退款后，通知快递拦截退回；"
+                        "群内已通知的请勿重复发送。")
+        elif notice_only:
             content += ("请联系客户确认保留收货或部分退货方案；"
                         "已退款订单勿重复退款。明细见售后工作台。")
         else:

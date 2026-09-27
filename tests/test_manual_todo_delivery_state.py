@@ -13,7 +13,7 @@ def overdue_payload():
             'reason_code':'PACKAGE_NOTICE_REVIEW_REQUIRED','owner_routing_status':'UNAVAILABLE',
             'reason_text':'拦截通知超过30分钟未发出，已转原销售业务员核实并及时处理；如已人工发群请勿重复发送',
             'content':'旧未发送正文','marker':'旧标识','assigned_order_sns':['after-order'],
-            'package_evidence':{'result':'REVIEW_REQUIRED','platform':'TMALL','unavailable_check':{'failure_count':5}}}
+            'package_evidence':{'result':'REVIEW_REQUIRED','phase':'before_notice','platform':'TMALL','unavailable_check':{'failure_count':5}}}
 
 
 def test_unsent_owner_block_is_visible_without_changing_task_or_sending(records):
@@ -24,7 +24,7 @@ def test_unsent_owner_block_is_visible_without_changing_task_or_sending(records)
     assert item['task_status']=='PENDING' and item['status_label']=='等待业务员归属核验'
     assert not item['sent_to_assignee'] and item['sent_at'] is None
     assert '已转原销售业务员' not in item['reason'] and '待原销售业务员' in item['reason']
-    assert '请勿重复发送' in item['content'] and '及时人工通知快递' in item['content']
+    assert '请勿重复发送' in item['content'] and '通知快递拦截退回' in item['content']
     assert t.payload==before and t.attempts==0 and t.updated_at==updated
 
 
@@ -44,5 +44,8 @@ def test_overdue_notice_text_refresh_keeps_original_payload_and_identity():
     assert payload==original
     assert '待原销售业务员' in result['reason_text']
     assert '请勿重复发送' in result['content']
-    assert '核实整包裹符合拦截条件' in result['content']
+    assert '包裹内全部商品均申请全额仅退款' in result['content']
+    assert '保留收货' not in result['content'] and '部分退货' not in result['content']
+    assert '仅部分订单申请退款' not in result['content']
+    assert result['content'].count('after-order') == 1
     assert result['package_evidence']==original['package_evidence']
