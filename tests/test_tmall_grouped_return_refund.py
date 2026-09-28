@@ -267,6 +267,39 @@ def test_grouped_refunds_execute_one_child_per_cycle(grouped):
     grouped.platform.agree_refund.assert_not_called()
 
 
+@pytest.mark.parametrize("conflict", [False, True])
+def test_grouped_refund_checks_target_and_conflicts_on_later_pages(grouped, conflict):
+    """已有分组闭环必须读取末页，不漏掉其他页的同原销售争议记录。"""
+    original_get = grouped.erp._get.side_effect
+    history = [
+        {"编号": f"RC-HISTORY-{i}", "型号": "HISTORY", "颜色": "白",
+         "订单编号": str(1000 + i), "客户编号": f"HISTORY-{i}",
+         "入库化只": "1", "单价": "10"}
+        for i in range(30)
+    ]
+    if conflict:
+        history[17]["客户编号"] = base.OID
+
+    def get(path, *, params):
+        if path.endswith("/customer/shipment"):
+            index = int(params["page"])
+            goods = history if index == 0 else grouped.goods
+            return f"上一页 {index + 1}/2 下一页" + base.table(list(goods[0]), goods)
+        return original_get(path, params=params)
+
+    grouped.erp._get.side_effect = get
+    preview = grouped.service.run(dry_run=True)
+    assert grouped.state["writes"] == 0
+    assert preview["ready"] == (0 if conflict else 2)
+    if conflict:
+        assert preview["blocked"] > 0
+    else:
+        result = grouped.service.run(dry_run=False)
+        assert result["applied"] == 1 and grouped.state["writes"] == 1
+        # 模拟ERP补单依旧每周期一笔，不调用平台退款。
+        grouped.platform.agree_refund.assert_not_called()
+
+
 def test_successful_refund_may_zero_live_child_payment(grouped):
     for child in grouped.trade["orders"]["order"]:
         child["payment"] = "0.00"

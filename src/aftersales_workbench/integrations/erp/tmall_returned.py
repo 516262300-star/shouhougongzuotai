@@ -3,6 +3,7 @@
 import json
 import re
 from decimal import Decimal
+from time import monotonic
 
 from aftersales_workbench.integrations.erp.outstanding import _Page, outstanding_records
 from aftersales_workbench.integrations.erp.tmall_unshipped import (
@@ -13,20 +14,56 @@ from aftersales_workbench.integrations.erp.tmall_unshipped import (
 
 
 def customer_rows(client, customer_id):
-    """首期只接入完整单页（最多30行）；多页交给既有人工整批核验。"""
-    page = client._get(
-        "/leedis2/public/customer/shipment", params={"kehuid": str(customer_id), "page": "0"}
-    )
-    pagers = set(re.findall(r"上一页\s*(\d+)\s*/\s*(\d+)\s*下一页", _Page(page).root.text()))
-    if pagers != {("1", "1")}:
-        raise ValueError("客户销售退货记录不是完整单页，须整批人工核验")
-    page = re.sub(r"([?&](?:amp;)?page)=\d+", r"\1=verified", page)
-    rows = complete_table(
-        page, {"编号", "型号", "颜色", "订单编号", "客户编号", "入库化只", "单价"}
-    )
-    if not 1 <= len(rows) <= 30:
-        raise ValueError("客户商品账页不完整")
-    return rows
+    """完整读取客户账页并逐页回读；缺页、重复页及期间变更均不放行。"""
+    snapshots, fingerprints = [], set()
+    total = None
+    started = monotonic()
+
+    def read_page(index):
+        if monotonic() - started > 60:
+            raise ValueError("完整客户商品账页核验超时，等待重新读取")
+        page = client._get(
+            "/leedis2/public/customer/shipment",
+            params={"kehuid": str(customer_id), "page": str(index)},
+        )
+        if monotonic() - started > 60:
+            raise ValueError("完整客户商品账页核验超时，等待重新读取")
+        pagers = set(re.findall(
+            r"上一页\s*(\d+)\s*/\s*(\d+)\s*下一页", _Page(page).root.text(),
+        ))
+        if len(pagers) != 1:
+            raise ValueError("客户商品账页缺少唯一分页信息")
+        current, count = map(int, pagers.pop())
+        if current != index + 1 or not 1 <= current <= count <= 200:
+            raise ValueError("客户商品账页分页越界或超过完整核验上限")
+        # 只在已核实页码后允许分页链接；表格完整性检查仍严格执行。
+        page = re.sub(r"([?&](?:amp;)?page)=\d+", r"\1=verified", page)
+        rows = complete_table(
+            page, {"编号", "型号", "颜色", "订单编号", "客户编号", "入库化只", "单价"},
+        )
+        if not 1 <= len(rows) <= 30 or (current < count and len(rows) != 30):
+            raise ValueError("客户商品账页为空或非末页未返回完整30行")
+        return count, rows
+
+    for index in range(200):
+        count, rows = read_page(index)
+        if total is not None and total != count:
+            raise ValueError("客户商品账页分页发生变化，须重新完整核验")
+        total = count
+        fingerprint = json.dumps(rows, ensure_ascii=False, sort_keys=True)
+        if fingerprint in fingerprints:
+            raise ValueError("客户商品账页重复，不能重复计算实收")
+        fingerprints.add(fingerprint)
+        snapshots.append(rows)
+        if index + 1 == total:
+            break
+    if total > 1:
+        # 不仅回读首页：中间页的原销售、退货关联或数量改变也必须发现。
+        for index in reversed(range(total)):
+            count, rows = read_page(index)
+            if count != total or rows != snapshots[index]:
+                raise ValueError("取数期间客户商品账页发生变化，须重新完整核验")
+    return [row for rows in snapshots for row in rows]
 
 
 def inspect_return_account(
