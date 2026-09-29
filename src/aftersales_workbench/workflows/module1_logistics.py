@@ -42,6 +42,7 @@ _CARRIER_ALIASES = {
     "圆通速递": "yuantong",
     "圆通": "yuantong",
     "中通快递": "zhongtong",
+    "中通快运": "zhongtongkuaiyun",
     "中通": "zhongtong",
     "申通快递": "shentong",
     "申通": "shentong",

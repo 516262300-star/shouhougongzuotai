@@ -135,6 +135,19 @@ def test_partial_refund_keeps_remaining_order_monitored(case):
     assert len(source.refresh(SN)) == 1
 
 
+def test_successful_partial_refund_not_confused_with_full_order_refund(case):
+    row, client, source = case
+    row['sku_order_list'][0]['after_sale_info']['refund_status'] = 3
+    refund(client, amount=500)
+    assert len(source.refresh(SN)) == 1
+    refund(client, amount=0)
+    with pytest.raises(ValueError, match='缺少已成功退款明细'):
+        source.refresh(SN)
+    client.order_refunds.side_effect = lambda *_: iter([])
+    with pytest.raises(ValueError, match='缺少已成功退款明细'):
+        source.refresh(SN)
+
+
 @pytest.mark.parametrize("amount", [None, -1, 2001, 1.5])
 def test_invalid_refund_totals_block_reminders(case, amount):
     row, client, source = case

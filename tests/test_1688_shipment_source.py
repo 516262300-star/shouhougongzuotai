@@ -94,6 +94,51 @@ def test_zto_freight_is_not_zto_express(setup):
     assert resolve_logistics_carrier(source.refresh(SN)[0].carrier) == 'zhongtong'
 
 
+def test_shipped_unsettled_order_does_not_block_sync_window(setup):
+    source, state = setup
+    state.row['baseInfo']['status'] = 'send_goods_but_not_fund'
+    state.row['productItems'][0]['status'] = 'send_goods_but_not_fund'
+    assert list(source.list_window(datetime(2026, 9, 23), datetime(2026, 9, 23, 1)))
+    assert source.candidate(state.row)[0] == SN
+    assert len(source.refresh(SN)) == 1
+    state.row['baseInfo']['sellerAlipayId'] = '2088000000000002'
+    with pytest.raises(ValueError, match='商家身份'):
+        source.candidate(state.row)
+
+
+@pytest.mark.parametrize('logistics_status', [3, 4])
+def test_explicit_received_or_returned_child_without_trade_status_not_reminded(
+    setup, logistics_status,
+):
+    source, state = setup
+    state.row['baseInfo'].update(status='send_goods_but_not_fund', refund=1, refundPayment=100)
+    del state.row['productItems'][0]['status']
+    state.row['productItems'][0]['logisticsStatus'] = logistics_status
+    snapshot = source.refresh(SN)
+    assert snapshot == [] and getattr(snapshot, 'full_refund', None) is None
+    state.row['productItems'][0]['logisticsStatus'] = 2
+    with pytest.raises(ValueError, match='子单'):
+        source.refresh(SN)
+
+
+def test_explicit_no_logistics_is_excluded_but_real_mixed_package_survives(setup):
+    from copy import deepcopy
+
+    source, state = setup
+    p = state.row['nativeLogistics']['logisticsItems'][0]
+    real = deepcopy(p)
+    p.update(type='2', logisticsBillNo='不需要物流', logisticsCompanyName=None)
+    assert source.refresh(SN) == []
+    real['subItemIds'] = '802'
+    state.row['productItems'].append({'subItemID': 802, 'subItemIDString': '802',
+                                    'status': 'waitbuyerreceive', 'logisticsStatus': 2})
+    state.row['nativeLogistics']['logisticsItems'].append(real)
+    assert [r.tracking_number for r in source.refresh(SN)] == ['SYNTH168801']
+    p['subItemIds'] = '999'
+    with pytest.raises(ValueError, match='关联'):
+        source.refresh(SN)
+
+
 def test_historical_ended_merchant_cannot_enter_queue_or_bypass_live_refresh(setup):
     source, state = setup
     state.row['baseInfo'].update(sellerAlipayId='2088000000000002', status='success')
@@ -163,6 +208,28 @@ def test_duplicate_package_and_child_identity_rejected(setup):
         source.refresh(SN)
 
 
+@pytest.mark.parametrize('conflict', [None, 'time', 'carrier', 'overlap'])
+def test_disjoint_product_rows_of_same_parcel_merge_only_when_consistent(setup, conflict):
+    from copy import deepcopy
+
+    source, state = setup
+    state.row['productItems'].append({'subItemID': 802, 'subItemIDString': '802',
+                                    'status': 'waitbuyerreceive', 'logisticsStatus': 2})
+    other = deepcopy(state.row['nativeLogistics']['logisticsItems'][0])
+    other['subItemIds'] = '802'
+    if conflict == 'time':
+        other['deliveredTime'] = '20260923130000000+0800'
+    elif conflict == 'carrier':
+        other['logisticsCompanyName'] = '中通快递'
+    elif conflict == 'overlap':
+        other['subItemIds'] = '801'
+    state.row['nativeLogistics']['logisticsItems'].append(other)
+    if conflict:
+        with pytest.raises(ValueError, match='同运单'):
+            source.refresh(SN)
+    else:
+        result = source.refresh(SN)
+        assert len(result) == 1 and result[0].sub_order_ids == ('801', '802')
 def test_cancelled_item_only_parcel_not_reminded(setup):
     source, state = setup
     state.row['productItems'][0]['status'] = 'cancel'

@@ -10,6 +10,13 @@ from aftersales_workbench.workflows.shipment_trace import tmall_trace_evidence
 from aftersales_workbench.workflows.shipment_watch_sources import Parcel, ShipmentSource
 
 
+def test_freight_carrier_alias_remains_distinct_from_express():
+    from aftersales_workbench.workflows.module1_logistics import resolve_logistics_carrier
+
+    assert resolve_logistics_carrier('中通快运') == 'zhongtongkuaiyun'
+    assert resolve_logistics_carrier('中通快递') == 'zhongtong'
+
+
 @pytest.fixture
 def trace():
     parcel = Parcel("123", "SF-test", "顺丰速运", datetime(2026, 9, 17))

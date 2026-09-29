@@ -17,7 +17,7 @@ ORDER_LIST_API = "alibaba.trade.ec.getOrderList.sellerView"
 CN = timezone(timedelta(hours=8))
 TERMINAL = {"success", "cancel", "terminated", "confirm_goods", "confirm_goods_but_not_fund"}
 STATES = TERMINAL | {"waitbuyerpay", "waitsellersend", "waitbuyerreceive",
-                     "waitlogisticstakein", "waitbuyerconfirm"}
+                     "waitlogisticstakein", "waitbuyerconfirm", "send_goods_but_not_fund"}
 
 
 def _date(value):
@@ -183,7 +183,10 @@ class Alibaba1688ShipmentSource:
         ids = [str(p.get("subItemIDString") or "") for p in products]
         if (not ids or len(ids) != len(set(ids)) or any(not x.isdigit() for x in ids)
                 or any(str(p.get("subItemID")) != i for p, i in zip(products, ids, strict=True))
-                or any(p.get("status") not in STATES for p in products)):
+                or any(p.get("status") not in STATES and not (
+                    p.get("status") is None and type(p.get("logisticsStatus")) is int
+                    and p["logisticsStatus"] in {3, 4}
+                ) for p in products)):
             raise ValueError("1688商品子单身份或状态不完整")
         native = row.get("nativeLogistics")
         if not isinstance(native, dict):
@@ -194,8 +197,13 @@ class Alibaba1688ShipmentSource:
         entries = _rows(value, "发货包裹")
         if not entries:
             raise ValueError("1688发货包裹列表为空")
-        active_ids = {i for i, p in zip(ids, products, strict=True) if p["status"] not in TERMINAL}
-        parcels, seen = [], set()
+        # 已收货/已退回商品不再催揽收；平台在部分退回后可能省略商品交易状态。
+        # 只用于排除催揽收，不代表全额退款成功或ERP平账完成。
+        active_ids = {i for i, p in zip(ids, products, strict=True)
+                      if p.get("status") not in TERMINAL and not (
+                          type(p.get("logisticsStatus")) is int
+                          and p["logisticsStatus"] in {3, 4})}
+        seen = {}
         for item in entries:
             if item.get("status") == "cancel":
                 continue
@@ -209,17 +217,29 @@ class Alibaba1688ShipmentSource:
             }.get(carrier, carrier)
             raw_ids = item.get("subItemIds")
             linked = tuple(sorted(raw_ids.split(','))) if isinstance(raw_ids, str) else ()
-            if (not linked or len(linked) != len(set(linked)) or not set(linked) <= set(ids)
-                    or not re.fullmatch(r"[A-Za-z0-9]+", tracking) or tracking in seen
+            if not linked or len(linked) != len(set(linked)) or not set(linked) <= set(ids):
+                raise ValueError("1688运单、快递公司或包裹商品关联未核实")
+            if str(item.get("type")) == "2":
+                # 官方明确的无需物流类型，不把缺少字段/手写运单自行解释成无需物流。
+                if (carrier not in {"", "其它", "其他", "无需物流", "other"}
+                        or tracking not in {"", "不需要物流", "无需物流"}):
+                    raise ValueError("1688无需物流标记与实际运单或快递公司冲突")
+                continue
+            if (not re.fullmatch(r"[A-Za-z0-9]+", tracking)
                     or not carrier or carrier in {"其它", "其他", "无需物流", "other"}
                     or str(item.get("type")) != "0"):
                 raise ValueError("1688运单、快递公司或包裹商品关联未核实")
-            seen.add(tracking)
             shipped = _date(item.get("deliveredTime"))
-            # 部分退款/交易结束的商品不再单独催揽收，剩余履约包裹继续。
-            if set(linked) & active_ids:
-                parcels.append(Parcel(sn, tracking, carrier, shipped, linked))
-        return parcels
+            previous = seen.get(tracking)
+            if previous:
+                # 1688可按不同商品分行返回同一包裹；只合并完全一致且子单不重叠的行。
+                if (previous.carrier != carrier or previous.shipped_at != shipped
+                        or set(previous.sub_order_ids) & set(linked)):
+                    raise ValueError("1688同运单关联重复或快递公司、发货时间冲突")
+                linked = tuple(sorted(set(previous.sub_order_ids) | set(linked)))
+            seen[tracking] = Parcel(sn, tracking, carrier, shipped, linked)
+        # 部分退款/交易结束的商品不再单独催揽收，剩余履约包裹继续。
+        return [p for p in seen.values() if set(p.sub_order_ids) & active_ids]
 
     def refresh(self, sn):
         row = self._detail(sn)

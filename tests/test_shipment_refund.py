@@ -96,3 +96,28 @@ def test_tmall_duplicate_suborders_and_refunds_cannot_be_double_counted():
     trade["orders"]["order"][1] = deepcopy(trade["orders"]["order"][0])
     with pytest.raises(ValueError, match="重复"):
         tmall_full_refund(client, trade)
+
+
+@pytest.mark.parametrize('status', ['TRADE_FINISHED', 'TRADE_CLOSED', 'TRADE_CLOSED_BY_TAOBAO'])
+def test_ended_tmall_trade_needs_no_refund_id_and_does_not_claim_refund(status):
+    client, trade, _ = tmall()
+    trade['status'] = status
+    for row in trade['orders']['order']:
+        del row['refund_id']
+    def forbidden(**_):
+        raise AssertionError('已结束交易不得补查退款或物流才能停止催揽收')
+    client.get_refund = forbidden
+    client.execute_read = forbidden
+    snapshot = ShipmentSource('TMALL', client).refresh('123')
+    assert snapshot == [] and snapshot.closed['order_state'] == status
+    assert snapshot.full_refund is None
+    trade['tid'] = 456
+    with pytest.raises(ValueError, match='身份'):
+        ShipmentSource('TMALL', client).refresh('123')
+
+
+def test_live_tmall_refund_missing_identity_still_requires_verification():
+    client, trade, _ = tmall()
+    del trade['orders']['order'][0]['refund_id']
+    with pytest.raises(ValueError, match='退款子单'):
+        ShipmentSource('TMALL', client).refresh('123')

@@ -135,6 +135,11 @@ class ShipmentSource:
             ]
             if str(trade.get("tid")) != sn:
                 raise ValueError("天猫订单身份不匹配")
+            # 已完成/关闭的交易不再催揽收，不要求额外退款流水来证明物流任务结束。
+            # 仅记录停止催揽收依据，不能把交易结束写成全额退款成功。
+            if trade.get("status") in {"TRADE_FINISHED", "TRADE_CLOSED", "TRADE_CLOSED_BY_TAOBAO"}:
+                return ShipmentSnapshot(closed={"platform": "TMALL", "order_sn": sn,
+                                                "order_state": trade["status"]})
             if evidence := tmall_full_refund(self.client, trade):
                 return ShipmentSnapshot(full_refund=evidence)
             candidate = self.candidate(trade)

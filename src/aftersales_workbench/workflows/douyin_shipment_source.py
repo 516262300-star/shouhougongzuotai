@@ -112,8 +112,9 @@ class DouyinShipmentSource:
                 paid_amount=str(paid),
                 refund_amount=str(refunded),
             )
-        if all(s == 3 for s in states):
-            raise ValueError("抖音全部子单已退款但汇总金额不一致，暂停提醒")
+        if all(s == 3 for s in states) and (not ids or refunded <= 0):
+            raise ValueError("抖音子单显示退款成功但缺少已成功退款明细，暂停提醒")
+        # 子单退款成功也可能只是部分金额退款；以完整售后列表和实退金额判定范围。
         return None  # 部分退款仍监控剩余履约，不能标记整单退款。
 
     def refresh(self, sn):
