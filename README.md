@@ -86,7 +86,9 @@ alembic downgrade -1
 | `ERP_READ_CACHE_SECONDS` | 归属业务员查询在工作台内的缓存秒数 | `300` |
 | `ERP_WEB_LOOKUP_ENABLED` | 未配置数据库时，启用管理系统网页登录只读查询 | `false` |
 | `ERP_WEB_BASE_URL` | 管理系统网站根地址 | `https://ldswj.net` |
-| `ERP_WEB_USERNAME` / `ERP_WEB_PASSWORD` | 管理系统员工登录凭据，只允许写入本机 `.env` | 无 |
+| `ERP_WEB_AUTH_MODE` | ERP 登录方式；正式机使用 `desktop`，通过客户端建立会话 | `password`（兼容未迁移环境） |
+| `ERP_DESKTOP_BRIDGE_FILE` / `ERP_DESKTOP_USER_ID` | 客户端本机连接文件路径和原 ERP 员工数字 ID | 无 |
+| `ERP_WEB_USERNAME` / `ERP_WEB_PASSWORD` | 仅旧密码模式使用；正式客户端模式移除这两项，不降级使用密码 | 无 |
 | `ERP_WEB_TIMEOUT_SECONDS` | 管理系统网页请求超时秒数 | `15` |
 | `ERP_SALES_OWNER_SYNC_ENABLED` | 模块 1 周期内自动刷新归属业务员缓存 | `false` |
 | `ERP_SALES_OWNER_SYNC_BATCH_SIZE` | 每个模块 1 周期最多刷新多少笔售后订单 | `20` |
@@ -170,13 +172,13 @@ alembic downgrade -1
 
 1–4 店共用 `PDD_APP_1_CLIENT_ID` / `PDD_APP_1_CLIENT_SECRET`，5–7 店共用 `PDD_APP_2_CLIENT_ID` / `PDD_APP_2_CLIENT_SECRET`。每个店铺仍必须将自己的 Token 填入对应的 `PDD_SHOP_N_ACCESS_TOKEN`，不要将多个 Token 用逗号拼在同一行。单店的 `PDD_CLIENT_ID`、`PDD_CLIENT_SECRET` 和 `PDD_ACCESS_TOKEN` 暂时保留，仅用于旧联调命令回退。
 
-售后订单记录页的“归属业务员”来自旧管理系统客户档案。系统优先使用 `ERP_READ_DATABASE_URL`：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照。没有数据库只读账号时，可配置 `ERP_WEB_LOOKUP_ENABLED=true` 以及管理系统员工账号，工作台会登录 `/leedis/index.php/welcome/loginact`，再调用客户档案自动补全接口只读查询。网页查询结果默认缓存 5 分钟，登录失效只自动重登一次，不会访问客户修改接口。登录凭据只能保存在被 Git 忽略的本机 `.env`，严禁写入 README 或提交仓库。
+售后订单记录页的“归属业务员”来自旧管理系统客户档案。系统优先使用 `ERP_READ_DATABASE_URL`：将平台订单号转换为 `pdd{订单号}`，在 `00sobackup.客户编号` 精确找到客户，再读取 `kehu.归属业务员`；客户档案未填写时回退到订单快照。没有数据库只读账号时，配置 `ERP_WEB_LOOKUP_ENABLED=true` 并使用 [ERP 登录客户端](docs/erp-desktop-login-20260929.md)。正式机从客户端取得绑定员工的一次性网页登录票据，再只读查询客户档案；工作台不保存 ERP 密码。网页查询结果默认缓存 5 分钟，登录失效时通过客户端重新建立会话，不访问客户修改接口。客户端未登录或授权失效会保留任务，禁止回退密码登录。
 
 启用 `ERP_SALES_OWNER_SYNC_ENABLED` 后，模块 1 每个周期会在拼多多增量同步后，将一小批客户名字、归属业务员、匹配状态和查询时间缓存到本地 `aftersales_orders`。页面基于本地缓存进行全量业务员筛选，不会在一次页面查询中批量请求旧管理系统。正常结果默认每天刷新；网页暂时不可用时 5 分钟后具备重查资格，不保证第 5 分钟准时完成。每批优先为到期失败单保留一半名额（默认 10/20），其余留给新单和正常复查，空余名额互补，避免历史积压淹没失败重试。归属查询失败不会阻断拦截、物流闸门或退款安全流程。首次接入可分批执行 `aftersales-sync-sales-owners.exe --limit 20`，每批完成即提交，不需要一次等待全部历史订单。指定订单刷新及结果分类见 [ERP 归属失败优先重查说明](docs/erp-owner-retry-20260908.md)。
 
 “快速退款未入 ERP”是所有对接平台共有的业务情况，并非拼多多专属。售后工作台对“明确未发货 + 仅退款 + 平台退款已成功 + ERP 正常查询为空且无已知客户”的记录统一缓存为 `not_required`，页面显示“快速退款未入 ERP”，后台日志单独统计。客户归属只读同步覆盖已启用店铺的拼多多、天猫、淘宝、1688、京东、抖音，不再绑定天猫资金动作的试运行起始 ID。非拼多多记录额外核对明确未发货原始状态，关闭/取消/锁单/缺资料不能被旧映射的默认 `UNSHIPPED` 放行；有发货运单、已出包、退款未知/未完成、ERP 查询失败都不能套用快速退款。数据库直连旧适配器目前仅识别拼多多，跨平台使用已验证的 ERP 网页查询入口，不能把不支持的平台查询为空当成未入 ERP。详见[跨平台快速退款规则](docs/fast-refund-all-platforms-20260908.md)。
 
-管理系统人工待办发布复用同一组 `ERP_WEB_BASE_URL`、`ERP_WEB_USERNAME`、`ERP_WEB_PASSWORD`。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。模块 1/3 的远端事项使用平台订单号生成幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布；切换前已经排队的旧任务发送时会去除售后单号，并兼容旧标识查重。归属业务员为空或冲突时仍创建本地人工待办并保留触发原因，经办人显示为“未匹配业务员”，但不会猜测经办人或发布。
+管理系统人工待办发布复用同一组 ERP 客户端登录配置。只有 `ERP_TODO_PUBLISH_ENABLED=true` 与 `ERP_WRITE_ENABLED=true` 同时满足时才会调用 `/leedis/index.php/wunderlist/stdnew`；其余情况下只在本地动作队列准备 `ERP_CREATE_MANUAL_TODO`。模块 1/3 的远端事项使用平台订单号生成幂等标识，发布前后都会按经办人回查，成功后将管理系统待办 ID 保存到动作任务 `payload.external_todo_id`，因此超时重试不会重复发布；切换前已经排队的旧任务发送时会去除售后单号，并兼容旧标识查重。归属业务员为空或冲突时仍创建本地人工待办并保留触发原因，经办人显示为“未匹配业务员”，但不会猜测经办人或发布。
 
 售后工作台的“人工待办”导航和售后摘要中的“待人工”指标均可进入只读发送审计页。列表展示发送状态、对应业务员、触发原因、触发模块、平台订单号和售后单号；点击记录后，右侧详情会展示发送给业务员的完整事项、ERP 待办 ID、发送时间、尝试次数以及发送失败或取消原因。只有任务状态为 `SUCCEEDED` 且已取得远端待办 ID 时，页面才显示“已发送给业务员”；其余状态不会误报为发送成功。新任务会在动作载荷中保存明确的 `reason_text`，历史任务则按原因代码兼容映射中文原因。
 

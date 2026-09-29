@@ -22,6 +22,11 @@ from aftersales_workbench.db.models import (
     ShippingStatus,
     Shop,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import (
+    ErpDesktopAuth,
+    erp_auth_configured,
+    erp_login_kwargs,
+)
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 logger = logging.getLogger(__name__)
@@ -235,6 +240,7 @@ class ErpWebSalesOwnerResolver:
         base_url: str,
         username: str,
         password: str,
+        desktop_auth: ErpDesktopAuth | None = None,
         timeout_seconds: float = 15,
         cache_seconds: int = 300,
         http_client: httpx.Client | None = None,
@@ -242,6 +248,7 @@ class ErpWebSalesOwnerResolver:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.desktop_auth = desktop_auth
         self.cache_seconds = cache_seconds
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
@@ -348,6 +355,10 @@ class ErpWebSalesOwnerResolver:
         )
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
+        if self.desktop_auth is not None:
+            self.desktop_auth.login(self._client, force=force)
+            self._logged_in = True
+            return
         if self._logged_in and not force:
             return
         self._client.get("/leedis/index.php/welcome/loginpage").raise_for_status()
@@ -552,17 +563,10 @@ def get_erp_sales_owner_resolver() -> SalesOwnerResolver:
             cache_seconds=settings.erp_read_cache_seconds,
         )
 
-    web_username = (
-        settings.erp_web_username.get_secret_value() if settings.erp_web_username else ""
-    )
-    web_password = (
-        settings.erp_web_password.get_secret_value() if settings.erp_web_password else ""
-    )
-    if settings.erp_web_lookup_enabled and web_username and web_password:
+    if settings.erp_web_lookup_enabled and erp_auth_configured(settings):
         return ErpWebSalesOwnerResolver(
             base_url=settings.erp_web_base_url,
-            username=web_username,
-            password=web_password,
+            **erp_login_kwargs(settings),
             timeout_seconds=settings.erp_web_timeout_seconds,
             cache_seconds=settings.erp_read_cache_seconds,
         )

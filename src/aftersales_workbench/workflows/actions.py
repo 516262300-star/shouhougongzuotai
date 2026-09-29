@@ -22,6 +22,7 @@ from aftersales_workbench.db.models import (
     WarehouseReturnRecord,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import erp_login_kwargs
 from aftersales_workbench.integrations.erp.todo import ErpTodoClient, ErpTodoRequest
 from aftersales_workbench.integrations.pdd.client import (
     PddClient,
@@ -1469,20 +1470,9 @@ class ExternalActionExecutor:
         return False
 
     def _build_erp_todo_client(self) -> ErpTodoClient:
-        username = (
-            self.settings.erp_web_username.get_secret_value()
-            if self.settings.erp_web_username
-            else ""
-        )
-        password = (
-            self.settings.erp_web_password.get_secret_value()
-            if self.settings.erp_web_password
-            else ""
-        )
         return ErpTodoClient(
             base_url=self.settings.erp_web_base_url,
-            username=username,
-            password=password,
+            **erp_login_kwargs(self.settings),
             timeout_seconds=self.settings.erp_web_timeout_seconds,
             before_publish=lambda: require_publish_enabled(self.session, self.settings),
         )

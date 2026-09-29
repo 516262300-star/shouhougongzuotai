@@ -10,6 +10,7 @@ from enum import StrEnum
 
 import httpx
 
+from aftersales_workbench.integrations.erp.desktop_auth import ErpDesktopAuth
 from aftersales_workbench.integrations.erp.outstanding import outstanding_records
 
 
@@ -241,15 +242,17 @@ class ErpWebUnshippedRefundClient:
         base_url: str,
         username: str,
         password: str,
+        desktop_auth: ErpDesktopAuth | None = None,
         timeout_seconds: float = 15,
         amount_tolerance: Decimal = Decimal("0.01"),
         http_client: httpx.Client | None = None,
     ) -> None:
-        if not username.strip() or not password.strip():
+        if desktop_auth is None and (not username.strip() or not password.strip()):
             raise ErpUnshippedRefundConfigurationError("ERP 未发货退款缺少网页登录凭据")
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.desktop_auth = desktop_auth
         self.amount_tolerance = abs(amount_tolerance)
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
@@ -914,6 +917,10 @@ class ErpWebUnshippedRefundClient:
         )
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
+        if self.desktop_auth is not None:
+            self.desktop_auth.login(self._client, force=force)
+            self._logged_in = True
+            return
         if self._logged_in and not force:
             return
         self._client.get("/leedis/index.php/welcome/loginpage").raise_for_status()

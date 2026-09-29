@@ -6,6 +6,8 @@ from html.parser import HTMLParser
 
 import httpx
 
+from aftersales_workbench.integrations.erp.desktop_auth import ErpDesktopAuth
+
 
 class ErpTodoConfigurationError(ValueError):
     """管理系统待办发布缺少凭据或必要配置。"""
@@ -72,15 +74,17 @@ class ErpTodoClient:
         base_url: str,
         username: str,
         password: str,
+        desktop_auth: ErpDesktopAuth | None = None,
         timeout_seconds: float = 15,
         http_client: httpx.Client | None = None,
         before_publish: Callable[[], None] | None = None,
     ) -> None:
-        if not username.strip() or not password.strip():
+        if desktop_auth is None and (not username.strip() or not password.strip()):
             raise ErpTodoConfigurationError("ERP 待办发布缺少管理系统登录凭据")
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.desktop_auth = desktop_auth
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
             timeout=timeout_seconds,
@@ -156,6 +160,10 @@ class ErpTodoClient:
         return ErpTodoReceipt(todo_id=todo_id, created=True)
 
     def _ensure_logged_in(self) -> None:
+        if self.desktop_auth is not None:
+            self.desktop_auth.login(self._client, force=not self._logged_in)
+            self._logged_in = True
+            return
         if self._logged_in:
             return
         self._client.get("/leedis/index.php/welcome/loginpage").raise_for_status()

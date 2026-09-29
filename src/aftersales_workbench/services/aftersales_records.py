@@ -22,6 +22,7 @@ from aftersales_workbench.db.models import (
     Shop,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured
 from aftersales_workbench.integrations.erp.sales_owner import (
     ALL_OWNER_PLATFORMS,
     SalesOwnerLookup,
@@ -1080,8 +1081,7 @@ class AftersalesRecordService:
             return SalesOwnerLookup(None, None, "sync_disabled", "店铺已停用，未纳入归属查询。")
         configured = bool(self.settings.erp_read_database_url) or (
             self.settings.erp_web_lookup_enabled
-            and bool(self.settings.erp_web_username)
-            and bool(self.settings.erp_web_password)
+            and erp_auth_configured(self.settings)
         )
         if not configured:
             return SalesOwnerLookup(

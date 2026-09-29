@@ -9,6 +9,7 @@ from contextlib import ExitStack
 
 from aftersales_workbench.core.config import get_settings
 from aftersales_workbench.db.session import SessionLocal
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured, erp_login_kwargs
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
 from aftersales_workbench.integrations.pdd.client import PddClient
 from aftersales_workbench.integrations.pdd.shops import load_configured_pdd_shops
@@ -100,13 +101,11 @@ def main(argv=None):
 
             readers = {"read_status": read_status}
         else:
-            if not (settings.erp_web_lookup_enabled and settings.erp_web_username
-                    and settings.erp_web_password):
+            if not (settings.erp_web_lookup_enabled and erp_auth_configured(settings)):
                 raise SystemExit("天猫历史补查需要已配置的 ERP 网页只读查询")
             resolver = ErpWebSalesOwnerResolver(
                 base_url=settings.erp_web_base_url,
-                username=settings.erp_web_username.get_secret_value(),
-                password=settings.erp_web_password.get_secret_value(),
+                **erp_login_kwargs(settings),
                 timeout_seconds=settings.erp_web_timeout_seconds,
             )
             stack.callback(resolver._client.close)

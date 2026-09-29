@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings, get_settings
 from aftersales_workbench.db.models import AfterSalesOrder, Platform, Shop
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured
 from aftersales_workbench.integrations.marketplace.models import (
     MarketplaceConfigurationError,
 )
@@ -311,7 +312,7 @@ def _shop_capabilities(
                     (configured.shop_number in range(1, 7), "该店不在天猫六店退款范围"),
                     (settings.tmall_single_parcel_refund_enabled, "天猫单订单单包裹退款尚未启用"),
                     (settings.erp_web_lookup_enabled, "ERP原销售只读核验未开启"),
-                    (bool(settings.erp_web_username and settings.erp_web_password), "ERP核验凭据缺失"),
+                    (erp_auth_configured(settings), "ERP核验凭据缺失"),
                 ),
                 "仅独立原销售、单订单单子单单包裹；"
                 + ("通知成功并通过实时物流闸门后退款" if key == "module1"
@@ -329,7 +330,7 @@ def _shop_capabilities(
                 (sync_enabled, "天猫售后同步未开启"),
                 (settings.erp_return_match_sync_enabled, "ERP退回归属及流水核账未开启"),
                 (settings.erp_web_lookup_enabled, "ERP只读查询未开启"),
-                (bool(settings.erp_web_username and settings.erp_web_password), "ERP查询凭据缺失"),
+                (erp_auth_configured(settings), "ERP查询凭据缺失"),
             ),
             "持续核对退货在客户名下或暂存列表；平台退款成功、退货明细及对应ERP退款流水"
             "和零应收核实后登记闭环。暂存单仍需人工认领；缺退款单时自动补单尚未接入，"
@@ -337,7 +338,8 @@ def _shop_capabilities(
         )
         if module1_erp["state"] == "enabled":
             module1_erp.update(state="warning", label="核账已开·认领补单未接入")
-            if settings.tmall_module1_return_claim_enabled and configured.shop_number in range(1, 7):
+            if (settings.tmall_module1_return_claim_enabled
+                    and configured.shop_number in range(1, 7)):
                 module1_erp = _requirements(
                     (
                         (configured.shop_number in range(1, 7), "该店暂未纳入ERP自动认领补单范围"),
@@ -361,7 +363,7 @@ def _shop_capabilities(
                 (settings.module3_worker_enabled, "模块3后台运行未开启"),
                 (settings.module3_erp_refund_execution_enabled, "模块3ERP补单总开关未开启"),
                 (settings.erp_web_lookup_enabled, "ERP只读核验未配置"),
-                (bool(settings.erp_web_username and settings.erp_web_password), "ERP凭据缺失"),
+                (erp_auth_configured(settings), "ERP凭据缺失"),
                 (settings.erp_write_enabled, "ERP写总开关未开启"),
             ),
             "仅独立未发货、单子单全额退款；原收款和SKU核对后单次ERP补单，回查平账",
@@ -559,10 +561,10 @@ class IntegrationCapabilityService:
             )
             for row in rows
         ]
-        from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
         from aftersales_workbench.services.shipment_watch_status import (
             decorate_shipment_capabilities,
         )
+        from aftersales_workbench.workflows.taobao_checks import decorate_capabilities
 
         payload = decorate_capabilities(
             build_integration_capabilities(self.settings, snapshots), self.settings,

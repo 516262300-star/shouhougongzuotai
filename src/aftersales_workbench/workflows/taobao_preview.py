@@ -22,6 +22,7 @@ from aftersales_workbench.db.models import (
     ShippingStatus,
     Shop,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured, erp_login_kwargs
 from aftersales_workbench.integrations.erp.package_orders import ErpPackageOrderSource
 from aftersales_workbench.integrations.erp.return_claim import read_staged_rows, validate_row
 from aftersales_workbench.integrations.erp.tmall_returned import (
@@ -57,7 +58,7 @@ READ_METHODS = frozenset(
 
 
 def build_readonly_erp(settings, *, sales=False):
-    if not settings.erp_web_username or not settings.erp_web_password:
+    if not erp_auth_configured(settings):
         raise ValueError("缺少ERP只读登录配置")
     client = httpx.Client(
         base_url=settings.erp_web_base_url,
@@ -75,6 +76,7 @@ def build_readonly_erp(settings, *, sales=False):
             raise ValueError("预演不允许ERP请求重定向至其他服务")
         allowed_get = {
             "/leedis/index.php/welcome/loginpage",
+            "/leedis/index.php/login/profile",
             "/leedis2/public/customer/GetCustomerName",
             "/leedis2/public/customer/stdview",
             "/leedis2/public/customer/shipment",
@@ -86,7 +88,9 @@ def build_readonly_erp(settings, *, sales=False):
             or re.fullmatch(r"/leedis2/public/admin/refunds/\d+", request.url.path)
         )
         allowed = allowed or (
-            request.method == "POST" and request.url.path == "/leedis/index.php/welcome/loginact"
+            request.method == "POST" and request.url.path in {
+                "/leedis/index.php/welcome/loginact", "/leedis/index.php/desktopauth/enter",
+            }
         )
         if not allowed or any(k in request.url.params for k in ("action", "actionid", "apply")):
             raise ValueError("淘宝预演禁止访问ERP业务写入口")
@@ -95,8 +99,7 @@ def build_readonly_erp(settings, *, sales=False):
     cls = ErpPackageOrderSource if sales else ErpWebUnshippedRefundClient
     return cls(
         base_url=settings.erp_web_base_url,
-        username=settings.erp_web_username.get_secret_value(),
-        password=settings.erp_web_password.get_secret_value(),
+        **erp_login_kwargs(settings),
         http_client=client,
         **({"platform": "TAOBAO"} if sales else {}),
     )

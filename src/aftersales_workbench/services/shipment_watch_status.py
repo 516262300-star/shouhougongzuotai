@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.runtime_paths import get_runtime_root
 from aftersales_workbench.db.models import AutomationSwitch
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured
 from aftersales_workbench.services.manual_todo_control import SWITCH_KEY
 from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentNoTraceNotice,
@@ -183,7 +184,7 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
                             "物流查询凭据未配置",
                         ),
                         (
-                            settings.erp_web_username and settings.erp_web_password,
+                            erp_auth_configured(settings),
                             "ERP原销售及待办凭据未配置",
                         ),
                         (settings.erp_write_enabled, "ERP写入总开关关闭，仅保留本地巡检"),

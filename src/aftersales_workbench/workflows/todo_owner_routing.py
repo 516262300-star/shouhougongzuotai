@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder, Shop
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured, erp_login_kwargs
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
 from aftersales_workbench.services.manual_todo_retry import (
     owner_retry_waiting,
@@ -129,12 +130,11 @@ class TodoOwnerRouter:
         if self.resolver is not None:
             return self.resolver.resolve_many(sns)
         cfg = self.settings
-        if not cfg.erp_web_username or not cfg.erp_web_password:
+        if not erp_auth_configured(cfg):
             raise ValueError("缺少发货销售订单归属的只读查询凭据")
         resolver = ErpWebSalesOwnerResolver(
             base_url=cfg.erp_web_base_url,
-            username=cfg.erp_web_username.get_secret_value(),
-            password=cfg.erp_web_password.get_secret_value(),
+            **erp_login_kwargs(cfg),
             timeout_seconds=cfg.erp_web_timeout_seconds,
             cache_seconds=0,
         )

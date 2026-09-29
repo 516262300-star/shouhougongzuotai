@@ -12,6 +12,7 @@ from aftersales_workbench.db.models import (
     AutomationSwitch,
     AutomationSwitchEvent,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured
 
 SWITCH_KEY = "erp_manual_todo_publish"
 
@@ -45,10 +46,7 @@ def require_publish_enabled(session: Session, settings: Settings) -> None:
 def publish_block_reason(settings: Settings) -> str | None:
     if not settings.erp_write_enabled:
         return "ERP 写入总开关未开启，不能启用自动发布"
-    if not (
-        settings.erp_web_username and settings.erp_web_username.get_secret_value().strip()
-        and settings.erp_web_password and settings.erp_web_password.get_secret_value().strip()
-    ):
+    if not erp_auth_configured(settings):
         return "未配置 ERP 登录凭据，不能启用自动发布"
     return None
 

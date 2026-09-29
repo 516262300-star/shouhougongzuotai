@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     erp_read_cache_seconds: int = Field(default=300, ge=0, le=86400)
     erp_web_lookup_enabled: bool = False
     erp_web_base_url: str = "https://ldswj.net"
+    erp_web_auth_mode: Literal["password", "desktop"] = "password"
+    erp_desktop_bridge_file: str | None = None
+    erp_desktop_user_id: int | None = Field(default=None, gt=0)
     erp_web_username: SecretStr | None = None
     erp_web_password: SecretStr | None = None
     erp_web_timeout_seconds: float = Field(default=15, gt=0, le=60)

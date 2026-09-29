@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import ErpReturnRowRecord, ErpScrapSyncState
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured, erp_login_kwargs
 from aftersales_workbench.integrations.erp.return_match import (
     ErpReturnMatchConfigurationError,
     ErpWebReturnMatcher,
@@ -293,20 +294,13 @@ class ErpScrapSyncService:
 
 
 def build_erp_scrap_client(settings: Settings) -> ErpScrapPageClient:
-    username = (
-        settings.erp_web_username.get_secret_value().strip() if settings.erp_web_username else ""
-    )
-    password = (
-        settings.erp_web_password.get_secret_value().strip() if settings.erp_web_password else ""
-    )
-    if not settings.erp_web_lookup_enabled or not username or not password:
+    if not settings.erp_web_lookup_enabled or not erp_auth_configured(settings):
         raise ErpReturnMatchConfigurationError(
             "ERP 报废同步需要 ERP_WEB_LOOKUP_ENABLED=true 及网页登录凭据"
         )
     matcher = ErpWebReturnMatcher(
         base_url=settings.erp_web_base_url,
-        username=username,
-        password=password,
+        **erp_login_kwargs(settings),
         timeout_seconds=settings.erp_web_timeout_seconds,
     )
     return ErpScrapPageClient(matcher)

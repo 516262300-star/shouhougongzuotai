@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from aftersales_workbench.core.config import get_settings
 from aftersales_workbench.db.models import Platform, Shop
+from aftersales_workbench.integrations.erp.desktop_auth import erp_login_kwargs
 from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
 from aftersales_workbench.integrations.erp.todo import ErpTodoClient
 from aftersales_workbench.integrations.logistics.kuaidi100 import (
@@ -65,8 +66,7 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
             cfg = settings
             owners = ErpWebSalesOwnerResolver(
                 base_url=cfg.erp_web_base_url,
-                username=cfg.erp_web_username.get_secret_value(),
-                password=cfg.erp_web_password.get_secret_value(),
+                **erp_login_kwargs(cfg),
                 timeout_seconds=cfg.erp_web_timeout_seconds, cache_seconds=0,
             )
             stack.callback(owners.close)
@@ -78,8 +78,7 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
             def todo_factory(before):
                 return ErpTodoClient(
                     base_url=cfg.erp_web_base_url,
-                    username=cfg.erp_web_username.get_secret_value(),
-                    password=cfg.erp_web_password.get_secret_value(),
+                    **erp_login_kwargs(cfg),
                     timeout_seconds=cfg.erp_web_timeout_seconds, before_publish=before,
                 )
 

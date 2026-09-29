@@ -26,6 +26,12 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
     WorkflowStatus,
 )
+from aftersales_workbench.integrations.erp.desktop_auth import (
+    ErpDesktopAuth,
+    ErpDesktopLoginError,
+    erp_auth_configured,
+    erp_login_kwargs,
+)
 from aftersales_workbench.workflows.platform_state import platform_refund_completed
 
 if TYPE_CHECKING:
@@ -241,6 +247,7 @@ class ErpWebReturnMatcher:
         base_url: str,
         username: str,
         password: str,
+        desktop_auth: ErpDesktopAuth | None = None,
         timeout_seconds: float = 15,
         receivable_tolerance: Decimal = Decimal("0.01"),
         http_client: httpx.Client | None = None,
@@ -248,6 +255,7 @@ class ErpWebReturnMatcher:
         self.base_url = base_url.rstrip("/")
         self.username = username
         self.password = password
+        self.desktop_auth = desktop_auth
         self.receivable_tolerance = abs(receivable_tolerance)
         self._client = http_client or httpx.Client(
             base_url=self.base_url,
@@ -412,7 +420,7 @@ class ErpWebReturnMatcher:
                 reason="http_error",
                 message="ERP 服务请求异常，已暂停本批后续查询",
             )
-        except ErpReturnMatchServiceError:
+        except (ErpReturnMatchServiceError, ErpDesktopLoginError):
             self._logged_in = False
             return self._service_unavailable(
                 reason="session_invalid",
@@ -551,6 +559,10 @@ class ErpWebReturnMatcher:
         raise ErpReturnMatchServiceError("ERP 管理系统登录状态失效")
 
     def _ensure_logged_in(self, *, force: bool = False) -> None:
+        if self.desktop_auth is not None:
+            self.desktop_auth.login(self._client, force=force)
+            self._logged_in = True
+            return
         if self._logged_in and not force:
             return
         self._client.get("/leedis/index.php/welcome/loginpage").raise_for_status()
@@ -1121,24 +1133,13 @@ class ErpReturnMatchSyncService:
 
 
 def build_erp_return_matcher(settings: Settings) -> ErpWebReturnMatcher:
-    username = (
-        settings.erp_web_username.get_secret_value().strip()
-        if settings.erp_web_username
-        else ""
-    )
-    password = (
-        settings.erp_web_password.get_secret_value().strip()
-        if settings.erp_web_password
-        else ""
-    )
-    if not settings.erp_web_lookup_enabled or not username or not password:
+    if not settings.erp_web_lookup_enabled or not erp_auth_configured(settings):
         raise ErpReturnMatchConfigurationError(
             "ERP 退货匹配需要 ERP_WEB_LOOKUP_ENABLED=true 及网页登录凭据"
         )
     return ErpWebReturnMatcher(
         base_url=settings.erp_web_base_url,
-        username=username,
-        password=password,
+        **erp_login_kwargs(settings),
         timeout_seconds=settings.erp_web_timeout_seconds,
         receivable_tolerance=settings.erp_return_match_receivable_tolerance,
     )

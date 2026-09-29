@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
+from aftersales_workbench.integrations.erp.desktop_auth import erp_auth_configured, erp_login_kwargs
 from aftersales_workbench.integrations.erp.return_match import (
     ErpWebReturnMatcher,
     _clean_cell,
@@ -147,12 +148,11 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
 
 
 def build_package_source(settings, *, platform="PDD"):
-    if not settings.erp_web_username or not settings.erp_web_password:
+    if not erp_auth_configured(settings):
         raise ValueError("同包裹核验缺少 ERP 只读凭据")
     return ErpPackageOrderSource(
         platform=platform,
         base_url=settings.erp_web_base_url,
-        username=settings.erp_web_username.get_secret_value(),
-        password=settings.erp_web_password.get_secret_value(),
+        **erp_login_kwargs(settings),
         timeout_seconds=settings.erp_web_timeout_seconds,
     )
