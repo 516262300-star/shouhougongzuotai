@@ -1,5 +1,6 @@
 import json
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -19,6 +20,73 @@ from aftersales_workbench.integrations.erp.todo import ErpTodoClient
 from aftersales_workbench.workflows.module3_erp_refund import build_erp_unshipped_refund_client
 
 
+@pytest.mark.parametrize("entry", ["closure", "post_refund"])
+@pytest.mark.parametrize("logged_in", [True, False])
+def test_nested_refund_reads_keep_desktop_auth_and_never_use_password(
+    monkeypatch, entry, logged_in,
+):
+    from aftersales_workbench.integrations.erp.return_match import (
+        ErpReturnMatchStatus,
+        ErpWebReturnMatcher,
+        expected_items_from_order,
+    )
+    from aftersales_workbench.integrations.erp.unshipped_refund import ErpUnshippedRefundStatus
+    from tests.test_erp_closure_guard import lookup, order
+
+    auth, http, state, requests, calls = setup_auth(monkeypatch, read_status=503)
+    state["logged_in"] = logged_in
+    matcher = ErpWebReturnMatcher(
+        base_url=BASE, username="", password="", desktop_auth=auth, http_client=http,
+    )
+    matcher._logged_in = True  # A cached parent session must not bypass client logout.
+    try:
+        def read():
+            if entry == "closure":
+                return matcher.verify_closure(order(), lookup())
+            return matcher.inspect_post_refund_bill(order(), expected_items_from_order(order()))
+
+        if not logged_in:
+            with pytest.raises(ErpDesktopLoginError):
+                read()
+        elif entry == "closure":
+            assert read().status is ErpReturnMatchStatus.REFUND_UNVERIFIED
+        else:
+            assert read().status is ErpUnshippedRefundStatus.UNAVAILABLE
+        assert calls and calls[0] == {"status": True}
+        assert not any("loginact" in r.url.path for r in requests)
+        assert all(r.method == "GET" or r.url.path.endswith("/desktopauth/enter") for r in requests)
+        if not logged_in:
+            assert not requests
+    finally:
+        http.close()
+
+
+def test_sales_owner_child_checks_client_logout_before_reading_sales(monkeypatch):
+    from aftersales_workbench.integrations.erp.sales_owner import ErpWebSalesOwnerResolver
+
+    calls = []
+    requests = []
+
+    def login(client, *, force=False):
+        calls.append(force)
+        if len(calls) > 1:
+            raise ErpDesktopLoginError("client signed out")
+
+    def remote(request):
+        requests.append(request.url.path)
+        assert request.method == "GET" and request.url.path.endswith("GetCustomerName")
+        return httpx.Response(200, json=[{"id": "1", "autocomplete": "测试客户@员工"}])
+
+    with httpx.Client(base_url=BASE, transport=httpx.MockTransport(remote)) as http:
+        resolver = ErpWebSalesOwnerResolver(
+            base_url=BASE, username="", password="", http_client=http,
+            desktop_auth=SimpleNamespace(login=login),
+        )
+        with pytest.raises(ErpDesktopLoginError, match="signed out"):
+            resolver.resolve("ORDER-1")
+        assert len(calls) == 2 and len(requests) == 1
+
+
 def settings(**kw):
     return Settings(
         _env_file=None,
@@ -30,7 +98,10 @@ def settings(**kw):
     )
 
 
-def setup_auth(monkeypatch, *, response_status=302, location="/leedis/index.php/login/profile"):
+def setup_auth(
+    monkeypatch, *, response_status=302,
+    location="/leedis/index.php/login/profile", read_status=200,
+):
     auth = ErpDesktopAuth("local.json", 8)
     state = {"logged_in": True, "user_id": 8, "protocol": 2, "base_url": AUTH_BASE}
     requests = []
@@ -67,6 +138,8 @@ def setup_auth(monkeypatch, *, response_status=302, location="/leedis/index.php/
                 },
             )
         assert request.method == "GET"
+        if request.url.path != "/leedis/index.php/login/profile":
+            return httpx.Response(read_status, text="read response")
         return httpx.Response(200, text="authenticated")
 
     monkeypatch.setattr(auth, "_call", call)

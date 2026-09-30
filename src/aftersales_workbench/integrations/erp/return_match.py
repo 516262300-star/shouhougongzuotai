@@ -511,6 +511,7 @@ class ErpWebReturnMatcher:
         # 共用只读查询会话；不关闭共享客户端、不调用 execute 方法。
         client = ErpWebUnshippedRefundClient(
             base_url=self.base_url, username=self.username, password=self.password,
+            desktop_auth=self.desktop_auth,
             http_client=self._client,
         )
         client._logged_in = self._logged_in

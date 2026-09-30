@@ -320,6 +320,7 @@ class ErpWebSalesOwnerResolver:
 
                     source = ErpPackageOrderSource(
                         base_url=self.base_url, username=self.username, password=self.password,
+                        desktop_auth=self.desktop_auth,
                         http_client=self._client,
                     )
                     source._logged_in = True

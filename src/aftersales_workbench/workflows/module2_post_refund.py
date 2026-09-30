@@ -75,6 +75,7 @@ def inspect_pdd_bill(matcher, order, expected):
         base_url=matcher.base_url,
         username=matcher.username,
         password=matcher.password,
+        desktop_auth=matcher.desktop_auth,
         http_client=matcher._client,
     )
     client._logged_in = matcher._logged_in
