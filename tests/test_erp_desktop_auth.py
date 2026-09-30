@@ -185,3 +185,18 @@ def test_client_unavailable_discards_cached_web_session(monkeypatch):
             auth.login(client)
         assert not list(client.cookies.jar)
         assert len(requests) == 2
+
+
+def test_ticket_network_error_keeps_password_login_unused(monkeypatch):
+    auth, client, _, requests, _ = setup_auth(monkeypatch)
+    original = auth._call
+
+    def call(body):
+        if body == {"status": True}:
+            return original(body)
+        return {"ok": False, "error_code": "NETWORK_ERROR"}, (19000, "b" * 64)
+
+    monkeypatch.setattr(auth, "_call", call)
+    with client, pytest.raises(ErpDesktopLoginError, match="保留任务下次核验"):
+        auth.login(client)
+    assert not requests

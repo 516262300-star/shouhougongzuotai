@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from session_bridge import BASE, SessionBridge
+from session_client import SessionError
 from workbench_bridge import CommandBridge
 
 
@@ -37,7 +38,7 @@ class SessionBridgeTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertNotIn("secret-access", json.dumps(result))
         self.assertNotIn("ticket", self.bridge.status())
-        self.client.transport.assert_called_once_with(BASE, "ticket", "secret-access")
+        self.client.transport.assert_called_once_with(BASE, "ticket", "secret-access", timeout=30)
 
     def test_account_mismatch_never_issues_ticket(self):
         self.assertFalse(self.request(expected_user_id=9)["ok"])
@@ -67,13 +68,26 @@ class SessionBridgeTests(unittest.TestCase):
             self.client.transport.assert_not_called()
             release.set()
             self.assertTrue(future.result(3)["ok"])
-        self.client.transport.assert_called_once_with(BASE, "ticket", "rotated-access")
+        self.client.transport.assert_called_once_with(BASE, "ticket", "rotated-access", timeout=30)
 
     def test_timeout_or_remote_error_does_not_replay_or_leak(self):
         self.client.transport.side_effect = RuntimeError("secret-access")
         result = self.request()
         self.assertFalse(result["ok"])
         self.assertNotIn("secret-access", json.dumps(result))
+        self.client.transport.assert_called_once()
+
+    def test_transient_network_error_is_not_reported_as_revoked_login(self):
+        self.client.transport.side_effect = OSError("secret diagnostic")
+        result = self.request()
+        self.assertEqual(result["error_code"], "NETWORK_ERROR")
+        self.assertTrue(self.bridge.status()["logged_in"])
+        self.assertNotIn("secret", json.dumps(result))
+        self.client.transport.assert_called_once()
+
+    def test_revoked_authorization_is_identified(self):
+        self.client.transport.side_effect = SessionError("private detail", invalid=True)
+        self.assertEqual(self.request()["error_code"], "AUTH_REQUIRED")
         self.client.transport.assert_called_once()
 
     def test_loopback_host_bearer_and_browser_origin(self):

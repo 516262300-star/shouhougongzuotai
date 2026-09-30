@@ -47,6 +47,8 @@ class SessionBridge:
         }
 
     def request(self, data):
+        if not isinstance(data, dict):
+            return {"ok": False, "error_code": "INVALID_REQUEST"}
         if data == {"status": True}:
             return self.status()
         expected = data.get("expected_user_id")
@@ -58,12 +60,22 @@ class SessionBridge:
             # Use the same single executor as UI login/refresh/logout. Never race refresh rotation.
             future = self.app.pool.submit(self._ticket, expected)
             try:
-                return future.result(timeout=25)
+                return future.result(timeout=65)
             except TimeoutError:
                 future.cancel()
-                return {"ok": False, "message": "客户端授权暂未完成，本次不重试。"}
+                return {
+                    "ok": False, "error_code": "TIMEOUT",
+                    "message": "客户端授权暂未完成，本次不重试。",
+                }
+            except SessionError as error:
+                code = "AUTH_REQUIRED" if error.invalid else (
+                    "SERVER_CONFIGURATION" if error.configuration else "REMOTE_ERROR"
+                )
+                return {"ok": False, "error_code": code}
+            except OSError:
+                return {"ok": False, "error_code": "NETWORK_ERROR"}
             except Exception:
-                return {"ok": False, "message": "客户端未登录或授权失效，请在客户端完成登录。"}
+                return {"ok": False, "error_code": "CLIENT_ERROR"}
         finally:
             self.slots.release()
 
@@ -74,7 +86,7 @@ class SessionBridge:
         value = client.ensure_fresh()
         if value.user_id != expected:
             raise SessionError("Unexpected account")
-        payload = client.transport(client.base_url, "ticket", value.access)
+        payload = client.transport(client.base_url, "ticket", value.access, timeout=30)
         ticket, ttl = payload.get("ticket"), payload.get("expires_in")
         if not valid_secret(ticket) or type(ttl) is not int or not 0 < ttl <= 60:
             raise SessionError("Invalid ticket")

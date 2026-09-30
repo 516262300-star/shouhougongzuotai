@@ -70,7 +70,7 @@ class ErpDesktopAuth:
                 or not re.fullmatch("[0-9a-f]{64}", token)
             ):
                 raise ValueError()
-            with httpx.Client(timeout=30, trust_env=False, follow_redirects=False) as local:
+            with httpx.Client(timeout=70, trust_env=False, follow_redirects=False) as local:
                 response = local.post(
                     f"http://127.0.0.1:{port}/session",
                     json=body,
@@ -113,6 +113,15 @@ class ErpDesktopAuth:
         data, ticket_identity = self._call(
             {"base_url": AUTH_BASE, "expected_user_id": self.expected_user_id}
         )
+        if data.get("ok") is not True:
+            code = data.get("error_code")
+            if code in {"TIMEOUT", "NETWORK_ERROR", "REMOTE_ERROR"}:
+                raise ErpDesktopLoginError("ERP客户端授权请求暂时失败，保留任务下次核验")
+            if code == "SERVER_CONFIGURATION":
+                raise ErpDesktopLoginError("ERP服务器认证配置异常，请联系管理员核查")
+            if code == "AUTH_REQUIRED":
+                raise ErpDesktopLoginError("ERP客户端授权已失效，请在客户端重新登录")
+            raise ErpDesktopLoginError("ERP客户端暂未完成授权，保留任务等待核验")
         ticket = data.get("ticket")
         if (
             data.get("ok") is not True
@@ -136,6 +145,7 @@ class ErpDesktopAuth:
                 data={"ticket": ticket},
                 headers={"Origin": origin, "Referer": origin + "/"},
                 follow_redirects=False,
+                timeout=30,
             )
             if response.status_code not in {302, 303}:
                 raise ValueError()
@@ -147,7 +157,7 @@ class ErpDesktopAuth:
                 raise ValueError()
             if not any(c.value for c in client.cookies.jar if c.domain.lstrip(".") == "ldswj.net"):
                 raise ValueError()
-            check = client.get(url, follow_redirects=False)
+            check = client.get(url, follow_redirects=False, timeout=30)
             if check.status_code != 200:
                 raise ValueError()
         except Exception:

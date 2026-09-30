@@ -107,7 +107,7 @@ def read_http_error(exc):
     return "HTTP %s%s" % (status, (": " + detail) if detail else ""), payload
 
 
-def post(base_url, action, token=None, form=None):
+def post(base_url, action, token=None, form=None, *, timeout=12):
     headers = {"Accept": "application/json"}
     if token is not None:
         # Apache/PHP-FPM installations may hide the standard Authorization header.
@@ -118,7 +118,7 @@ def post(base_url, action, token=None, form=None):
         data=urllib.parse.urlencode(form).encode() if form is not None else b"", headers=headers, method="POST")
     opener = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPSHandler(context=ssl_context()))
     try:
-        with opener.open(request, timeout=12) as response:
+        with opener.open(request, timeout=timeout) as response:
             raw = response.read(16385)
             if len(raw) > 16384:
                 raise SessionError("服务器响应过大。")
