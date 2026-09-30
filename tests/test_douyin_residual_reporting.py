@@ -57,4 +57,11 @@ def test_actual_worker_reports_technical_failure(monkeypatch, unavailable, statu
     runtime = SimpleNamespace(settings=settings(), _douyin_ready_shop_codes=tuple(douyin.SHOPS))
     result = worker.Module1WorkerRuntime._process_douyin_module12(runtime)
     assert result.status == status
+    cycle = worker.Module1WorkerCycleResult(started_at="2026-09-30T00:00:00+00:00")
+    cycle.douyin_module12 = result
+    summary = cycle.summary_dict()["douyin_module12"]
+    assert summary["status"] == status
+    assert summary["error"] == result.error
+    if unavailable:
+        assert summary["error"]
     client.close.assert_called_once()
