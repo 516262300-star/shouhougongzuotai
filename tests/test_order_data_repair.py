@@ -56,6 +56,24 @@ def test_empty_page_requires_matching_customer():
     assert resolve_empty(profile="shipment?kehuid=2").status == "unavailable"
 
 
+def test_complete_other_order_sales_are_absence_not_query_failure():
+    from tests.test_sales_owner_zero_quantity import page, row
+    document = page([row("6")])  # 完整读取，但销售单属于另一个平台订单。
+    assert resolve_empty(document).status == "sales_not_found"
+    source = ErpPackageOrderSource(base_url="https://erp.example", username="test",
+        password="test", http_client=erp_client(document))
+    try:
+        with pytest.raises(ValueError):
+            source.read("123", only_order=True)
+    finally:
+        source.close()
+
+
+def test_incomplete_other_sales_cannot_prove_target_absent():
+    from tests.test_sales_owner_zero_quantity import page, row
+    assert resolve_empty(page([row("6")]).replace("1 / 1", "1 / 2")).status == "unavailable"
+
+
 @pytest.mark.parametrize("only_order", [True, False])
 def test_empty_page_cannot_authorize_package_or_refund_checks(only_order):
     source = ErpPackageOrderSource(base_url="https://erp.example", username="test",
@@ -74,7 +92,7 @@ def test_empty_sales_cache_is_neither_fast_refund_nor_failed_retry(db):
     assert (result.not_found, result.unavailable, result.not_required) == (1, 0, 0)
     assert order.erp_sales_owner_status == "sales_not_found"
     assert ErpSalesOwnerSyncService(db, Resolver()).sync_stale(limit=1, refresh_seconds=86400).scanned == 0
-    assert "暂无销售" in AftersalesRecordService._cached_owner(order).message
+    assert "未查到该订单" in AftersalesRecordService._cached_owner(order).message
 
 
 def body(amount=2436, **kwargs):
@@ -119,4 +137,3 @@ def test_sync_reads_parent_payment_once_for_multiple_refunds(tmp_path):
         client.get_order_detail = lambda _: {"data": {}}
         with pytest.raises(ValueError):
             list(client.fetch_window(start_modified_at=1, end_modified_at=2, page_size=50))
-

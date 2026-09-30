@@ -146,6 +146,8 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
             if _table_rows(latest_first) != first_page:
                 raise ValueError("取数期间原销售记录改变，需重新读取完整分页")
         if order_sn not in {row["order_sn"] for row in all_rows}:
+            if for_owner_lookup:
+                return CustomerSales(customer_id, name, "", (), expected_pages)
             raise ValueError("ERP 全部分页未找到目标原销售订单，不能判断包裹范围")
         if for_owner_lookup and not any(
             row["order_sn"] == order_sn and Decimal(row["quantity"]) > 0 for row in all_rows

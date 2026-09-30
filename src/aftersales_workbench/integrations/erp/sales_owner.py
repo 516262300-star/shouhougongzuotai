@@ -319,10 +319,10 @@ class ErpWebSalesOwnerResolver:
                     sales = source.read(
                         order_sn, only_order=True, customer_payload=payload, for_owner_lookup=True,
                     )
-                    if not sales.rows and sales.pages == 0:
+                    if not sales.rows:
                         return SalesOwnerLookup(
                             None, sales.customer_name, "sales_not_found",
-                            "ERP 客户存在，当前暂无销售记录；不能据此认定未发货或已平账",
+                            "ERP 客户存在，当前未查到该订单的销售记录；不能据此认定未发货或已平账",
                         )
                     return _aggregate_lookup(
                         {str(row.get("sales_owner") or "").strip() for row in sales.rows},

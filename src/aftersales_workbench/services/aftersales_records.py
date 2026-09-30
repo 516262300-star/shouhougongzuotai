@@ -1046,7 +1046,7 @@ class AftersalesRecordService:
                 "上次 ERP 归属查询未取得有效结果，等待后台优先重查；"
                 "不等同于客户不存在或平台退款失败。"
             ),
-            "sales_not_found": "ERP 客户存在，当前暂无销售记录；不能据此认定未发货或已平账。",
+            "sales_not_found": "ERP 客户存在，当前未查到该订单的销售记录；不能据此认定未发货或已平账。",
             "not_configured": "最近一次查询缺少 ERP 只读连接或登录配置。",
             "conflict": "同一订单匹配到多个业务员，需要人工核对客户档案归属。",
             "not_required": (
