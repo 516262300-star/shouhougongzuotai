@@ -171,6 +171,29 @@ def test_partial_repeated_and_legitimate_empty_pages():
     assert PageGuard(label="test", page_size=2).read({"total": 0}, "rows") == ([], True)
 
 
+def test_1688_reads_zero_based_first_page_and_matches_declared_total():
+    client = object.__new__(Alibaba1688ReadClient)
+    pages = []
+
+    def refunds(**kwargs):
+        page = kwargs["page"]
+        pages.append(page)
+        rows = [{"refundId": str(n)} for n in range(page * 20, min((page + 1) * 20, 23))]
+        return {"result": {"currentPageNum": page, "totalCount": 23, "opOrderRefundModels": rows}}
+
+    client.get_refunds = refunds
+    client.fetch_refund = lambda value: value
+    assert list(client.fetch_window(start_modified_at=1, end_modified_at=100, page_size=50)) == [str(n) for n in range(23)]
+    assert pages == [0, 1]
+
+
+def test_1688_mismatched_page_never_becomes_complete():
+    client = object.__new__(Alibaba1688ReadClient)
+    client.get_refunds = lambda **kwargs: {"result": {"currentPageNum": 1, "totalCount": 0, "opOrderRefundModels": []}}
+    with pytest.raises(MarketplaceApiError, match="页码"):
+        list(client.fetch_window(start_modified_at=1, end_modified_at=100, page_size=20))
+
+
 def test_watermarks_are_shop_scoped_and_unrelated_order_updates_do_not_change_them(db):
     db.add_all(
         [

@@ -125,7 +125,8 @@ class Alibaba1688ReadClient(RetryingJsonClient):
         page_size: int,
     ):
         del page_size
-        page = 1
+        # 此退款列表的 currentPageNum 从 0 开始；从 1 起读会跳过前 20 条。
+        page = 0
         guard = PageGuard(label="1688退款列表", page_size=20)
         while True:
             body = self.get_refunds(
@@ -134,7 +135,10 @@ class Alibaba1688ReadClient(RetryingJsonClient):
                 page=page,
             )
             body = checked_object(body, "1688退款列表")
-            records, finished = guard.read(body.get("result"), "opOrderRefundModels")
+            result = checked_object(body.get("result"), "1688退款列表")
+            if "currentPageNum" in result and str(result["currentPageNum"]) != str(page):
+                raise MarketplaceApiError("1688退款列表返回页码与请求不一致")
+            records, finished = guard.read(result, "opOrderRefundModels")
             for record in records:
                 refund_id = required_text(record.get("refundId"), field="refundId")
                 try:
