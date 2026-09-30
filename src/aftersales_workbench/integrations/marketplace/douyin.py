@@ -4,12 +4,14 @@ import hashlib
 import hmac
 import json
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
+from aftersales_workbench.integrations.marketplace.douyin_payment import verified_order_payment
 from aftersales_workbench.integrations.marketplace.http import RetryingJsonClient
 from aftersales_workbench.integrations.marketplace.mapping import (
     list_of_mappings,
@@ -28,6 +30,7 @@ from aftersales_workbench.integrations.marketplace.models import (
 DOUYIN_AFTERSALE_LIST_PATH = "/afterSale/List"
 DOUYIN_AFTERSALE_DETAIL_PATH = "/afterSale/Detail"
 DOUYIN_TOKEN_CREATE_PATH = "/token/create"
+DOUYIN_ORDER_DETAIL_PATH = "/order/orderDetail"
 
 
 def _sort_json(value: Any) -> Any:
@@ -107,6 +110,7 @@ class DouyinReadClient(RetryingJsonClient):
     ) -> dict[str, Any]:
         if path not in {
             DOUYIN_TOKEN_CREATE_PATH, DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH,
+            DOUYIN_ORDER_DETAIL_PATH,
         }:
             raise ValueError("抖音同步禁止调用写业务接口")
         app_key = self.config.app_key.get_secret_value().strip()
@@ -226,7 +230,7 @@ class DouyinReadClient(RetryingJsonClient):
         return self._access_token
 
     def execute_read(self, path: str, parameters: dict[str, Any]) -> dict[str, Any]:
-        if path not in {DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH}:
+        if path not in {DOUYIN_AFTERSALE_LIST_PATH, DOUYIN_AFTERSALE_DETAIL_PATH, DOUYIN_ORDER_DETAIL_PATH}:
             raise ValueError("抖音同步仅允许售后只读接口")
         return self._request(
             path,
@@ -240,6 +244,9 @@ class DouyinReadClient(RetryingJsonClient):
             {"after_sale_id": after_sales_id},
         )
 
+    def get_order_detail(self, order_sn: str) -> dict[str, Any]:
+        return self.execute_read(DOUYIN_ORDER_DETAIL_PATH, {"shop_order_id": order_sn})
+
     def fetch_window(
         self,
         *,
@@ -250,6 +257,7 @@ class DouyinReadClient(RetryingJsonClient):
         limit = min(page_size, 100)
         page = 0
         seen: set[str] = set()
+        payments = {}  # 同一窗口内多个售后共用父订单，只读一次实付。
         while True:
             body = self.execute_read(
                 DOUYIN_AFTERSALE_LIST_PATH,
@@ -284,7 +292,15 @@ class DouyinReadClient(RetryingJsonClient):
                 if not isinstance(detail_data, dict):
                     raise ValueError("抖音售后详情缺少 data")
                 detail = detail_data
-                yield normalize_douyin_refund(record, detail)
+                refund = normalize_douyin_refund(record, detail)
+                order_sn = refund.platform_order_sn
+                if order_sn not in payments:
+                    payments[order_sn] = verified_order_payment(
+                        self.get_order_detail(order_sn), order_sn=order_sn,
+                        shop_id=self.config.platform_shop_id,
+                    )
+                # 获取或身份核对失败会终止本窗口，防止清空已有金额或推进游标。
+                yield replace(refund, platform_order_amount=payments[order_sn])
             if len(records) < limit:
                 if int(data.get("total") or 0) > len(seen):
                     raise ValueError("抖音售后分页提前结束，禁止推进游标")

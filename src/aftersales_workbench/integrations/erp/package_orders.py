@@ -72,6 +72,16 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
             if len(pager) != 1:
                 raise ValueError("ERP 销售页缺少唯一分页信息")
             current, pages = map(int, pager.pop())
+            visible = _clean_cell(re.sub(
+                r"<(script|style)\b[^>]*>.*?</\1\s*>|<!--.*?-->", "", document,
+                flags=re.IGNORECASE | re.DOTALL,
+            ))
+            # ERP 的合法空销售页使用 1/0；仅用于归属展示，绝不放宽包裹核验。
+            if (for_owner_lookup and page == 0 and (current, pages) == (1, 0)
+                    and not first_page
+                    and re.fullmatch(r"上一页\s*1\s*/\s*0\s*下一页\s*当前没有单据\s*"
+                                     r"上一页\s*1\s*/\s*0\s*下一页", visible)):
+                return CustomerSales(customer_id, name, "", (), 0)
             if current != page + 1 or not 1 <= pages <= page_limit:
                 raise ValueError("ERP 销售分页越界或超过安全取数上限")
             if expected_pages is not None and expected_pages != pages:

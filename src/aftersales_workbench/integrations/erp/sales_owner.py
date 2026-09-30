@@ -319,6 +319,11 @@ class ErpWebSalesOwnerResolver:
                     sales = source.read(
                         order_sn, only_order=True, customer_payload=payload, for_owner_lookup=True,
                     )
+                    if not sales.rows and sales.pages == 0:
+                        return SalesOwnerLookup(
+                            None, sales.customer_name, "sales_not_found",
+                            "ERP 客户存在，当前暂无销售记录；不能据此认定未发货或已平账",
+                        )
                     return _aggregate_lookup(
                         {str(row.get("sales_owner") or "").strip() for row in sales.rows},
                         {sales.customer_name}, matched_message="已从 ERP 发货销售订单逐笔匹配",
@@ -518,7 +523,8 @@ class ErpSalesOwnerSyncService:
                     if lookup.status not in _RETRY_STATUSES
                     else checked_at - timedelta(seconds=max(0, refresh_seconds - 300))
                 )
-            counts[lookup.status if lookup.status in counts else "unavailable"] += 1
+            count_status = "not_found" if lookup.status == "sales_not_found" else lookup.status
+            counts[count_status if count_status in counts else "unavailable"] += 1
         if not dry_run:
             self.session.commit()
         return SalesOwnerSyncResult(

@@ -1013,6 +1013,7 @@ class AftersalesRecordService:
         display_name = owner.sales_owner or {
             "not_configured": "ERP 查询未配置",
             "unavailable": "ERP 查询失败·待重试",
+            "sales_not_found": "ERP 暂无销售记录",
             "not_found": "ERP 客户未设置业务员" if owner.customer_name else "ERP 未查到客户",
             "not_required": "快速退款未入 ERP",
             "unsupported": "归属查询未接入",
@@ -1045,6 +1046,7 @@ class AftersalesRecordService:
                 "上次 ERP 归属查询未取得有效结果，等待后台优先重查；"
                 "不等同于客户不存在或平台退款失败。"
             ),
+            "sales_not_found": "ERP 客户存在，当前暂无销售记录；不能据此认定未发货或已平账。",
             "not_configured": "最近一次查询缺少 ERP 只读连接或登录配置。",
             "conflict": "同一订单匹配到多个业务员，需要人工核对客户档案归属。",
             "not_required": (
