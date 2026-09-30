@@ -57,8 +57,28 @@ def test_invalid_quantity_is_still_unavailable(quantity):
     assert resolve([row("6"), row(quantity)]).status == "unavailable"
 
 
-def test_zero_only_cannot_prove_shipped_sales_owner():
-    assert resolve([row("0")]).status == "unavailable"
+def test_zero_only_keeps_original_sales_owner_without_proving_quantity():
+    result = resolve([row("0")])
+    assert result.status == "matched"
+    assert result.sales_owner == "原销售业务员"
+    assert "不代表数量或退款核验通过" in result.message
+    source = ErpPackageOrderSource(base_url="https://erp.example", username="test",
+        password="test", http_client=client([row("0")]))
+    try:
+        sales = source.read(SN, only_order=True, for_owner_lookup=True)
+        assert sales.rows[0]["quantity"] == "0"
+        assert sales.rows[0]["sale_id"] == "101"
+    finally:
+        source.close()
+
+
+@pytest.mark.parametrize("owners,status", [
+    (["原销售业务员", "其他业务员"], "conflict"),
+    (["原销售业务员", ""], "not_found"),
+    ([""], "not_found"),
+])
+def test_zero_only_still_requires_complete_unique_owner(owners, status):
+    assert resolve([row("0", owner=owner) for owner in owners]).status == status
 
 
 def test_zero_quantity_owner_conflict_is_not_ignored():
@@ -98,9 +118,10 @@ def test_sales_reference_suffix_does_not_relax_package_or_funds_checks(only_orde
 
 
 @pytest.mark.parametrize("only_order", [True, False])
-def test_package_and_refund_quantity_validation_stays_strict(only_order):
+@pytest.mark.parametrize("quantities", [["6", "0"], ["0"]])
+def test_package_and_refund_quantity_validation_stays_strict(only_order, quantities):
     source = ErpPackageOrderSource(platform="TMALL", base_url="https://erp.example",
-        username="test", password="test", http_client=client([row("6"), row("0")]))
+        username="test", password="test", http_client=client([row(q) for q in quantities]))
     with pytest.raises(ValueError, match="原销售关联或数量无效"):
         source.read(SN, only_order=only_order)
     source.close()

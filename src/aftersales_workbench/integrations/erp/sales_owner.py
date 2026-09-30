@@ -326,7 +326,8 @@ class ErpWebSalesOwnerResolver:
                         )
                     return _aggregate_lookup(
                         {str(row.get("sales_owner") or "").strip() for row in sales.rows},
-                        {sales.customer_name}, matched_message="已从 ERP 发货销售订单逐笔匹配",
+                        {sales.customer_name},
+                        matched_message="已从 ERP 原销售记录匹配业务员；不代表数量或退款核验通过",
                     )
                 self._logged_in = False
         except httpx.TimeoutException:

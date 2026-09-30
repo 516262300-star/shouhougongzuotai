@@ -152,10 +152,9 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
             if for_owner_lookup:
                 return CustomerSales(customer_id, name, "", (), expected_pages)
             raise ValueError("ERP 全部分页未找到目标原销售订单，不能判断包裹范围")
-        if for_owner_lookup and not any(
-            row["order_sn"] == order_sn and Decimal(row["quantity"]) > 0 for row in all_rows
-        ):
-            raise ValueError("ERP 目标订单没有正数销售商品行，不能确认发货销售归属")
+        # 归属取自精确订单的原销售行；入库化只为零不抹去原销售业务员。
+        # 数量原样保留，不能据归属 matched 推断已发货、实收或退款核验通过。
+        # 非归属调用已逐行要求正数，仍不能用这些零数量行核验包裹或资金。
         owners = {row["sales_owner"] for row in all_rows if row["order_sn"] == order_sn}
         owner = next(iter(owners)) if len(owners) == 1 and "" not in owners else ""
         return CustomerSales(customer_id, name, owner, tuple(all_rows), expected_pages)
