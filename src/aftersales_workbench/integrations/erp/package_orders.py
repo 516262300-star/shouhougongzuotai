@@ -50,12 +50,15 @@ class ErpPackageOrderSource(ErpWebReturnMatcher):
             parts = str(entry.get("autocomplete") or "").split("@")
             if not parts[0].strip() or not str(entry.get("id") or "").isdigit():
                 raise ValueError("ERP 客户身份字段不完整")
-            identities.add((str(entry["id"]), parts[0].strip()))
+            # 客户名称也是 ERP 精确查询键；首尾空格（含全角空格）不能擅自删除。
+            identities.add((str(entry["id"]), parts[0]))
         if len(identities) != 1:
             raise ValueError("ERP 客户身份不唯一")
         customer_id, name = identities.pop()
         profile = self._get("/leedis2/public/customer/stdview", params={"autocustomer": name})
         ids = set(re.findall(r"shipment\?kehuid=(\d+)", profile))
+        if not ids:
+            raise ValueError("ERP 客户档案未返回可核验的销售页链接")
         if ids != {customer_id}:
             raise ValueError("ERP 客户档案与销售页客户 ID 不一致")
         all_rows, fingerprints = [], set()
