@@ -106,6 +106,88 @@ def test_shipped_unsettled_order_does_not_block_sync_window(setup):
         source.candidate(state.row)
 
 
+def test_repayment_order_with_partial_refund_keeps_live_parcel(setup):
+    source, state = setup
+    state.row['baseInfo'].update(status='waitbuyerrepayment', refund=10, refundPayment=1000)
+    state.row['productItems'][0]['status'] = 'waitbuyerrepayment'
+    assert source.candidate(state.row) == (SN, datetime(2026, 9, 23, 4))
+    snapshot = source.refresh(SN)
+    assert len(snapshot) == 1 and snapshot[0].tracking_number == 'SYNTH168801'
+    assert getattr(snapshot, 'full_refund', None) is None
+
+
+@pytest.mark.parametrize('child_status,logistics_status', [('cancel', 4), (None, 3), (None, 4)])
+def test_repayment_ended_children_do_not_remind_or_claim_full_refund(
+    setup, child_status, logistics_status,
+):
+    source, state = setup
+    state.row['baseInfo'].update(status='waitbuyerrepayment', refund=10, refundPayment=1000)
+    state.row['productItems'][0].update(status=child_status, logisticsStatus=logistics_status)
+    assert source.candidate(state.row)[0] == SN
+    snapshot = source.refresh(SN)
+    assert snapshot == []
+    assert getattr(snapshot, 'full_refund', None) is None
+    assert getattr(snapshot, 'closed', None) is None
+
+
+def test_repayment_still_requires_merchant_package_and_refund_evidence(setup):
+    source, state = setup
+    state.row['baseInfo']['status'] = 'waitbuyerrepayment'
+    state.row['baseInfo']['sellerAlipayId'] = '2088000000000002'
+    with pytest.raises(ValueError, match='商家身份'):
+        source.candidate(state.row)
+    state.row['baseInfo']['sellerAlipayId'] = SELLER
+    packages = state.row.pop('nativeLogistics')
+    with pytest.raises(ValueError, match='包裹'):
+        source.candidate(state.row)
+    state.row['nativeLogistics'] = packages
+    state.row['baseInfo'].update(refund=20, refundPayment=1000)
+    with pytest.raises(ValueError, match='实退金额'):
+        source.refresh(SN)
+    state.row['baseInfo']['refundPayment'] = 2000
+    snapshot = source.refresh(SN)
+    assert snapshot == [] and snapshot.full_refund is not None
+
+
+@pytest.mark.parametrize('unknown', [False, True])
+def test_second_page_repayment_unblocks_window_but_unknown_still_rolls_back(watch_case, unknown):
+    watch, session, _, _, state, _ = watch_case
+    watch.now = lambda: datetime(2026, 9, 24, 4)
+    before = watch.now() - timedelta(hours=6)
+    cursor = base.Cursor(shop_code='1688-test', updated_through=before, last_error='旧失败')
+    session.add(cursor)
+    session.commit()
+    rows = []
+    for i in range(22):
+        row = trade()
+        row['baseInfo'].update(id=1000+i, idOfStr=str(1000+i))
+        rows.append(row)
+    rows[20]['baseInfo'].update(status='new_unknown_state' if unknown else 'waitbuyerrepayment',
+                                refund=10, refundPayment=1000)
+    rows[20]['productItems'][0].update(status='cancel', logisticsStatus=4)
+    client = SimpleNamespace(
+        execute_read=lambda *a, **p: {'success': True, 'totalRecord': 22,
+                                     'result': rows[(p['page']-1)*20:p['page']*20]},
+        get_order_detail=lambda sn: {'success': True, 'result': rows[int(sn)-1000]},
+    )
+    source = Alibaba1688ShipmentSource(client, seller_fingerprint=FINGERPRINT)
+    if unknown:
+        with pytest.raises(ValueError, match='状态未识别'):
+            watch.sync('1688-test', source, max_windows=1)
+        assert session.get(base.Order, ('1688-test', '1000')) is None
+        assert cursor.updated_through == before and '状态未识别' in cursor.last_error
+    else:
+        assert watch.sync('1688-test', source, max_windows=1) == 22
+        assert cursor.updated_through == watch.now() - timedelta(minutes=1)
+        assert cursor.last_error is None
+        for sn in ('1020', '1021'):
+            order = session.get(base.Order, ('1688-test', sn))
+            assert order is not None
+            watch.check_order(order, source, '合成1688店', publish=True)
+        assert state.posts == 1  # 取消商品不催揽收，后面的正常包裹仍可提醒。
+    assert not session.scalars(select(base.Notice).where(base.Notice.status == 'UNKNOWN')).all()
+
+
 @pytest.mark.parametrize('logistics_status', [3, 4])
 def test_explicit_received_or_returned_child_without_trade_status_not_reminded(
     setup, logistics_status,

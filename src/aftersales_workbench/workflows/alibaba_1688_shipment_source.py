@@ -17,7 +17,10 @@ ORDER_LIST_API = "alibaba.trade.ec.getOrderList.sellerView"
 CN = timezone(timedelta(hours=8))
 TERMINAL = {"success", "cancel", "terminated", "confirm_goods", "confirm_goods_but_not_fund"}
 STATES = TERMINAL | {"waitbuyerpay", "waitsellersend", "waitbuyerreceive",
-                     "waitlogisticstakein", "waitbuyerconfirm", "send_goods_but_not_fund"}
+                     "waitlogisticstakein", "waitbuyerconfirm", "send_goods_but_not_fund",
+                     "waitbuyerrepayment"}
+# 实测waitbuyerrepayment也会出现在已发货、商品已取消的订单上。
+# 只识别状态，仍核验商品、真实包裹和退款金额；不能按未付款或交易结束跳过。
 
 
 def _date(value):
