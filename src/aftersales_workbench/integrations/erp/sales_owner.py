@@ -417,8 +417,14 @@ class ErpSalesOwnerSyncService:
         now = datetime.now()
         stale_before = now - timedelta(seconds=refresh_seconds)
         stale_filter = or_(
-            AfterSalesOrder.erp_sales_owner_synced_at.is_(None),
-            AfterSalesOrder.erp_sales_owner_synced_at < stale_before,
+            AfterSalesOrder.erp_sales_owner_next_retry_at <= now,
+            and_(
+                AfterSalesOrder.erp_sales_owner_next_retry_at.is_(None),
+                or_(
+                    AfterSalesOrder.erp_sales_owner_synced_at.is_(None),
+                    AfterSalesOrder.erp_sales_owner_synced_at < stale_before,
+                ),
+            ),
         )
         if platform_order_sns is not None:
             selected = tuple(dict.fromkeys(_normalize_order_sn(sn) for sn in platform_order_sns))
@@ -517,13 +523,14 @@ class ErpSalesOwnerSyncService:
                 order.erp_customer_name = lookup.customer_name
                 order.erp_sales_owner = lookup.sales_owner
                 order.erp_sales_owner_status = lookup.status
-                # 沿用旧缓存调度约定；失败时间为重查排序值，并非实际查询时刻。
                 checked_at = datetime.now()
-                order.erp_sales_owner_synced_at = (
-                    checked_at
-                    if lookup.status not in _RETRY_STATUSES
-                    else checked_at - timedelta(seconds=max(0, refresh_seconds - 300))
+                order.erp_sales_owner_synced_at = checked_at
+                order.erp_sales_owner_checked_at = checked_at
+                order.erp_sales_owner_next_retry_at = checked_at + timedelta(
+                    seconds=300 if lookup.status in _RETRY_STATUSES else refresh_seconds
                 )
+                if lookup.status not in _RETRY_STATUSES:
+                    order.erp_sales_owner_last_success_at = checked_at
             count_status = "not_found" if lookup.status == "sales_not_found" else lookup.status
             counts[count_status if count_status in counts else "unavailable"] += 1
         if not dry_run:

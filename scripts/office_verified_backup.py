@@ -39,6 +39,13 @@ def verify(directory: Path) -> dict:
         with sqlite3.connect(journal.as_uri() + '?mode=ro', uri=True) as conn:
             if conn.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
                 raise ValueError('Invalid monitor database')
+    history = directory / 'worker-log-history.zip'
+    if history.exists():
+        with zipfile.ZipFile(history) as archive:
+            if any(Path(name).is_absolute() or '..' in Path(name).parts for name in archive.namelist()):
+                raise ValueError('Invalid worker log archive member')
+            if archive.testzip() is not None:
+                raise ValueError('Worker log archive CRC mismatch')
     with zipfile.ZipFile(directory / 'release-code.zip') as archive:
         if any(Path(name).is_absolute() or '..' in Path(name).parts for name in archive.namelist()):
             raise ValueError('Invalid release archive member')

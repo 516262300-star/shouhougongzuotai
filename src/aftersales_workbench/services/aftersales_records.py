@@ -341,7 +341,7 @@ class AftersalesRecordService:
                 "total": total,
                 "pages": max(1, (total + page_size - 1) // page_size),
             },
-            "last_synced_at": self._last_synced_at(),
+            **self._sync_freshness(platform=clean_platform, shop_id=shop_id),
         }
 
     def list_intercepts(
@@ -411,7 +411,7 @@ class AftersalesRecordService:
                 "total": total,
                 "pages": max(1, (total + page_size - 1) // page_size),
             },
-            "last_synced_at": self._last_synced_at(),
+            **self._sync_freshness(shop_id=shop_id),
         }
 
     def list_manual_todos(
@@ -493,7 +493,7 @@ class AftersalesRecordService:
             )
         owner = self._owner_for_record(order, shop)
         serialized_owner = self._serialize_owner(owner)
-        serialized_owner["checked_at"] = _dt(order.erp_sales_owner_synced_at)
+        serialized_owner["checked_at"] = _dt(order.erp_sales_owner_checked_at)
         refund = self._refund_display(order, shop, tasks)
         case = next((case_for_display(t) for t in reversed(tasks) if case_for_display(t)), None)
         if case and not confirmed_refund(order, shop.platform):
@@ -650,7 +650,9 @@ class AftersalesRecordService:
             "sales_owner_status": serialized_owner["status"],
             "sales_owner_tone": serialized_owner["tone"],
             "sales_owner_reason": serialized_owner["message"],
-            "sales_owner_checked_at": _dt(order.erp_sales_owner_synced_at),
+            "sales_owner_checked_at": _dt(order.erp_sales_owner_checked_at),
+            "sales_owner_last_success_at": _dt(order.erp_sales_owner_last_success_at),
+            "sales_owner_next_retry_at": _dt(order.erp_sales_owner_next_retry_at),
             "erp_customer_name": serialized_owner["customer_name"],
             "after_sales_type": _enum_value(order.after_sales_type),
             "after_sales_type_label": self._type_label(_enum_value(order.after_sales_type)),
@@ -1589,8 +1591,15 @@ class AftersalesRecordService:
         )
 
     def _last_synced_at(self) -> str | None:
-        value = self.session.scalar(select(func.max(AfterSalesOrder.updated_at)))
-        return _dt(value)
+        return self._sync_freshness()["last_synced_at"]
+
+    def _sync_freshness(self, *, platform=None, shop_id=None):
+        from aftersales_workbench.services.sync_freshness import sync_freshness
+
+        freshness = sync_freshness(self.session, platform=platform, shop_id=shop_id)
+        # 兼容旧字段，但缺店铺水位时不再伪造一个整体成功时间。
+        value = None if freshness["missing_shop_count"] else freshness["oldest_success_at"]
+        return {"last_synced_at": value, "sync_freshness": freshness}
 
     def _tasks_by_order(self, after_sales_sns: list[str]) -> dict[str, list[AftersalesActionTask]]:
         if not after_sales_sns:

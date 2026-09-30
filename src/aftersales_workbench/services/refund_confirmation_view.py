@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, case, func, or_, select
 
 from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder as Order
@@ -11,6 +11,33 @@ from aftersales_workbench.workflows.money_operations import operation_key
 
 PDD_STAGES = ("pdd_refund", "module2_pdd_refunds")
 PENDING_REASON = "退款结果待确认；后台仅回查平台，不重复退款"
+
+
+def money_confirmation_summary(session):
+    """跨平台独立统计，不经 task INNER JOIN 隐藏无任务的未确认资金。"""
+    legacy = and_(
+        MoneyOperation.task_id.is_(None),
+        or_(MoneyOperation.snapshot.is_(None),
+            func.lower(func.json_type(MoneyOperation.snapshot)) == "null"),
+        MoneyOperation.last_error.like("升级前资金任务%"),
+    )
+    rows = session.execute(select(
+        MoneyOperation.platform, MoneyOperation.state,
+        case((legacy, 1), else_=0).label("legacy"),
+        func.count().label("count"), func.min(MoneyOperation.started_at).label("oldest"),
+    ).where(
+        MoneyOperation.operation_type == "PLATFORM_REFUND",
+        MoneyOperation.state.in_(("ACKNOWLEDGED", "UNKNOWN", "REQUEST_STARTED")),
+    ).group_by(MoneyOperation.platform, MoneyOperation.state, "legacy")).all()
+    pending = sum(row.count for row in rows if not row.legacy)
+    return {
+        "pending": pending,
+        "legacy_protected": sum(row.count for row in rows if row.legacy),
+        "by_platform": [{"platform": row.platform, "state": row.state,
+                         "legacy": bool(row.legacy), "count": row.count,
+                         "oldest_started_at": row.oldest.isoformat() + "+00:00"}
+                        for row in rows],
+    }
 
 
 def confirmation_state(task, order, money):

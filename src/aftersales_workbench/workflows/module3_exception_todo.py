@@ -23,6 +23,9 @@ from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.workflows.module1_manual_todo import (
     ManualTodoEnqueueResult,
 )
+from aftersales_workbench.workflows.polling import due_first, record_poll
+
+_POLL_SCOPE = "module3_exception_todo"
 
 _EXCEPTION_STATUSES = {
     ErpUnshippedRefundStatus.NOT_FOUND.value,
@@ -121,10 +124,17 @@ class SqlAlchemyModule3ExceptionTodoRepository:
                 == AutomationActionType.ERP_CHECK_FULFILLMENT,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
+                AftersalesActionTask.payload["origin"].as_string() == "module3",
+                AftersalesActionTask.payload["erp_refund_status"].as_string().in_(
+                    _EXCEPTION_STATUSES
+                ),
             )
-            .order_by(AftersalesActionTask.id)
-            .limit(500)
         )
+        statement = due_first(
+            statement, scope=_POLL_SCOPE,
+            reference=AftersalesActionTask.after_sales_sn,
+            tie_breaker=AftersalesActionTask.id,
+        ).limit(limit)
         candidates: list[Module3ExceptionTodoCandidate] = []
         for task, order, shop_name in self.session.execute(statement).all():
             payload = task.payload or {}
@@ -211,6 +221,11 @@ class SqlAlchemyModule3ExceptionTodoRepository:
         started_at: str,
         max_attempts: int,
     ) -> ManualTodoEnqueueResult:
+        # 与本地入队同事务保存进度；已有任务/缺业务员也不能永久占住首批。
+        record_poll(
+            self.session, scope=_POLL_SCOPE, reference=candidate.after_sales_sn,
+            delay_seconds=1800,
+        )
         action_type = AutomationActionType.ERP_CREATE_MANUAL_TODO
         existing = self.session.execute(
             select(AftersalesActionTask).where(

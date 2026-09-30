@@ -8,6 +8,7 @@ from typing import Any
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
 from aftersales_workbench.integrations.marketplace.http import RetryingJsonClient
+from aftersales_workbench.integrations.marketplace.pagination import PageGuard, checked_object
 from aftersales_workbench.integrations.marketplace.mapping import (
     list_of_mappings,
     money,
@@ -101,7 +102,9 @@ class JdReadClient(RetryingJsonClient):
         )
         detail = response.get("orderDetailInfo") if isinstance(response, dict) else None
         order = detail.get("orderInfo") if isinstance(detail, dict) else None
-        return order if isinstance(order, dict) else {}
+        if not isinstance(order, dict) or not order:
+            raise MarketplaceApiError("京东订单详情缺失，不能按空订单同步")
+        return order
 
     def fetch_window(
         self,
@@ -117,6 +120,7 @@ class JdReadClient(RetryingJsonClient):
         end_text = datetime.fromtimestamp(end_modified_at).strftime("%Y-%m-%d %H:%M:%S")
 
         page = 1
+        guard = PageGuard(label="京东退款申请", page_size=limit)
         while True:
             body = self.execute_read(
                 JD_REFUND_LIST,
@@ -130,10 +134,8 @@ class JdReadClient(RetryingJsonClient):
             response = body.get(
                 "jingdong_pop_afs_soa_refundapply_queryPageList_responce"
             ) or body.get("jingdong_pop_afs_soa_refundapply_queryPageList_response")
-            query_result = response.get("queryResult") if isinstance(response, dict) else None
-            records = list_of_mappings(
-                query_result.get("result") if isinstance(query_result, dict) else None
-            )
+            response = checked_object(response, "京东退款申请")
+            records, finished = guard.read(response.get("queryResult"), "result")
             for record in records:
                 refund_id = required_text(
                     record.get("id") or record.get("raId"), field="refund id"
@@ -146,13 +148,14 @@ class JdReadClient(RetryingJsonClient):
                 order = order_cache[order_id]
                 yield normalize_jd_refund_apply(record, order)
                 seen.add(refund_id)
-            if len(records) < limit:
+            if finished:
                 break
             page += 1
             if page > 1000:
                 raise ValueError("京东退款申请分页超过 1000 页")
 
         page = 1
+        guard = PageGuard(label="京东售后服务", page_size=limit)
         while True:
             body = self.execute_read(
                 JD_AFTERSALE_LIST,
@@ -166,14 +169,12 @@ class JdReadClient(RetryingJsonClient):
             response = body.get("jingdong_asc_serviceAndRefund_view_responce") or body.get(
                 "jingdong_asc_serviceAndRefund_view_response"
             )
-            page_result = response.get("pageResult") if isinstance(response, dict) else None
-            records = list_of_mappings(
-                page_result.get("data") if isinstance(page_result, dict) else None
-            )
+            response = checked_object(response, "京东售后服务")
+            records, finished = guard.read(response.get("pageResult"), "data")
             for record in records:
                 bill = record.get("sameOrderServiceBill")
                 if not isinstance(bill, dict):
-                    continue
+                    raise MarketplaceApiError("京东售后服务单结构缺失")
                 # serviceAndRefund.view 同时返回“仅服务单”和“服务单 + 退款单”。
                 # 前者只有 sameOrderServiceBill，不属于退款同步范围；若已有退款
                 # 字段却缺少有效金额，仍交给 normalize_jd_aftersale 失败关闭。
@@ -191,7 +192,7 @@ class JdReadClient(RetryingJsonClient):
                 order = order_cache[order_id]
                 yield normalize_jd_aftersale(record, bill, order)
                 seen.add(service_id)
-            if len(records) < limit:
+            if finished:
                 break
             page += 1
             if page > 1000:

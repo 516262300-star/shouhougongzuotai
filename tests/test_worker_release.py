@@ -23,3 +23,18 @@ def test_worker_release_selection(tmp_path, case):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert f"PASS {case}" in result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows worker launcher")
+def test_worker_log_preservation_without_starting_any_worker(tmp_path):
+    root = Path(__file__).resolve().parents[1]
+    powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
+    result = subprocess.run(
+        [str(powershell), "-NoProfile", "-NonInteractive", "-File",
+         str(root / "tests/powershell/worker-log-preservation.ps1"),
+         "-SourceFile", str(root / "scripts/module1-worker.ps1"), "-TestRoot", str(tmp_path)],
+        capture_output=True, encoding="utf-8", errors="replace", timeout=20,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "PASS log-preservation" in result.stdout

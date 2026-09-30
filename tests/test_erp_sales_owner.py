@@ -284,9 +284,12 @@ def test_sales_owner_sync_retries_unavailable_result_after_five_minutes() -> Non
         refresh_seconds=86400,
     )
 
-    expected = before - timedelta(seconds=86100)
-    assert order.erp_sales_owner_synced_at >= expected
-    assert order.erp_sales_owner_synced_at < before - timedelta(hours=23)
+    assert order.erp_sales_owner_checked_at >= before
+    assert order.erp_sales_owner_synced_at == order.erp_sales_owner_checked_at
+    assert order.erp_sales_owner_next_retry_at == (
+        order.erp_sales_owner_checked_at + timedelta(minutes=5)
+    )
+    assert getattr(order, "erp_sales_owner_last_success_at", None) is None
 
 
 def test_sales_owner_sync_marks_completed_pdd_fast_refund_as_not_required() -> None:

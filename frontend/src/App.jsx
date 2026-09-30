@@ -25,6 +25,7 @@ import { ScrapWorkspace } from "./ScrapWorkspace.jsx";
 import { ManualTodoPublishing } from "./ManualTodoPublishing.jsx";
 import { MonitorIssues } from "./MonitorIssues.jsx";
 import { runtimeStage, stageHasFailure } from "./monitor-stage-view.mjs";
+import { RuntimeSyncStatus } from "./RuntimeSyncStatus.jsx";
 
 const PAGE_SIZE_OPTIONS = [15, 30, 50];
 const PLATFORM_OPTIONS = [
@@ -603,7 +604,7 @@ function InterceptWorkspace({ detailOpen, setDetailOpen }) {
       <main className="workspace">
         <header className="topbar">
           <div className="page-title"><Truck size={22} /><h1>在途拦截</h1><span className="read-only-badge">只读监控</span></div>
-          <div className="sync-status"><span />模块1后台运行 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
+          <RuntimeSyncStatus freshness={data.sync_freshness} />
         </header>
         <div className="workspace-body">
           <InterceptSummaryStrip summary={data.summary} onStage={applyStage} />
@@ -1124,6 +1125,7 @@ const MONITOR_STAGE_LABELS = {
   module1_erp_refunds: "模块1 ERP退款闭环",
   pdd_refund: "平台退款执行",
   tmall_refund: "天猫拦截退款",
+  tmall_money_confirmation: "天猫资金结果只读核验",
   module2_erp_intake: "ERP退货单核对",
   module2_refund_tasks: "验货通过退款入队",
   module2_exception_todos: "验货异常人工待办",
@@ -1270,7 +1272,7 @@ function MonitorWorkspace({ onOpenIssues }) {
         </section>
         <section className="monitor-metrics">
           <article><span>后台运行器</span><strong className={worker.running ? "monitor-good" : "monitor-bad"}>{worker.running ? "运行中" : "未运行"}</strong><small>{worker.pid ? `PID ${worker.pid}` : "未发现有效进程"}</small></article>
-          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : worker.pending_confirmation ? "退款结果待确认" : worker.last_cycle_finished_at ? "本轮执行完成" : "等待首个运行周期"}</small></article>
+          <article><span>最近完整周期</span><strong>{formatAge(worker.last_cycle_age_seconds)}</strong><small>{worker.last_cycle_ok === false ? "本轮存在失败" : worker.pending_confirmation ? "退款结果待确认" : worker.last_cycle_finished_at ? "本轮执行完成" : "等待首个运行周期"}</small><small>平台退款待确认 {data?.money_confirmation?.pending ?? "—"} · 历史保护 {data?.money_confirmation?.legacy_protected ?? "—"}</small></article>
           <article><span>企微待发送</span><strong className={queue.pending ? "monitor-warn" : "monitor-good"}>{queue.pending ?? "—"}</strong><small>发送中 {queue.running ?? 0} · 已成功 {queue.succeeded ?? 0}</small></article>
           <article><span>发送失败</span><strong className={queue.failed ? "monitor-bad" : "monitor-good"}>{queue.failed ?? "—"}</strong><small>当前启用范围共 {queue.total ?? 0} 条任务</small></article>
         </section>
@@ -1778,7 +1780,7 @@ export function App() {
           <main className="workspace">
             <header className="topbar">
               <div className="page-title"><ListBullets size={22} /><h1>售后订单记录</h1></div>
-              <div className="sync-status"><span />后台扫描正常 · 最近同步 {formatDateTime(data.last_synced_at)}</div>
+              <RuntimeSyncStatus freshness={data.sync_freshness} />
             </header>
             <div className="workspace-body">
               <RecordViewTabs activeView={recordView} counts={data.view_counts} onChange={changeRecordView} />

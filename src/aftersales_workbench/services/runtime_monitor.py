@@ -18,7 +18,9 @@ from aftersales_workbench.db.models import (
     AutomationTaskStatus,
 )
 from aftersales_workbench.services.desktop_notice_recovery import resolve_project_path
-from aftersales_workbench.services.refund_confirmation_view import refund_cycle_view
+from aftersales_workbench.services.refund_confirmation_view import (
+    money_confirmation_summary, refund_cycle_view,
+)
 from aftersales_workbench.workflows.desktop_sender import (
     DesktopLedgerState,
     DesktopNoticeLedger,
@@ -32,6 +34,7 @@ _MODULE_STAGES = {
     "module1": (
         "sync",
         "tmall_sync",
+        "tmall_money_confirmation",
         "marketplace_sync",
         "erp_sales_owners",
         "intercept_tasks",
@@ -132,10 +135,8 @@ class RuntimeMonitorService:
         running = bool(pid and _pid_is_running(pid))
         execution_cycle = _latest_json_line(runtime_dir / "module1-worker.log")
         latest_cycle = refund_cycle_view(self.session, execution_cycle)
-        pending_confirmation = sum(
-            stage.get("pending_confirmation", 0)
-            for stage in (latest_cycle or {}).values() if isinstance(stage, dict)
-        )
+        money_summary = money_confirmation_summary(self.session)
+        pending_confirmation = money_summary["pending"]
         finished_at = _parse_datetime((latest_cycle or {}).get("finished_at"))
         age_seconds = (
             max(0, int((datetime.now(UTC) - finished_at).total_seconds()))
@@ -171,6 +172,7 @@ class RuntimeMonitorService:
             "checked_at": datetime.now(UTC).isoformat(),
             "state": state,
             "state_label": state_label,
+            "money_confirmation": money_summary,
             "worker": {
                 "running": running,
                 "pid": pid if running else None,

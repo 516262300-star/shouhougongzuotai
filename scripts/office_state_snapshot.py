@@ -7,11 +7,27 @@ import json
 import shutil
 import sqlite3
 import subprocess
+import zipfile
 from pathlib import Path
 
 from dotenv import dotenv_values
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+
+
+def archive_worker_history(root: Path, output: Path) -> None:
+    history = root / '.runtime/worker-log-history'
+    if not history.is_dir():
+        return
+    history_root = history.resolve()
+    if not history_root.is_relative_to(root.resolve() / '.runtime'):
+        raise ValueError('Worker log archive escapes runtime')
+    with zipfile.ZipFile(output / 'worker-log-history.zip', 'x', zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(history.rglob('*')):
+            if path.is_file():
+                if path.is_symlink() or not path.resolve().is_relative_to(history_root):
+                    raise ValueError('Worker log member escapes archive')
+                archive.write(path, path.relative_to(history).as_posix())
 
 
 def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
@@ -42,6 +58,10 @@ def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
     engine.dispose()
     for name in ('module1-worker-release.json', 'workbench-web-release.json', 'module1-worker.log'):
         shutil.copy2(root / '.runtime' / name, output / name)
+    error_log = root / '.runtime/module1-worker-error.log'
+    if error_log.is_file():
+        shutil.copy2(error_log, output / error_log.name)
+    archive_worker_history(root, output)
     reminder_pointer = root / '.runtime/shipment-watch-release.json'
     if reminder_pointer.is_file():
         shutil.copy2(reminder_pointer, output / reminder_pointer.name)

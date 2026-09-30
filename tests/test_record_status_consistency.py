@@ -184,9 +184,11 @@ def test_owner_cache_not_mixed_by_same_platform_order_number():
     assert owners["af-2"].status == "pending"
 
 
-def test_detail_explains_cached_failure_and_missing_amount_without_external_calls(db):
+@pytest.mark.parametrize("checked_at", [None, datetime(2026, 9, 8, 10)])
+def test_detail_explains_cached_failure_and_missing_amount_without_external_calls(db, checked_at):
     row = order(
         erp_sales_owner_status="unavailable", erp_sales_owner_synced_at=datetime(2026, 9, 8, 10),
+        erp_sales_owner_checked_at=checked_at,
         platform_order_amount=None, refund_financial_status="SUCCESS",
     )
     db.add_all([row, Shop(shop_id=1, platform="TMALL", shop_name="测试", shop_code="test")])
@@ -201,7 +203,7 @@ def test_detail_explains_cached_failure_and_missing_amount_without_external_call
     detail = response.json()
     assert detail["erp_customer"]["sales_owner"] == "ERP 查询失败·待重试"
     assert "失败" in detail["erp_customer"]["message"]
-    assert detail["erp_customer"]["checked_at"] == "2026-09-08T10:00:00"
+    assert detail["erp_customer"]["checked_at"] == (checked_at.isoformat() if checked_at else None)
     assert detail["refund_scope"] == "缺买家实付"
     assert detail["platform_refund"]["label"] == "平台已退款"
     assert not db.new and not db.dirty

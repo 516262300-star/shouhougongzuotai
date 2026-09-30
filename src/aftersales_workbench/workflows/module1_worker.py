@@ -149,6 +149,7 @@ class Module1WorkerCycleResult:
     ok: bool = True
     sync: WorkerStageResult | None = None
     tmall_sync: WorkerStageResult | None = None
+    tmall_money_confirmation: WorkerStageResult | None = None
     marketplace_sync: WorkerStageResult | None = None
     module2_erp_intake: WorkerStageResult | None = None
     module2_refund_tasks: WorkerStageResult | None = None
@@ -182,8 +183,12 @@ class Module1WorkerCycleResult:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "ok": self.ok,
+            "tmall_money_confirmation": self._stage_counts(
+                self.tmall_money_confirmation, ("scanned", "confirmed", "pending", "unavailable"),
+            ),
             "sync": {
                 "status": self.sync.status if self.sync else "missing",
+                "shops": _safe_shop_metrics(sync_shops),
                 "shops_ok": sum(bool(shop.get("ok")) for shop in sync_shops),
                 "shops_failed": sum(
                     not (shop.get("ok") or shop.get("normal_sync_completed"))
@@ -426,6 +431,8 @@ class Module1WorkerCycleResult:
             return {"status": "missing"}
         result = {"status": stage.status, "error": stage.error}
         result.update({key: stage.details.get(key) for key in keys})
+        if "shops" in stage.details:
+            result["shops"] = _safe_shop_metrics(stage.details["shops"])
         if "failed_task_ids" in stage.details:
             result["failed_task_ids"] = list(stage.details["failed_task_ids"])
         return result
@@ -433,6 +440,12 @@ class Module1WorkerCycleResult:
 
 def _utc_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _safe_shop_metrics(shops):
+    allowed = {"platform", "shop_code", "ok", "normal_sync_completed", "windows",
+               "records_seen", "records_created", "records_updated", "records_skipped"}
+    return [{k: v for k, v in shop.items() if k in allowed} for shop in shops]
 
 
 def _secret_configured(value: Any) -> bool:
@@ -473,6 +486,7 @@ class Module1WorkerRuntime:
         result.sync = self._capture(self._sync)
         self._accept_pdd_sync_result(result.sync)
         result.tmall_sync = self._capture(self._sync_tmall)
+        result.tmall_money_confirmation = self._capture(self._confirm_tmall_money)
         self._tmall_sync_completed = result.tmall_sync.status == "completed"
         result.marketplace_sync = self._capture(self._sync_marketplaces)
         result.erp_sales_owners = self._capture(self._sync_sales_owners)
@@ -531,7 +545,10 @@ class Module1WorkerRuntime:
             result.module2_pdd_refunds,
             result.module2_tmall_refunds,
         )
-        result.ok = all(stage is not None and stage.status != "failed" for stage in stages)
+        result.ok = all(
+            stage is not None and stage.status != "failed"
+            for stage in (*stages, result.tmall_money_confirmation)
+        )
         result.finished_at = _utc_iso()
         return result
 
@@ -825,6 +842,20 @@ class Module1WorkerRuntime:
             "shops": details, "automation_shop_codes": ready_codes,
         })
 
+    def _confirm_tmall_money(self) -> WorkerStageResult:
+        if not self.settings.tmall_sync_enabled:
+            return WorkerStageResult.skipped("天猫只读同步未启用")
+        from aftersales_workbench.workflows.tmall_money_confirmation import TmallMoneyConfirmation
+
+        with SessionLocal() as session:
+            run = TmallMoneyConfirmation(session, self.settings).run(
+                limit=self.options.task_limit, dry_run=False,
+            )
+        if run["unavailable"]:
+            return WorkerStageResult(status="failed", details=run,
+                                     error="天猫资金只读核验未通过，未重发资金请求")
+        return WorkerStageResult.completed(run)
+
     def _sync_tmall(self) -> WorkerStageResult:
         if not self.settings.tmall_sync_enabled:
             return WorkerStageResult.skipped(
@@ -933,7 +964,15 @@ class Module1WorkerRuntime:
                 include_tmall=self._tmall_trial_active,
                 tmall_min_order_id=self.settings.tmall_module123_min_order_id,
             )
-        return WorkerStageResult.completed(result.safe_dict())
+        metrics = result.safe_dict()
+        unavailable = metrics.get("unavailable", 0) + metrics.get("not_configured", 0)
+        if unavailable:
+            return WorkerStageResult(
+                status="failed",
+                error=f"ERP 原销售业务员查询不可用 {unavailable} 笔",
+                details=metrics,
+            )
+        return WorkerStageResult.completed(metrics)
 
     def _prepare_intercept_tasks(self) -> WorkerStageResult:
         if not self._active_module12_shop_codes:

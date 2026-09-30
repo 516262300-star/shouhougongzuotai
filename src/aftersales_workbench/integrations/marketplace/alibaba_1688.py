@@ -10,6 +10,7 @@ from urllib.parse import quote, urlencode
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
 from aftersales_workbench.integrations.marketplace.http import RetryingJsonClient
+from aftersales_workbench.integrations.marketplace.pagination import PageGuard, checked_object
 from aftersales_workbench.integrations.marketplace.mapping import (
     list_of_mappings,
     money,
@@ -125,16 +126,15 @@ class Alibaba1688ReadClient(RetryingJsonClient):
     ):
         del page_size
         page = 1
+        guard = PageGuard(label="1688退款列表", page_size=20)
         while True:
             body = self.get_refunds(
                 start_at=start_modified_at,
                 end_at=end_modified_at,
                 page=page,
             )
-            result = body.get("result")
-            if not isinstance(result, dict):
-                raise ValueError("1688 退款列表缺少 result")
-            records = list_of_mappings(result.get("opOrderRefundModels"))
+            body = checked_object(body, "1688退款列表")
+            records, finished = guard.read(body.get("result"), "opOrderRefundModels")
             for record in records:
                 refund_id = required_text(record.get("refundId"), field="refundId")
                 try:
@@ -142,7 +142,7 @@ class Alibaba1688ReadClient(RetryingJsonClient):
                 except ValueError as exc:
                     # 窗口推进前必须由同步器把异常标识落库；不丢弃、不造金额。
                     yield MarketplaceRefundIssue(refund_id, str(exc)[:500])
-            if len(records) < 20:
+            if finished:
                 break
             page += 1
             if page > 1000:

@@ -280,6 +280,9 @@ class AfterSalesOrder(Base):
     erp_sales_owner: Mapped[str | None] = mapped_column(String(50))
     erp_sales_owner_status: Mapped[str | None] = mapped_column(String(20))
     erp_sales_owner_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    erp_sales_owner_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
+    erp_sales_owner_last_success_at: Mapped[datetime | None] = mapped_column(DateTime)
+    erp_sales_owner_next_retry_at: Mapped[datetime | None] = mapped_column(DateTime)
     is_speed_refund: Mapped[int] = mapped_column(
         SmallInteger, default=0, server_default=text("0")
     )

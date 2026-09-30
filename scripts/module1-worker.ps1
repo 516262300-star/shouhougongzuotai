@@ -54,6 +54,32 @@ function Get-Module1WorkerProcess {
     return $process
 }
 
+function Save-WorkerLogsBeforeStart {
+    function Get-PreservedLogHash([string]$Path) {
+        $stream = [System.IO.File]::OpenRead($Path)
+        $algorithm = [System.Security.Cryptography.SHA256]::Create()
+        try { return [System.BitConverter]::ToString($algorithm.ComputeHash($stream)) }
+        finally { $algorithm.Dispose(); $stream.Dispose() }
+    }
+    # 只复制，不删除或移动当前日志；备份失败时禁止启动截断旧日志。
+    $archiveRoot = Join-Path $runtimeDir 'worker-log-history'
+    $runId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffffffZ') + '-' + [guid]::NewGuid().ToString('N')
+    $archiveDir = Join-Path $archiveRoot $runId
+    New-Item -ItemType Directory -Path $archiveDir -Force | Out-Null
+    foreach ($log in @($stdoutLog, $stderrLog)) {
+        if (Test-Path -LiteralPath $log) {
+            $copy = Join-Path $archiveDir ([System.IO.Path]::GetFileName($log))
+            Copy-Item -LiteralPath $log -Destination $copy -ErrorAction Stop
+            if ((Get-PreservedLogHash $log) -ne (Get-PreservedLogHash $copy)) {
+                throw '后台日志归档校验失败，禁止启动覆盖原日志'
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $releaseFile) {
+        Copy-Item -LiteralPath $releaseFile -Destination (Join-Path $archiveDir 'release.json')
+    }
+}
+
 switch ($Action) {
     'Start' {
         New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
@@ -79,6 +105,7 @@ switch ($Action) {
                     throw '后台版本导入验证失败，未启动'
                 }
             }
+            Save-WorkerLogsBeforeStart
             $process = Start-Process `
                 -FilePath $workerExe `
                 -ArgumentList $arguments `
