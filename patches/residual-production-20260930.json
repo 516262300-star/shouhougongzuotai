@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "base_release": "production-audit-20260930-132631-worker",
+  "worker_patches": {
+    "workflows/douyin_module12.py": {
+      "before_sha256": "ff695b6f4a05aac2bfd418402d1ca2cd1a0f7a6f29477aac4a8a7e01273a2cfd",
+      "after_sha256": "8458938e8da4b1eaa1cdd2b5656c2d359ff5c2b1b9739064a8698322def0c73f",
+      "replacements": [
+        [
+          "from aftersales_workbench.workflows.polling import due_first, record_poll",
+          "from aftersales_workbench.workflows.polling import due_first, record_poll\nfrom aftersales_workbench.workflows.failure_classification import technical_failure"
+        ],
+        [
+          "            blocked=0,\n            dry_run=dry_run,",
+          "            blocked=0,\n            unavailable=0,\n            dry_run=dry_run,"
+        ],
+        [
+          "                result[\"blocked\"] += 1\n                state = \"blocked\"\n                message = str(exc)[:400] if isinstance(exc, ValueError) else type(exc).__name__",
+          "                state = \"unavailable\" if technical_failure(exc) else \"blocked\"\n                result[state] += 1\n                message = str(exc)[:400] if state == \"blocked\" else type(exc).__name__"
+        ],
+        [
+          "                    delay_seconds=1800,\n                    error=message if state == \"blocked\" else None,",
+          "                    delay_seconds=300 if state == \"unavailable\" else 1800,\n                    error=message if state in {\"blocked\", \"unavailable\"} else None,"
+        ]
+      ]
+    },
+    "workflows/douyin_module3.py": {
+      "before_sha256": "a2881fe3d339557355dd46d4e479b3d5afcf4ee73987a26d3b00ae282287d6c2",
+      "after_sha256": "1bc9fbfd91c90c221e2e7587f408e21600f517fdf338c248ae575ceb39e259cf",
+      "replacements": [
+        [
+          "from aftersales_workbench.integrations.marketplace.models import MarketplaceApiError",
+          "from aftersales_workbench.workflows.failure_classification import technical_failure"
+        ],
+        [
+          "unavailable = isinstance(exc, (httpx.HTTPError, MarketplaceApiError))",
+          "unavailable = technical_failure(exc)"
+        ]
+      ]
+    },
+    "workflows/module1_worker.py": {
+      "before_sha256": "0735b8cd78437f57e2fadca92b52ff9c296c996b51d1987d8fdc8288c5429b3b",
+      "after_sha256": "befc9f235a812ae0052eb3cd3704b6f90df3518050f3c03f88aabed5d2fe8205",
+      "replacements": [
+        [
+          "                    limit=scoped.douyin_module12_batch_limit, dry_run=False)\n        finally:\n            client.close()\n        return WorkerStageResult.completed(run)",
+          "                    limit=scoped.douyin_module12_batch_limit, dry_run=False)\n        finally:\n            client.close()\n        from aftersales_workbench.workflows.failure_classification import stage_has_technical_failure\n        if stage_has_technical_failure(run):\n            return WorkerStageResult(status=\"failed\", details=run, error=\"抖音模块1/2存在技术失败，等待只读重查\")\n        return WorkerStageResult.completed(run)"
+        ]
+      ]
+    }
+  },
+  "shared_before_sha256": {
+    "integrations/marketplace/alibaba_1688.py": "2e4000db5cd723e559b1b69d541aea0769ed8ed192773831326090fef88dea7a",
+    "integrations/marketplace/repository.py": "e3df7eb5d9d9ffeca5479d3ceca0b2741a6863d8157561ffbfbaf6a89535d93d"
+  },
+  "new_files": [
+    "integrations/marketplace/history_repair.py",
+    "workflows/taobao_money_evidence.py",
+    "workflows/failure_classification.py"
+  ]
+}

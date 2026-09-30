@@ -30,7 +30,7 @@ def test_normalize_1688_return_refund() -> None:
             "freightBill": "RET-1",
         },
         {
-            "baseInfo": {"status": "waitbuyerreceive", "totalAmount": "20.00"},
+            "baseInfo": {"idOfStr": "O-1", "status": "waitbuyerreceive", "totalAmount": "20.00"},
             "productItems": [
                 {
                     "subItemID": "L-1",

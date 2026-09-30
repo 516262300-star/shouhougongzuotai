@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -10,13 +11,11 @@ from urllib.parse import quote, urlencode
 from aftersales_workbench.core.config import Settings
 from aftersales_workbench.db.models import AfterSalesType, ShippingStatus
 from aftersales_workbench.integrations.marketplace.http import RetryingJsonClient
-from aftersales_workbench.integrations.marketplace.pagination import PageGuard, checked_object
 from aftersales_workbench.integrations.marketplace.mapping import (
     list_of_mappings,
     money,
     nonempty,
     parse_datetime,
-    positive_int,
     required_text,
 )
 from aftersales_workbench.integrations.marketplace.models import (
@@ -26,6 +25,7 @@ from aftersales_workbench.integrations.marketplace.models import (
     NormalizedMarketplaceItem,
     NormalizedMarketplaceRefund,
 )
+from aftersales_workbench.integrations.marketplace.pagination import PageGuard, checked_object
 
 REFUND_LIST_API = "alibaba.trade.refund.queryOrderRefundList"
 REFUND_DETAIL_API = "alibaba.trade.refund.OpQueryOrderRefund"
@@ -237,6 +237,9 @@ def normalize_1688_refund(
     refund_id = required_text(detail.get("refundId"), field="refundId")
     order_id = required_text(detail.get("orderId"), field="orderId")
     zero_money_kind = _zero_money_kind(detail)
+    base = order.get("baseInfo")
+    if not isinstance(base, dict) or str(base.get("idOfStr") or base.get("id")) != order_id:
+        raise ValueError("1688售后与原订单身份不一致或缺失")
     entry_counts = detail.get("orderEntryCountMap")
     if zero_money_kind is not None:
         base = order.get("baseInfo")
@@ -262,14 +265,25 @@ def normalize_1688_refund(
                     or number <= 0 or number != number.to_integral_value()):
                 raise ValueError("1688非资金售后商品关联或数量不完整")
     if not isinstance(entry_counts, dict) or not entry_counts:
-        entry_counts = {order_id: 1}
+        raise ValueError("1688售后缺少明确申请商品数量，不能默认一件")
+    products = list_of_mappings(order.get("productItems"))
     product_items = {
         str(item.get("subItemID") or item.get("subItemIDString") or ""): item
-        for item in list_of_mappings(order.get("productItems"))
+        for item in products
     }
+    if not product_items or "" in product_items or len(product_items) != len(products):
+        raise ValueError("1688原订单商品身份缺失或重复")
     items: list[NormalizedMarketplaceItem] = []
     for entry_id, quantity in entry_counts.items():
-        product = product_items.get(str(entry_id), {})
+        product = product_items.get(str(entry_id))
+        if product is None:
+            raise ValueError("1688申请商品不属于原订单")
+        try:
+            count = Decimal(str(quantity))
+        except InvalidOperation as exc:
+            raise ValueError("1688申请数量不是有效整数") from exc
+        if not count.is_finite() or count <= 0 or count != count.to_integral_value():
+            raise ValueError("1688申请数量不是正整数")
         sku = (
             nonempty(product.get("cargoNumber"))
             or nonempty(product.get("skuID"))
@@ -278,12 +292,20 @@ def normalize_1688_refund(
         items.append(
             NormalizedMarketplaceItem(
                 sku_code=sku,
-                applied_quantity=positive_int(quantity, field="orderEntryCountMap"),
+                applied_quantity=int(count),
                 product_name=nonempty(
                     product.get("name") or product.get("productName")
                 ),
             )
         )
+    # 本地明细按SKU存储；同SKU的多个子单必须合计，不能由最后一个子单覆盖。
+    by_sku: dict[str, NormalizedMarketplaceItem] = {}
+    for item in items:
+        previous = by_sku.get(item.sku_code)
+        by_sku[item.sku_code] = item if previous is None else replace(
+            previous, applied_quantity=previous.applied_quantity + item.applied_quantity
+        )
+    items = list(by_sku.values())
     apply_payment = money(detail.get("applyPayment"), field="applyPayment", divisor=100)
     apply_carriage = money(
         detail.get("applyCarriage"), field="applyCarriage", divisor=100
@@ -293,6 +315,24 @@ def normalize_1688_refund(
     )
     if refund_amount <= 0 and zero_money_kind is None:
         raise ValueError(f"1688 售后 {refund_id} 缺少有效退款金额")
+    status = str(detail.get("status") or "").strip().lower()
+    actual_amount = None
+    completed_at = None
+    financial_status = "PENDING" if status else "UNKNOWN"
+    if zero_money_kind is not None:
+        financial_status = "NOT_APPLICABLE"
+    elif status == "refundsuccess":
+        actual_goods = money(detail.get("refundPayment"), field="refundPayment", divisor=100)
+        actual_carriage = money(detail.get("refundCarriage"), field="refundCarriage", divisor=100)
+        completed_at = parse_datetime(detail.get("gmtCompleted"))
+        if actual_goods is None or actual_carriage is None or completed_at is None:
+            raise ValueError("1688退款成功缺少实退金额或真实完成时间")
+        actual_amount = actual_goods + actual_carriage
+        if actual_amount <= 0:
+            raise ValueError("1688资金退款成功但实际金额非正数")
+        financial_status = "SUCCESS"
+    elif status in {"refundclose", "refundclosed", "closed", "cancelled"}:
+        financial_status = "CLOSED"
     base = order.get("baseInfo") if isinstance(order.get("baseInfo"), dict) else {}
     goods_amount = sum(
         (money(item.get("itemAmount"), field="itemAmount") or Decimal("0"))
@@ -336,4 +376,7 @@ def normalize_1688_refund(
             base.get("status") or base.get("tradeStatus")
         ),
         items=tuple(items),
+        refund_financial_status=financial_status,
+        actual_refund_amount=actual_amount,
+        refund_completed_at=completed_at,
     )

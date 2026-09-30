@@ -131,7 +131,10 @@ def test_non_financial_import_requires_real_order_and_item_identity(change):
 def test_existing_refunded_fact_cannot_be_replaced_by_zero_flow(db):
     repo, config, sid = repo_shop(db)
     normalized = normalize_1688_refund(detail(),order_detail())
-    repo.upsert_refund(config,sid,replace(normalized,refund_amount=Decimal('10')))
+    from datetime import datetime
+    repo.upsert_refund(config,sid,replace(normalized,refund_amount=Decimal('10'),
+        refund_financial_status='SUCCESS',actual_refund_amount=Decimal('10'),
+        refund_completed_at=datetime(2026,9,28,10)))
     repo.commit()
     order = db.scalar(select(AfterSalesOrder))
     assert order.refund_financial_status == 'SUCCESS'
