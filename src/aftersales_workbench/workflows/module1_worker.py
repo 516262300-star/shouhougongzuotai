@@ -707,7 +707,14 @@ class Module1WorkerRuntime:
         client = build_erp_unshipped_refund_client(self.settings)
         try:
             with SessionLocal() as session:
-                run = Module3ErpRefundService(session, client).run(
+                from aftersales_workbench.integrations.pdd.merchant_amounts import (
+                    PddMerchantAmountReader,
+                )
+
+                run = Module3ErpRefundService(
+                    session, client,
+                    amount_reader=PddMerchantAmountReader(session, self.settings),
+                ).run(
                     limit=self.settings.module3_worker_batch_limit,
                     dry_run=False,
                     refresh_seconds=self.settings.module3_erp_refund_recheck_seconds,

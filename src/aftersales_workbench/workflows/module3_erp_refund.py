@@ -28,6 +28,10 @@ from aftersales_workbench.integrations.erp.unshipped_refund import (
     ErpUnshippedRefundStatus,
     ErpWebUnshippedRefundClient,
 )
+from aftersales_workbench.integrations.pdd.merchant_amounts import (
+    PddAmountEvidenceError,
+    valid_merchant_amount,
+)
 from aftersales_workbench.workflows.money_operations import (
     MoneyOperationBlocked,
     record_money_reconciled,
@@ -98,9 +102,12 @@ class Module3ErpRefundService:
         self,
         session: Session,
         client: ErpWebUnshippedRefundClient,
+        *,
+        amount_reader=None,
     ) -> None:
         self.session = session
         self.client = client
+        self.amount_reader = amount_reader
 
     def run(
         self,
@@ -128,19 +135,39 @@ class Module3ErpRefundService:
                 break
             expected_items = expected_items_from_order(order)
             result.scanned += 1
+            checking_amount = False
             try:
+                expected_amount = order.merchant_receivable_amount
+                if not valid_merchant_amount(expected_amount) and self.amount_reader is not None:
+                    checking_amount = True
+                    amounts = self.amount_reader(order)
+                    expected_amount = amounts.merchant_receivable_amount
+                    if not dry_run:
+                        amounts.apply(self.session, order)
+                        task.payload = {
+                            **(task.payload or {}), "merchant_amount_evidence": amounts.evidence,
+                        }
+                    checking_amount = False
                 lookup = self.client.inspect(
                     platform_order_sn=order.platform_order_sn,
                     after_sales_sn=order.after_sales_sn,
-                    expected_amount=order.merchant_receivable_amount,
+                    expected_amount=expected_amount,
                     expected_items=expected_items,
                     allow_unimported_refund=unimported_refund_candidate(order),
+                )
+            except PddAmountEvidenceError as exc:
+                self.session.rollback()
+                lookup = ErpUnshippedRefundLookup(
+                    status=ErpUnshippedRefundStatus.BLOCKED,
+                    message=str(exc), platform_order_sn=order.platform_order_sn,
                 )
             except Exception as exc:
                 self.session.rollback()
                 lookup = ErpUnshippedRefundLookup(
                     status=ErpUnshippedRefundStatus.UNAVAILABLE,
-                    message=f"ERP 未发货核验失败（{type(exc).__name__}）",
+                    message=(
+                        "商家应收平台回查失败" if checking_amount else "ERP 未发货核验失败"
+                    ) + f"（{type(exc).__name__}）",
                     platform_order_sn=order.platform_order_sn,
                 )
             count_field = (
@@ -190,7 +217,7 @@ class Module3ErpRefundService:
                             self.client.execute,
                             lookup,
                             after_sales_sn=order.after_sales_sn,
-                            expected_amount=order.merchant_receivable_amount,
+                            expected_amount=expected_amount,
                             expected_items=expected_items,
                         ),
                     )

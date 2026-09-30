@@ -49,7 +49,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 service = TmallModule3Service(session, client, settings)
             else:
-                service = Module3ErpRefundService(session, client)
+                from aftersales_workbench.integrations.pdd.merchant_amounts import (
+                    PddMerchantAmountReader,
+                )
+
+                service = Module3ErpRefundService(
+                    session, client, amount_reader=PddMerchantAmountReader(session, settings),
+                )
             result = service.run(
                 limit=args.limit,
                 platform_order_sn=args.platform_order_sn,

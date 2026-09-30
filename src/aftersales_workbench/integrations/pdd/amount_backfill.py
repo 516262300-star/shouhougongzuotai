@@ -15,9 +15,8 @@ from aftersales_workbench.db.models import (
     Shop,
 )
 from aftersales_workbench.integrations.pdd.client import PddClient
-from aftersales_workbench.integrations.pdd.mapper import (
-    pdd_order_amount_breakdown,
-    unwrap_order_information,
+from aftersales_workbench.integrations.pdd.merchant_amounts import (
+    read_verified_pdd_amounts,
 )
 from aftersales_workbench.integrations.pdd.shops import ConfiguredPddShop
 from aftersales_workbench.services.refund_scope import (
@@ -64,6 +63,7 @@ class PddRefundAmountBackfillService:
             .join(Shop, Shop.shop_id == AfterSalesOrder.shop_id)
             .where(
                 Shop.platform == Platform.PDD,
+                Shop.shop_code.in_(shop_map),
                 AfterSalesOrder.after_sales_type == AfterSalesType.ONLY_REFUND,
                 or_(
                     AfterSalesOrder.platform_order_amount.is_(None),
@@ -72,11 +72,6 @@ class PddRefundAmountBackfillService:
                     AfterSalesOrder.seller_discount_amount.is_(None),
                     AfterSalesOrder.merchant_receivable_amount.is_(None),
                 ),
-                AfterSalesOrder.order_shipping_status.in_(
-                    (ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED)
-                ),
-                AfterSalesOrder.forward_tracking_number.is_not(None),
-                AfterSalesOrder.forward_tracking_number != "",
             )
             .order_by(AfterSalesOrder.id)
             .limit(limit)
@@ -104,30 +99,25 @@ class PddRefundAmountBackfillService:
                             write_enabled=False,
                         )
                         clients[shop_code] = client
-                    detail = client.get_refund_information(
-                        order_sn=order.platform_order_sn,
-                        after_sales_id=int(order.after_sales_sn),
+                    amounts = read_verified_pdd_amounts(
+                        client, self.session.get(Shop, order.shop_id), order,
                     )
-                    platform_order = unwrap_order_information(
-                        client.get_order_information(
-                            order_sn=order.platform_order_sn
-                        )
-                    )
-                    amounts = pdd_order_amount_breakdown(detail, platform_order)
                     scope = classify_refund_scope(
                         order.refund_amount,
-                        amounts.buyer_paid_amount,
+                        amounts.values["platform_order_amount"],
                     )
                     setattr(result, scope.value.lower(), getattr(result, scope.value.lower()) + 1)
-                    if (amounts.platform_discount_amount or 0) > 0:
+                    if amounts.values["platform_discount_amount"] > 0:
                         result.platform_coupon += 1
                     if not dry_run:
-                        order.platform_order_amount = amounts.buyer_paid_amount
-                        order.platform_goods_amount = amounts.goods_amount
-                        order.platform_discount_amount = amounts.platform_discount_amount
-                        order.seller_discount_amount = amounts.seller_discount_amount
-                        order.merchant_receivable_amount = amounts.merchant_receivable_amount
-                        reconcile_refund_scope(self.session, order)
+                        with self.session.begin_nested():
+                            amounts.apply(self.session, order)
+                            # 新补入的未发货记录只恢复金额，不借此变更流程或任务。
+                            if (order.after_sales_type == AfterSalesType.ONLY_REFUND
+                                    and order.order_shipping_status in {
+                                        ShippingStatus.IN_TRANSIT, ShippingStatus.DELIVERED,
+                                    } and order.forward_tracking_number):
+                                reconcile_refund_scope(self.session, order)
                         result.updated += 1
                 except Exception as exc:
                     result.failed += 1
