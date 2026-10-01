@@ -172,6 +172,43 @@ def test_existing_aftersales_cancelled_tasks_remain_visible(records):
     assert result["items"][0]["source"] == "aftersales"
 
 
+@pytest.mark.parametrize("status", ["PENDING", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"])
+@pytest.mark.parametrize("field", ["reason_text", "exception_message", "content"])
+def test_amount_recheck_notices_hidden_from_all_views_without_deleting_audit(records, status, field):
+    service, db = records
+    task = db.get(Task, 1)
+    task.action_status = status
+    task.payload = {**task.payload, field:
+        "平台商家应收已核实补齐，等待重新核对\tERP　订单欠货和退款单状态"}
+    db.commit()
+    before = list(db.execute(select(Task.__table__)).mappings())
+    for filters in ({}, {"task_status": status}, {"keyword": "after-order"},
+                    {"origin": "module1"}, {"assignee": "售后业务员"}):
+        result = service.list_manual_todos(page=1, page_size=20, **filters)
+        assert all(row["source"] != "aftersales" for row in result["items"])
+        assert "售后业务员" not in result["assignees"]
+        assert result["summary"] == {
+            "waiting": 1, "sent": 1, "failed": 0, "cancelled": 0, "unknown": 3, "total": 5,
+        }
+        assert result["pagination"]["total"] == len(result["items"])
+    assert list(db.execute(select(Task.__table__)).mappings()) == before
+
+
+@pytest.mark.parametrize("reason", [None, "ERP客户应收未归零，退款收款单待核对", "平台商家应收已核实补齐"])
+def test_amount_notice_filter_preserves_missing_or_real_reasons(records, reason):
+    service, db = records
+    task = db.get(Task, 1)
+    task.payload = {**task.payload, "reason_text": reason}
+    if reason:
+        # 旧文案或审计字段仍在时，以新的具体原因决定展示。
+        task.payload = {**task.payload,
+            "content": "平台商家应收已核实补齐，等待重新核对 ERP 订单欠货和退款单状态"}
+    db.commit()
+    result = service.list_manual_todos(page=1, page_size=20, origin="module1")
+    assert result["pagination"]["total"] == 1
+    assert result["items"][0]["source"] == "aftersales"
+
+
 def test_full_refund_hides_reminders_but_retains_unknown_outcomes_and_receipts(records):
     service, db = records
     for key in ("sent", "pending", "unknown"):

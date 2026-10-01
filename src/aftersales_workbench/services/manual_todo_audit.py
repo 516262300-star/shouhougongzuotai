@@ -29,6 +29,18 @@ def _utc_iso(value):
 
 
 def _index(session):
+    # 金额补齐后的等待复核提示没有人工处理动作；仅隐藏展示，保留原任务审计。
+    # 按当前原因的优先级取值，避免旧 content 掩盖后来核验出的真实差异。
+    reasons = []
+    for key in ("reason_text", "exception_message", "content"):
+        value = func.coalesce(Task.payload[key].as_string(), "")
+        for whitespace in (" ", "\t", "\r", "\n", "\u3000"):
+            value = func.replace(value, whitespace, "")
+        reasons.append(func.nullif(value, ""))
+    current_reason = func.coalesce(*reasons, "")
+    amount_recheck_notice = current_reason.contains("平台商家应收已核实补齐") & (
+        current_reason.contains("等待重新核对ERP订单欠货和退款单状态")
+    )
     aftersales = (
         select(
             literal("aftersales").label("source"),
@@ -50,7 +62,7 @@ def _index(session):
             Shop,
             Shop.shop_id == AfterSalesOrder.shop_id,
         )
-        .where(Task.action_type == "ERP_CREATE_MANUAL_TODO")
+        .where(Task.action_type == "ERP_CREATE_MANUAL_TODO", ~amount_recheck_notice)
     )
     available = inspect(session.get_bind()).has_table(Notice.__tablename__)
     if not available:
