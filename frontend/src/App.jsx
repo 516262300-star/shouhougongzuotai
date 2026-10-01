@@ -1109,29 +1109,31 @@ function IntegrationWorkspace() {
 }
 
 const MONITOR_STAGE_LABELS = {
-  sync: "拼多多同步",
-  tmall_sync: "天猫同步与物流补全",
-  marketplace_sync: "其他平台同步",
+  sync: "拼多多售后同步",
+  tmall_sync: "天猫售后与物流同步",
+  tmall_money_confirmation: "天猫退款结果回查",
+  marketplace_sync: "抖音、淘宝、京东等售后同步",
+  douyin_module12: "抖音拦截退回与退货退款",
   erp_sales_owners: "ERP 业务员归属同步",
-  erp_return_matches: "ERP 退货闭环查询",
+  erp_return_matches: "拦截退回 ERP 核验",
   erp_scrap_sync: "ERP 退货报废同步",
-  erp_todo_tasks: "生成 ERP 人工待办",
-  erp_todo_publish: "发布 ERP 人工待办",
-  intercept_tasks: "生成拦截任务",
-  notification_preflight: "发送前物流复核",
-  notification: "企业微信发送",
-  logistics_gate: "退款物流闸门",
-  module1_erp_refunds: "模块1 ERP退款闭环",
-  pdd_refund: "平台退款执行",
-  tmall_refund: "天猫拦截退款",
-  module2_erp_intake: "ERP退货单核对",
-  module2_refund_tasks: "验货通过退款入队",
-  module2_exception_todos: "验货异常人工待办",
-  module2_pdd_refunds: "退货退款执行",
-  module2_tmall_refunds: "天猫退货退款",
+  erp_todo_tasks: "生成人工待办",
+  erp_todo_publish: "发送 ERP 人工待办",
+  intercept_tasks: "生成快递拦截任务",
+  notification_preflight: "拦截通知发送前物流核验",
+  notification: "发送企业微信拦截通知",
+  logistics_gate: "退款前物流核验",
+  module1_erp_refunds: "拦截退回 ERP 核账与补单",
+  pdd_refund: "拼多多仅退款执行",
+  tmall_refund: "天猫拦截退款执行",
+  module2_erp_intake: "ERP 退货实收核对",
+  module2_refund_tasks: "验货通过后生成退款任务",
+  module2_exception_todos: "生成退货异常人工待办",
+  module2_pdd_refunds: "拼多多退货退款执行",
+  module2_tmall_refunds: "天猫退货退款执行",
   module3_tasks: "未发货退款识别",
-  module3_erp_refunds: "模块3 ERP退款处理",
-  module3_exception_todos: "异常人工待办",
+  module3_erp_refunds: "未发货 ERP 核账与补单",
+  module3_exception_todos: "生成未发货退款人工待办",
 };
 
 const MONITOR_DETAIL_LABELS = {
@@ -1144,7 +1146,7 @@ const MONITOR_DETAIL_LABELS = {
   applied: "已执行",
   receipts_created: "登记收货",
   inspections_passed: "验货通过",
-  post_refund_verified: "退款后验收一致",
+  post_refund_verified: "退款后核账通过",
   records_created: "新增记录",
   shops_ok: "店铺正常",
   pending_confirmation: "退款结果待确认",
@@ -1277,12 +1279,12 @@ function MonitorWorkspace({ onOpenIssues }) {
         <section className="monitor-modules">
           {(data?.modules ?? []).map((module) => (
             <article className="monitor-module-card" key={module.id}>
-              <header><div><strong>{{ module1: "模块 1 · 已发货仅退款拦截", module2: "模块 2 · 退货验收退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "识别、企微拦截、物流闸门与退款闭环", module2: "ERP 实收核对一致后退款，明细不一致转人工", module3: "ERP 履约核验、退款补单与异常待办" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
+              <header><div><strong>{{ module1: "模块 1 · 已发货仅退款与拦截", module2: "模块 2 · 退货验货与退款", module3: "模块 3 · 未发货退款处理" }[module.id] ?? module.id}</strong><span>{{ module1: "售后识别、快递拦截、退回核验与退款", module2: "退货实收核对、仓库验货与退款", module3: "未发货退款识别、ERP 核账与补单" }[module.id] ?? "自动化运行阶段"}</span></div><StatusTag tone={monitorTone(module.status)}>{module.status_label}</StatusTag></header>
               <div className="monitor-stage-list">
                 {module.stages.map(runtimeStage).map((stage) => (
                   <div className="monitor-stage" key={stage.id}>
                     <span className={`monitor-stage-dot stage-${stage.status}`} />
-                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? stage.id}</strong><small>{monitorStageSummary(stage)}</small>{stageHasFailure(stage) && <button type="button" className="issue-expand" onClick={() => onOpenIssues({ stageId: stage.id, label: MONITOR_STAGE_LABELS[stage.id] ?? stage.id, cycleFinishedAt: worker.last_cycle_finished_at, selectionId: `${stage.id}:${Date.now()}` })}>查看失败明细</button>}</div>
+                    <div><strong>{MONITOR_STAGE_LABELS[stage.id] ?? "其他处理阶段"}</strong><small>{monitorStageSummary(stage)}</small>{stageHasFailure(stage) && <button type="button" className="issue-expand" onClick={() => onOpenIssues({ stageId: stage.id, label: MONITOR_STAGE_LABELS[stage.id] ?? "其他处理阶段", cycleFinishedAt: worker.last_cycle_finished_at, selectionId: `${stage.id}:${Date.now()}` })}>查看失败明细</button>}</div>
                     <StatusTag tone={monitorTone(stage.status)}>{monitorStageStatus(stage.status)}</StatusTag>
                   </div>
                 ))}
@@ -1291,7 +1293,7 @@ function MonitorWorkspace({ onOpenIssues }) {
           ))}
         </section>
         <section className="monitor-config">
-          <div><strong>自动化开关</strong><span>企业微信发送：{(config.notification_transport === "desktop" && config.desktop_send_enabled) || (config.notification_transport === "qywx_webhook" && config.qywx_write_enabled) ? "已开启" : "未开启"}</span><span>模块1平台退款：{config.module1_refund_enabled ? "已开启" : "未开启"}</span><span>模块2验货退款：{config.module2_worker_enabled && config.module2_refund_enabled ? "已开启" : "未开启"}</span><span>模块3 ERP退款：{config.module3_erp_refund_enabled && config.erp_write_enabled ? "已开启" : "未开启"}</span></div>
+          <div><strong>自动化开关</strong><span>企业微信发送：{(config.notification_transport === "desktop" && config.desktop_send_enabled) || (config.notification_transport === "qywx_webhook" && config.qywx_write_enabled) ? "已开启" : "未开启"}</span><span>拼多多拦截退款：{config.module1_refund_enabled ? "已开启" : "未开启"}</span><span>拼多多验货退款：{config.module2_worker_enabled && config.module2_refund_enabled ? "已开启" : "未开启"}</span><span>未发货 ERP 补单：{config.module3_erp_refund_enabled && config.erp_write_enabled ? "已开启" : "未开启"}</span></div>
           <small>状态检查时间：{formatDateTime(data?.checked_at, true)}</small>
         </section>
       </div>
