@@ -97,6 +97,35 @@ def sample(db, monkeypatch, count=2):
     return orders, rows, bills, matcher, reads
 
 
+def test_refunded_orders_stuck_in_match_state_reenter_return_query_only(db, monkeypatch):
+    orders, _, _, matcher, _ = sample(db, monkeypatch, count=2)
+    orders[0].workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    orders[1].workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    orders[1].refund_financial_status = "PENDING"
+    db.commit()
+    service = Module2ErpIntakeService(db, matcher)
+    candidates = service._list_candidates(shop_codes=None, min_order_id=0, limit=20)
+    assert [o.id for o, _, _ in candidates] == [orders[0].id]
+    assert orders[0].workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH
+    assert not db.dirty and not db.new and not db.deleted
+
+
+def test_stuck_refunded_mismatch_does_not_create_warehouse_inspection(db, monkeypatch):
+    from aftersales_workbench.integrations.erp.return_match import ErpReturnMatchLookup, ErpReturnMatchStatus
+    orders, _, _, _, _ = sample(db, monkeypatch, count=1)
+    order = orders[0];order.workflow_status = WorkflowStatus.RETURN_WAITING_ERP_MATCH;db.commit()
+    lookup = ErpReturnMatchLookup(status=ErpReturnMatchStatus.ITEM_MISMATCH, message="实收不符",
+        return_order_sn="TH-1", rows=(NS(),), source_location="customer_profile")
+    calls = []
+    matcher = NS(lookup=lambda **kwargs: calls.append(kwargs) or lookup)
+    result = Module2ErpIntakeRunResult(dry_run=False)
+    error = Module2ErpIntakeService(db, matcher)._inspect_candidate(order, Platform.PDD, set(), result, False)
+    assert "实收与申请明细不一致" in error
+    assert calls[0]["tracking_number"] == order.return_tracking_number
+    assert result.ambiguous == 1 and result.receipts_created == 0
+    assert not db.dirty and not db.new and not db.deleted
+
+
 @pytest.mark.parametrize("count", [2, 7])
 def test_whole_group_by_original_sale_even_with_identical_sku(db, monkeypatch, count):
     orders, rows, bills, matcher, reads = sample(db, monkeypatch, count)

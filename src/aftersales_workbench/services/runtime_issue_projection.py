@@ -4,9 +4,25 @@ from aftersales_workbench.services.runtime_issue_focus import timestamp
 
 
 ERP_POLL_SCOPES = {
+    "module2_erp": "ERP_MATCH_RETURN_ORDER",
     "douyin_module3": "ERP_CHECK_FULFILLMENT",
     "tmall_module1_return_v1": "ERP_MATCH_RETURN_ORDER",
 }
+
+
+def superseded_module2_query(task, order, progress):
+    """共享动作误走发货运单查询的旧错误，仅由更新的模块2退货核验替代。"""
+    payload = task.payload or {}
+    old_checked = timestamp(payload.get("erp_match_checked_at"))
+    checked = timestamp(progress.checked_at) if progress else None
+    if (str(task.action_status) != "PENDING" or payload.get("origin") != "module2"
+            or payload.get("erp_match_status") != "unavailable"
+            or task.last_error != payload.get("erp_match_message")
+            or not order or str(order.after_sales_type) != "RETURN_AND_REFUND"
+            or not old_checked or not checked or checked <= old_checked):
+        return None
+    return (progress.last_error or "模块2已按退货运单重新核验，旧发货运单查询错误已被替代；不代表售后闭环",
+            checked, bool(progress.last_error))
 
 
 def return_match_observation(task, progress):
@@ -51,6 +67,8 @@ def merge_duplicate_polls(items):
         action = ERP_POLL_SCOPES.get(parts[1]) if len(parts) == 3 and parts[0] == "poll" else None
         candidates = tasks.get((row.get("shop_id"), row.get("after_sales_sn"),
                                 action, row["reason"]), [])
+        if len(parts) == 3 and parts[1] == "module2_erp":
+            candidates = [task for task in candidates if task.get("origin") == "module2"]
         if (action and row["state"] == "OPEN" and row.get("after_sales_sn")
                 and row.get("shop_id") is not None and len(candidates) == 1):
             merged.setdefault(candidates[0]["key"], []).append(row["key"])

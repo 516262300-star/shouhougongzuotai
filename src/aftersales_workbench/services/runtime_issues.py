@@ -36,6 +36,7 @@ from aftersales_workbench.services.runtime_issue_projection import (
     ERP_POLL_SCOPES,
     merge_duplicate_polls,
     return_match_observation,
+    superseded_module2_query,
 )
 from aftersales_workbench.services.runtime_monitor import _latest_json_line
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeLedger
@@ -223,6 +224,14 @@ class RuntimeIssueCollector:
                     reason, match_checked = current_match
                     active = True
                     checked = utc_iso(match_checked) or checked
+                current_module2 = superseded_module2_query(
+                    task, orders.get(task.after_sales_sn),
+                    poll.get(("module2_erp", task.after_sales_sn)),
+                )
+                if current_module2:
+                    reason, match_checked, active = current_module2
+                    recovered = not active
+                    checked = utc_iso(match_checked)
             if category == "NOTICE":
                 entry, parcel = ledger.get(task.id), parcels.get(task.id)
                 uncertain = bool(

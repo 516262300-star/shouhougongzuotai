@@ -278,6 +278,11 @@ class Module2ErpIntakeService:
                 order.workflow_status = WorkflowStatus.MANUAL_PROCESSING
                 order.exception_type = "ERP明细已匹配，等待仓库独立质检"
             return "ERP明细匹配不等于质检通过，须仓库确认质量后再退款"
+        if (order.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH
+                and self._platform_refunded(order)):
+            # 历史队列补查只更新核验差异，不补造退款后的仓库质检失败记录。
+            result.ambiguous += 1
+            return "平台已退款，ERP 退货实收与申请明细不一致，待核验"
         actual_items = self._actual_items(lookup)
         if actual_items is None:
             result.unavailable += 1
@@ -431,7 +436,7 @@ class Module2ErpIntakeService:
                 ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
                 or_(
-                    AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
+                    self._pending_workflow_filter(),
                     and_(
                         AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_INSPECTED_FAIL,
                         select(WarehouseReturnRecord.id).where(
@@ -489,7 +494,7 @@ class Module2ErpIntakeService:
                     ),
                 ),
                 AfterSalesOrder.after_sales_type == AfterSalesType.RETURN_AND_REFUND,
-                AfterSalesOrder.workflow_status.in_(self._PENDING_WORKFLOWS),
+                self._pending_workflow_filter(),
                 or_(
                     AfterSalesOrder.return_tracking_number.is_(None),
                     AfterSalesOrder.return_tracking_number == "",
@@ -507,6 +512,18 @@ class Module2ErpIntakeService:
         if shop_codes:
             statement = statement.where(Shop.shop_code.in_(shop_codes))
         return list(self.session.scalars(statement))
+
+    @staticmethod
+    def _pending_workflow_filter():
+        # 已退款退货曾被共享动作类型写入模块1等待状态，仍须由模块2按退货运单复查。
+        # 不扩展到未退款任务，也不回退已确认的仓库验货状态。
+        return or_(
+            AfterSalesOrder.workflow_status.in_(Module2ErpIntakeService._PENDING_WORKFLOWS),
+            and_(
+                AfterSalesOrder.workflow_status == WorkflowStatus.RETURN_WAITING_ERP_MATCH,
+                AfterSalesOrder.refund_financial_status == "SUCCESS",
+            ),
+        )
 
     @staticmethod
     def _platform_refunded(order: AfterSalesOrder) -> bool:

@@ -259,6 +259,33 @@ def test_different_query_sources_are_not_merged(tmp_path, change):
     assert journal(tmp_path, [task, poll]).list_issues()["counts"]["OPEN"] == 2
 
 
+@pytest.mark.parametrize("new_error", [None, "整批实收仍有差异"])
+def test_new_module2_query_supersedes_only_old_wrong_flow_query(db, tmp_path, new_error):
+    order, _ = sample_data.sample.__wrapped__(db)
+    order.after_sales_type = "RETURN_AND_REFUND"
+    task = Task(
+        id=2, after_sales_sn=order.after_sales_sn, action_type=Action.ERP_MATCH_RETURN_ORDER,
+        action_status=Status.PENDING, idempotency_key="old-wrong-flow", attempts=0,
+        last_error="发货运单为空", payload={"origin": "module2", "erp_match_status": "unavailable",
+            "erp_match_message": "发货运单为空", "erp_match_checked_at": "2026-09-23T04:00:00Z"},
+    )
+    progress = AutomationPollState(scope="module2_erp", reference=order.after_sales_sn,
+        checked_at=datetime(2026, 10, 1, 4), next_check_at=datetime(2026, 10, 1, 5), last_error=new_error)
+    db.add_all([task, progress]);db.commit()
+    rows = collector(db, tmp_path).collect()
+    row = next(r for r in rows if r["key"] == "task:2")
+    assert row["state"] == ("OPEN" if new_error else "RESOLVED")
+    if new_error:
+        assert row["reason"] == new_error
+    else:
+        assert "旧发货运单查询错误已被替代" in row["reason"]
+    assert task.last_error == "发货运单为空" and task.action_status == Status.PENDING
+    # 后来的其他执行错误不是这个旧查询，不能被轮询覆盖。
+    task.last_error = "另一项资金请求结果待核实";db.commit()
+    row = next(r for r in collector(db, tmp_path).collect() if r["key"] == "task:2")
+    assert row["state"] == "OPEN" and row["reason"] == task.last_error
+
+
 def test_sync_issue_can_exist_without_order_and_same_refund_other_shop_distinct(db, tmp_path):
     sample_data.sample.__wrapped__(db)
     now = datetime.now(UTC).replace(tzinfo=None)
