@@ -18,6 +18,7 @@ REASONS = (
     "ERP退款记录已有客户关联，不能确认无需补单",
     "ERP 待处理和已处理退款列表均未找到该订单",
     "ERP 订单查询已完成，但平台订单与退款记录中的客户关联不唯一或不一致，须核实归属",
+    "ERP 未发货退款查询失败：[Errno 11001] getaddrinfo failed",
 )
 
 
@@ -39,6 +40,9 @@ def snapshot(row):
 @pytest.mark.parametrize("last_error_only", [False, True])
 def test_move_to_details_preserves_unresolved_source_and_finances(db, tmp_path, reason, last_error_only):
     order, check, todo = baseline.seed(db, reason)
+    if "getaddrinfo" in reason:
+        check.payload = {**check.payload, "erp_refund_status": "unavailable"}
+        db.commit()
     if last_error_only:
         check.payload = {k: v for k, v in check.payload.items() if k != "erp_refund_message"}
         check.last_error = reason
@@ -125,3 +129,8 @@ def test_other_module_same_text_not_hidden(records):
     todo.payload = {**todo.payload, "reason_text": REASONS[0]}
     db.commit()
     assert service.list_manual_todos(page=1, page_size=20, keyword="after-order")["pagination"]["total"] == 1
+
+
+def test_dns_error_variants_and_other_query_failures_are_not_conflated():
+    assert exception_details_only("ERP 未发货退款查询失败：[WinError 11001] getaddrinfo failed")
+    assert not exception_details_only("ERP 未发货退款查询失败：ERP 平台订单未唯一匹配待处理记录中的客户")
