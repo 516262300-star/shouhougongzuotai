@@ -457,6 +457,7 @@ class AftersalesRecordService:
         after_sales_type = _enum_value(order.after_sales_type)
         logistics = order.logistics_state or self._fallback_logistics(order)
         no_erp = self._module3_no_erp_details(order, tasks)
+        erp_tail = self._module3_tail_details(order, tasks)
         product_name = order.product_name or (
             "、".join(" ".join(filter(None, (item.sku_code, item.color))) for item in items[:3])
             or "平台未返回商品明细"
@@ -472,6 +473,8 @@ class AftersalesRecordService:
             )
         elif no_erp:
             decision_note = str(no_erp["erp_refund_message"])
+        elif erp_tail:
+            decision_note = str(erp_tail["erp_refund_message"])
         elif (
             shop.platform == Platform.TMALL
             and order.order_shipping_status == ShippingStatus.UNKNOWN
@@ -570,6 +573,8 @@ class AftersalesRecordService:
                     if after_sales_type in RECORD_ONLY_AFTERSALES_TYPES
                     else "无需 ERP 补单"
                     if no_erp
+                    else "核账通过（小额尾差）"
+                    if erp_tail
                     else WORKFLOW_LABELS.get(workflow, workflow)
                 ),
                 "status_tone": "success" if no_erp else _tone_for_workflow(workflow),
@@ -623,6 +628,8 @@ class AftersalesRecordService:
         intercept_tone = _tone_for_workflow(workflow)
         if self._module3_no_erp_details(order, tasks):
             intercept_label, intercept_tone = "无需 ERP 补单", "success"
+        elif self._module3_tail_details(order, tasks):
+            intercept_label, intercept_tone = "核账通过（小额尾差）", "success"
         if qywx_task and workflow == WorkflowStatus.PENDING_CHECK.value:
             task_status = _enum_value(qywx_task.action_status)
             intercept_label = {
@@ -697,6 +704,19 @@ class AftersalesRecordService:
             "platform_refund_reason": refund["reason"],
             "updated_at": _dt(order.updated_at),
         }
+
+    @staticmethod
+    def _module3_tail_details(order, tasks) -> dict[str, Any] | None:
+        if _enum_value(order.workflow_status) != "UNSHIPPED_AUTO_REFUNDED":
+            return None
+        check = AftersalesRecordService._latest_task(tasks, AutomationActionType.ERP_CHECK_FULFILLMENT)
+        payload = (check.payload or {}) if check else {}
+        if (check and _enum_value(check.action_status) == "SUCCEEDED"
+                and payload.get("origin") == "module3"
+                and payload.get("erp_refund_status") == "completed"
+                and payload.get("erp_receivable_tail_accepted") is True):
+            return payload
+        return None
 
     @staticmethod
     def _module3_no_erp_details(
@@ -1638,7 +1658,8 @@ class AftersalesRecordService:
             description = ACTION_STATUS_LABELS.get(status, status)
             if (
                 action == AutomationActionType.ERP_CHECK_FULFILLMENT.value
-                and (task.payload or {}).get("erp_refund_status") == "not_required"
+                and ((task.payload or {}).get("erp_refund_status") == "not_required"
+                     or (task.payload or {}).get("erp_receivable_tail_accepted") is True)
             ):
                 description = str((task.payload or {}).get("erp_refund_message") or "无需 ERP 补单")
             if (task.payload or {}).get("refund_gate") == "DUAL_NO_TRACE_RISK":

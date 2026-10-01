@@ -49,6 +49,13 @@ def _index(session):
         & (func.coalesce(Task.payload["cancel_reason"].as_string(), "")
            == "已核实快速退款未入 ERP，无需补单，取消未发送误报")
     )
+    verified_tail_notice = (
+        (Task.action_status == "CANCELLED") & (Task.attempts == 0)
+        & (func.coalesce(Task.payload["origin"].as_string(), "") == "module3")
+        & (func.coalesce(Task.payload["external_todo_id"].as_string(), "") == "")
+        & (func.coalesce(Task.payload["resolution_code"].as_string(), "")
+           == "ERP_RECEIVABLE_TAIL_ACCEPTED")
+    )
     aftersales = (
         select(
             literal("aftersales").label("source"),
@@ -71,7 +78,7 @@ def _index(session):
             Shop.shop_id == AfterSalesOrder.shop_id,
         )
         .where(Task.action_type == "ERP_CREATE_MANUAL_TODO", ~amount_recheck_notice,
-               ~verified_unimported_notice)
+               ~verified_unimported_notice, ~verified_tail_notice)
     )
     available = inspect(session.get_bind()).has_table(Notice.__tablename__)
     if not available:

@@ -340,6 +340,9 @@ class Module3ErpRefundService:
             "erp_refund_check_count": int(payload.get("erp_refund_check_count") or 0) + 1,
             "erp_refund_status": lookup.status.value,
             "erp_refund_message": lookup.message,
+            "erp_receivable_tail_accepted": lookup.receivable_tail_accepted,
+            "erp_receivable_limit_exclusive": "1.00" if lookup.receivable_tail_accepted else None,
+            "erp_refund_reference_sn": lookup.reference_sn,
             "erp_no_order_evidence": lookup.no_erp_order_evidence,
             "erp_refund_record_id": lookup.record_id,
             "erp_order_sn": lookup.erp_order_sn,
@@ -386,6 +389,10 @@ class Module3ErpRefundService:
             "reference_sn": lookup.reference_sn,
             "completed_at": now,
             "result_code": "COMPLETED",
+            "erp_receivable_amount": (
+                str(lookup.receivable_amount) if lookup.receivable_amount is not None else None
+            ),
+            "erp_receivable_tail_accepted": lookup.receivable_tail_accepted,
         }
         self._upsert_succeeded_audit_task(
             order.after_sales_sn,
@@ -399,6 +406,20 @@ class Module3ErpRefundService:
         )
         order.workflow_status = WorkflowStatus.UNSHIPPED_AUTO_REFUNDED
         order.exception_type = None
+        if lookup.receivable_tail_accepted:
+            for todo in self.session.scalars(select(AftersalesActionTask).where(
+                AftersalesActionTask.after_sales_sn == order.after_sales_sn,
+                AftersalesActionTask.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO,
+                AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
+                AftersalesActionTask.attempts == 0,
+            )):
+                payload = todo.payload or {}
+                if payload.get("origin") != "module3" or payload.get("external_todo_id"):
+                    continue
+                todo.action_status = AutomationTaskStatus.CANCELLED
+                todo.last_error = None
+                todo.payload = {**payload, "resolution_code": "ERP_RECEIVABLE_TAIL_ACCEPTED",
+                                "cancel_reason": lookup.message, "cancelled_at": now}
 
     def _upsert_succeeded_audit_task(
         self,

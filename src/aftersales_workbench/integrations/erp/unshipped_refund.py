@@ -12,6 +12,8 @@ import httpx
 
 from aftersales_workbench.integrations.erp.outstanding import outstanding_records
 
+UNSHIPPED_SETTLED_BALANCE_LIMIT = Decimal("1.00")
+
 
 class ErpUnshippedRefundConfigurationError(ValueError):
     """ERP 未发货退款查询或执行缺少必要配置。"""
@@ -70,6 +72,7 @@ class ErpUnshippedRefundLookup:
     outstanding_items: tuple[ErpUnshippedItem, ...] = ()
     reference_sn: str | None = None
     no_erp_order_evidence: dict[str, object] | None = None
+    receivable_tail_accepted: bool = False
 
     def safe_dict(self) -> dict[str, object]:
         result = asdict(self)
@@ -323,6 +326,7 @@ class ErpWebUnshippedRefundClient:
                     after_sales_sn=sales_sn,
                     expected_amount=expected_amount,
                     unimported_pending_page=pending_page if allow_unimported_refund else None,
+                    allow_receivable_tail=True,
                 )
             validation_error = self._validate_pending(
                 pending,
@@ -574,6 +578,7 @@ class ErpWebUnshippedRefundClient:
         after_sales_sn: str,
         expected_amount: Decimal,
         unimported_pending_page: str | None = None,
+        allow_receivable_tail: bool = False,
     ) -> ErpUnshippedRefundLookup:
         admin_page = self._get(
             "/leedis2/public/admin/refunds",
@@ -594,6 +599,15 @@ class ErpWebUnshippedRefundClient:
         remote_amount = _decimal(record.get("退款金额", ""))
         erp_order_sn = record.get("系统订单号", "").strip()
         customer_name = record.get("系统客户名称", "").strip()
+        if allow_receivable_tail:
+            matching_records = [row for row in _find_table_records(
+                admin_page, required_headers={"平台单号", "状态", "平台", "退款单号", "系统订单号"},
+            ) if row.get("平台单号") == platform_order_sn]
+            if (len(matching_records) != 1 or record.get("平台") != "拼多多"
+                    or record.get("状态") not in {"退款成功", "同意退款，退款成功"}):
+                return self._lookup(ErpUnshippedRefundStatus.BLOCKED,
+                                    "ERP 退款成功记录不唯一或状态未确认，不能按小额尾差核账",
+                                    platform_order_sn)
         if remote_after_sales_sn != after_sales_sn:
             return self._lookup(
                 ErpUnshippedRefundStatus.BLOCKED,
@@ -626,14 +640,23 @@ class ErpWebUnshippedRefundClient:
             after_sales_sn=after_sales_sn,
             expected_amount=expected_amount,
         )
+        # 仅未发货退款完成后的余额核账允许尾差；退款金额匹配和补单前余额仍严格校验。
+        balance_clear = (
+            abs(receivable) < UNSHIPPED_SETTLED_BALANCE_LIMIT
+            if allow_receivable_tail else abs(receivable) <= self.amount_tolerance
+        )
         if (
             not outstanding
-            and abs(receivable) <= self.amount_tolerance
+            and balance_clear
             and reference_sn
         ):
+            tail_accepted = allow_receivable_tail and receivable != 0
             return ErpUnshippedRefundLookup(
                 status=ErpUnshippedRefundStatus.COMPLETED,
                 message=(
+                    f"ERP 退款收款单及金额已核对，状态表无欠货；客户累计应收为 {receivable}，"
+                    "按绝对值小于 1 元的小额尾差核验通过，ERP 原余额保留。"
+                    if tail_accepted else
                     "ERP 待处理记录已移除，退款收款单已生成，"
                     "状态表无欠货且客户累计应收已归零"
                 ),
@@ -645,12 +668,15 @@ class ErpWebUnshippedRefundClient:
                 receivable_amount=receivable,
                 outstanding_items=(),
                 reference_sn=reference_sn,
+                receivable_tail_accepted=tail_accepted,
             )
         remaining = []
         if outstanding:
             remaining.append("本单仍有欠货")
-        if abs(receivable) > self.amount_tolerance:
+        if not balance_clear:
             remaining.append(f"客户累计应收为 {receivable}，尚未归零")
+        elif receivable != 0:
+            remaining.append(f"客户累计应收为 {receivable}（小额余额，其他核验条件尚未满足）")
         if not reference_sn:
             remaining.append("未匹配到本售后及金额对应的退款收款单")
         return ErpUnshippedRefundLookup(
