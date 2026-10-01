@@ -4,7 +4,8 @@ param(
     [Parameter(Mandatory)][string]$RemoteBackupRoot,
     [Parameter(Mandatory)][string]$KeyFile,
     [Parameter(Mandatory)][string]$KnownHostsFile,
-    [Parameter(Mandatory)][string]$Destination
+    [Parameter(Mandatory)][string]$Destination,
+    [ValidatePattern('^[a-zA-Z0-9_.-]+$')][string]$HostKeyAlias
 )
 $ErrorActionPreference = 'Stop'
 if (-not $PSCmdlet.ShouldProcess($Destination, 'Copy latest verified office backup over pinned SSH')) { return }
@@ -17,7 +18,9 @@ try {
     if ($RemoteHost -notmatch '^[a-zA-Z0-9_.-]+@[a-zA-Z0-9_.-]+$') { throw 'Invalid remote host' }
     if ($RemoteBackupRoot -notmatch '^[A-Za-z]:[/\\][A-Za-z0-9_/\\-]+$') { throw 'Invalid remote backup root' }
     $lock = [IO.File]::Open((Join-Path $destinationRoot 'pull.lock'), 'OpenOrCreate', 'ReadWrite', 'None')
-    $sshArgs = @('-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8','-o',"UserKnownHostsFile=$KnownHostsFile",'-i',$KeyFile)
+    $sshArgs = @('-4','-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o','ConnectTimeout=8','-o',"UserKnownHostsFile=$KnownHostsFile",'-i',$KeyFile)
+    # Keep the pinned host identity when DHCP changes the connection address.
+    if ($HostKeyAlias) { $sshArgs += @('-o', "HostKeyAlias=$HostKeyAlias") }
     $query = "[Console]::OutputEncoding=[Text.UTF8Encoding]::new(`$false); Get-Content -LiteralPath '$RemoteBackupRoot/latest.json' -Raw -Encoding utf8"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($query))
     $oldPreference = $ErrorActionPreference
