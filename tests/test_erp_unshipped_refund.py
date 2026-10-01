@@ -405,6 +405,9 @@ def test_completion_records_three_stage_local_audit_chain() -> None:
         def scalar(self, _statement):
             return None
 
+        def scalars(self, _statement):
+            return []
+
         def add(self, task) -> None:
             self.added.append(task)
 

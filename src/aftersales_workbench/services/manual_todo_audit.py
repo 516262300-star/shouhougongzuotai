@@ -58,7 +58,7 @@ def _index(session):
         & (func.coalesce(Task.payload["origin"].as_string(), "") == "module3")
         & (func.coalesce(Task.payload["external_todo_id"].as_string(), "") == "")
         & (func.coalesce(Task.payload["resolution_code"].as_string(), "")
-           == "ERP_RECEIVABLE_TAIL_ACCEPTED")
+           .in_(("ERP_RECEIVABLE_TAIL_ACCEPTED", "ERP_REFUND_VERIFIED_COMPLETE")))
     )
     delegated_account_notice = account_balance_todo_clause(Task.payload) | (
         (Task.action_status == "CANCELLED")

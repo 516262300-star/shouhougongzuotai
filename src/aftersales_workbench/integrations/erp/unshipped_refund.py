@@ -901,6 +901,12 @@ class ErpWebUnshippedRefundClient:
             },
         )
         normalized_order_id = erp_order_sn.removeprefix("DD-")
+        # ERP 展示单号可带 X，收款表订单编号仍保存原数字 ID；备注必须精确保留完整单号。
+        order_ids = {normalized_order_id}
+        x_order = re.fullmatch(r"DD-([0-9]+)X", erp_order_sn)
+        if x_order:
+            order_ids.add(x_order.group(1))
+        refund_note = re.compile(r"自动开退款单" + re.escape(erp_order_sn) + r"(?![0-9A-Za-z-])")
         references: set[str] = set()
         for record in records:
             amount = _decimal(record.get("收款金额", ""))
@@ -908,9 +914,9 @@ class ErpWebUnshippedRefundClient:
                 continue
             if record.get("制单人", "").strip() != after_sales_sn:
                 continue
-            if record.get("订单编号", "").strip() != normalized_order_id:
+            if record.get("订单编号", "").strip() not in order_ids:
                 continue
-            if f"自动开退款单{erp_order_sn}" not in record.get("备注", ""):
+            if not refund_note.search(record.get("备注", "")):
                 continue
             reference = record.get("单据编号", "").strip()
             if reference.startswith("SK-"):

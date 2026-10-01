@@ -406,7 +406,7 @@ class Module3ErpRefundService:
         )
         order.workflow_status = WorkflowStatus.UNSHIPPED_AUTO_REFUNDED
         order.exception_type = None
-        if lookup.receivable_tail_accepted:
+        if lookup.status is ErpUnshippedRefundStatus.COMPLETED:
             for todo in self.session.scalars(select(AftersalesActionTask).where(
                 AftersalesActionTask.after_sales_sn == order.after_sales_sn,
                 AftersalesActionTask.action_type == AutomationActionType.ERP_CREATE_MANUAL_TODO,
@@ -418,7 +418,11 @@ class Module3ErpRefundService:
                     continue
                 todo.action_status = AutomationTaskStatus.CANCELLED
                 todo.last_error = None
-                todo.payload = {**payload, "resolution_code": "ERP_RECEIVABLE_TAIL_ACCEPTED",
+                resolution = (
+                    "ERP_RECEIVABLE_TAIL_ACCEPTED" if lookup.receivable_tail_accepted
+                    else "ERP_REFUND_VERIFIED_COMPLETE"
+                )
+                todo.payload = {**payload, "resolution_code": resolution,
                                 "cancel_reason": lookup.message, "cancelled_at": now}
 
     def _upsert_succeeded_audit_task(
