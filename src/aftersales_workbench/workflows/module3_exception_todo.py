@@ -29,6 +29,7 @@ _EXCEPTION_STATUSES = {
     ErpUnshippedRefundStatus.BLOCKED.value,
     ErpUnshippedRefundStatus.UNAVAILABLE.value,
 }
+_LEGACY_PENDING_ONLY_MESSAGE = "ERP 已同步退款事实，但待处理页暂无可执行的补开退款单动作"
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +137,11 @@ class SqlAlchemyModule3ExceptionTodoRepository:
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
                 ~unimported_query_error,
+                # 旧版本的笼统提示不再是人工核账依据，保留 ERP 核验任务等待新版回查。
+                func.coalesce(
+                    func.nullif(func.trim(AftersalesActionTask.payload["erp_refund_message"].as_string()), ""),
+                    AftersalesActionTask.last_error, "",
+                ) != _LEGACY_PENDING_ONLY_MESSAGE,
             )
             .order_by(AftersalesActionTask.id)
             .limit(500)

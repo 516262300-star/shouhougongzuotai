@@ -340,6 +340,26 @@ def test_quick_refund_query_failure_does_not_recreate_manual_todo(db, status, ow
     assert task.action_status == AutomationTaskStatus.PENDING
 
 
+@pytest.mark.parametrize("stored_in", ["erp_refund_message", "last_error"])
+def test_legacy_pending_only_message_requires_new_erp_review_before_todo(db, stored_in):
+    order, task, _ = seed(db)
+    order.erp_sales_owner_status = "matched"
+    order.erp_sales_owner = "测试业务员"
+    legacy = "ERP 已同步退款事实，但待处理页暂无可执行的补开退款单动作"
+    task.payload = {**task.payload, "erp_refund_status": "not_found"}
+    if stored_in == "last_error":
+        task.last_error = legacy
+    else:
+        task.payload = {**task.payload, "erp_refund_message": legacy}
+    db.commit()
+    repository = SqlAlchemyModule3ExceptionTodoRepository(db)
+    assert repository.list_candidates(limit=20) == []
+    assert task.action_status == "PENDING" and task.payload["erp_refund_status"] == "not_found"
+    task.payload = {**task.payload, "erp_refund_message": "所有退货退款已核对，缺少对应退款收款单"}
+    db.commit()
+    assert len(repository.list_candidates(limit=20)) == 1
+
+
 def test_future_query_error_removes_old_exemption(db):
     _, task, _ = seed(db)
     client, state = client_for()
