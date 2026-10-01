@@ -23,9 +23,13 @@ from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
 from aftersales_workbench.services.module3_todo_policy import (
     ACCOUNT_NOTICE_CANCEL_REASON,
     ACCOUNT_NOTICE_DELEGATED,
+    EXCEPTION_DETAILS_CANCEL_REASON,
+    EXCEPTION_DETAILS_ONLY,
     account_balance_only,
     account_balance_only_clause,
     current_reason_clause,
+    exception_details_only,
+    exception_details_only_clause,
 )
 from aftersales_workbench.workflows.module1_manual_todo import (
     ManualTodoEnqueueResult,
@@ -148,6 +152,10 @@ class SqlAlchemyModule3ExceptionTodoRepository:
                     AftersalesActionTask.payload, ("erp_refund_message",),
                     fallback=AftersalesActionTask.last_error,
                 )),
+                ~exception_details_only_clause(current_reason_clause(
+                    AftersalesActionTask.payload, ("erp_refund_message",),
+                    fallback=AftersalesActionTask.last_error,
+                )),
                 # 旧版本的笼统提示不再是人工核账依据，保留 ERP 核验任务等待新版回查。
                 func.coalesce(
                     func.nullif(func.trim(AftersalesActionTask.payload["erp_refund_message"].as_string()), ""),
@@ -226,7 +234,10 @@ class SqlAlchemyModule3ExceptionTodoRepository:
             balance_notice = active and account_balance_only(
                 payload.get("erp_refund_message") or check.last_error or ""
             )
-            if balance_notice:
+            details_notice = active and exception_details_only(
+                payload.get("erp_refund_message") or check.last_error or ""
+            )
+            if balance_notice or details_notice:
                 # 只撤销明确未发送的提醒；原核验结果与已尝试/已发送记录不改。
                 if todo.attempts or (todo.payload or {}).get("external_todo_id"):
                     continue
@@ -236,8 +247,8 @@ class SqlAlchemyModule3ExceptionTodoRepository:
                     todo.last_error = None
                     todo.payload = {
                         **(todo.payload or {}),
-                        "resolution_code": ACCOUNT_NOTICE_DELEGATED,
-                        "cancel_reason": ACCOUNT_NOTICE_CANCEL_REASON,
+                        "resolution_code": EXCEPTION_DETAILS_ONLY if details_notice else ACCOUNT_NOTICE_DELEGATED,
+                        "cancel_reason": EXCEPTION_DETAILS_CANCEL_REASON if details_notice else ACCOUNT_NOTICE_CANCEL_REASON,
                         "cancelled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     }
                 continue
