@@ -172,6 +172,93 @@ def test_erp_query_issue_links_exact_order_and_never_writes_business_state(db, t
     assert task.action_status == Status.PENDING  # 监控不伪造动作执行成功。
 
 
+def test_return_recheck_replaces_old_network_failure_with_current_business_reason(db, tmp_path):
+    order, _ = sample_data.sample.__wrapped__(db)
+    task = Task(
+        id=2, after_sales_sn=order.after_sales_sn, action_type=Action.ERP_MATCH_RETURN_ORDER,
+        action_status=Status.PENDING, idempotency_key="return-recheck", attempts=0,
+        last_error="旧的 TLS 查询失败", payload={"erp_match_status": "unavailable"},
+    )
+    db.add(task)
+    db.commit()
+    service = RuntimeIssueService(collector(db, tmp_path), tmp_path / "recheck.sqlite3", refresh_seconds=0)
+    assert service.list_issues()["items"][0]["reason"] == "旧的 TLS 查询失败"
+    task.last_error = None
+    task.payload = {
+        "erp_match_status": "item_mismatch", "erp_match_message": "实收数量与本售后申请不一致",
+        "erp_match_checked_at": "2026-10-01T04:00:00+00:00",
+    }
+    db.commit()
+    row = service.list_issues()["items"][0]
+    assert row["state"] == "OPEN" and row["reason"] == "实收数量与本售后申请不一致"
+    assert row["checked_at"] == "2026-10-01T04:00:00+00:00"
+    assert [e["reason"] for e in row["events"]] == ["旧的 TLS 查询失败", row["reason"]]
+    assert task.action_status == Status.PENDING and task.attempts == 0
+    assert not db.dirty and not db.new and not db.deleted
+
+
+def test_return_matching_does_not_erase_separate_claim_failure(db, tmp_path):
+    order, _ = sample_data.sample.__wrapped__(db)
+    db.add(Task(
+        id=2, after_sales_sn=order.after_sales_sn, action_type=Action.ERP_MATCH_RETURN_ORDER,
+        action_status=Status.PENDING, idempotency_key="return-claim", attempts=0,
+        payload={"erp_match_status": "receivable_open", "erp_match_message": "累计应收未归零",
+                 "erp_match_checked_at": "2026-10-01T04:00:00+00:00",
+                 "erp_return_claim_status": "blocked", "erp_return_claim_reason": "原销售归属未完整核验"},
+    ))
+    db.commit()
+    row = next(r for r in collector(db, tmp_path).collect() if r["key"] == "task:2")
+    assert row["reason"] == "原销售归属未完整核验" and row["state"] == "OPEN"
+
+
+def test_return_recheck_uses_newer_result_but_does_not_invent_recovery(db, tmp_path):
+    order, _ = sample_data.sample.__wrapped__(db)
+    task = Task(
+        id=2, after_sales_sn=order.after_sales_sn, action_type=Action.ERP_MATCH_RETURN_ORDER,
+        action_status=Status.PENDING, idempotency_key="return-latest", attempts=0,
+        payload={"erp_match_status": "receivable_open", "erp_match_message": "旧余额提示",
+                 "erp_match_checked_at": "2026-10-01T03:00:00Z", "erp_refund_status": "blocked",
+                 "erp_refund_message": "待处理动作待核对", "erp_refund_checked_at": "2026-10-01T04:00:00Z"},
+    )
+    db.add(task)
+    db.commit()
+    service = RuntimeIssueService(collector(db, tmp_path), tmp_path / "latest.sqlite3", refresh_seconds=0)
+    assert service.list_issues()["items"][0]["reason"] == "待处理动作待核对"
+    task.payload = {}
+    db.commit()
+    assert service.list_issues()["items"][0]["state"] == "OPEN"
+
+
+def test_duplicate_query_poll_counts_once_without_deleting_history(tmp_path):
+    identity = dict(after_sales_sn="AS", shop_id=1, platform="DOUYIN", active=True)
+    task = observation("task:2", "ERP", "ERP归属待核实", action_type="ERP_CHECK_FULFILLMENT", **identity)
+    poll = observation("poll:douyin_module3:AS", "ERP", "ERP归属待核实", **identity)
+    money = observation("money:unknown", "ERP", "ERP归属待核实", **identity)
+    service = journal(tmp_path, [task, poll, money])
+    result = service.list_issues(page_size=1)
+    assert result["counts"]["OPEN"] == result["category_counts"]["ERP"] == 2
+    assert result["pagination"]["total"] == 2
+    assert len(service.list_issues(keyword="ERP归属")["items"]) == 2
+    row = next(r for r in service.list_issues()["items"] if r["key"] == "task:2")
+    assert row["related_issue_keys"] == [poll["key"]]
+    # 任务恢复后，旧轮询未复查仍有独立历史依据，不会随任务一起消失。
+    service.collector.rows = [{**task, "state": "RESOLVED"}, poll, money]
+    result = service.list_issues()
+    assert result["counts"]["OPEN"] == 2
+    assert {r["key"] for r in result["items"]} == {poll["key"], money["key"]}
+
+
+@pytest.mark.parametrize("change", [
+    {"reason": "另一个错误"}, {"shop_id": 2}, {"after_sales_sn": "AS2"},
+    {"key": "poll:module2_erp:AS"},
+])
+def test_different_query_sources_are_not_merged(tmp_path, change):
+    identity = dict(after_sales_sn="AS", shop_id=1, active=True)
+    task = observation("task:2", "ERP", "失败", action_type="ERP_CHECK_FULFILLMENT", **identity)
+    poll = {**observation("poll:douyin_module3:AS", "ERP", "失败", **identity), **change}
+    assert journal(tmp_path, [task, poll]).list_issues()["counts"]["OPEN"] == 2
+
+
 def test_sync_issue_can_exist_without_order_and_same_refund_other_shop_distinct(db, tmp_path):
     sample_data.sample.__wrapped__(db)
     now = datetime.now(UTC).replace(tzinfo=None)

@@ -1,6 +1,7 @@
 """共享 ERP 动作类型不能让模块1消费模块2队列。"""
 
 from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -82,3 +83,24 @@ def test_genuine_module1_missing_identity_is_still_a_failure(db):
     assert result.unavailable == 1
     assert task.action_status == "PENDING"
     assert task.payload["erp_match_failure_reason"] == "missing_identity"
+
+
+@pytest.mark.parametrize("front_age", [0, 60])
+def test_old_issue_beyond_first_page_is_rechecked_before_repeated_front_rows(db, front_age):
+    now = datetime.now(UTC)
+    for i in range(101):
+        task = add_task(db, i, "ONLY_REFUND", f"A-{i:03}", "module1")
+        task.payload = {"erp_match_status": "unavailable",
+                        "erp_match_checked_at": (now - timedelta(minutes=front_age)).isoformat()}
+    old = add_task(db, 200, "ONLY_REFUND", "Z-OLD", "module1")
+    old.payload = {"erp_match_status": "not_found",
+                   "erp_match_checked_at": (now - timedelta(days=3)).isoformat()}
+    db.commit()
+    matcher = Mock()
+    matcher.lookup.return_value = ErpReturnMatchLookup(
+        status=ErpReturnMatchStatus.NOT_FOUND, message="重新核验后仍未找到退货单",
+    )
+    result = ErpReturnMatchSyncService(db, matcher).run(limit=1, refresh_seconds=1800, dry_run=False)
+    assert result.scanned == 1
+    assert matcher.lookup.call_args.kwargs["platform_order_sn"] == "ORDER-200"
+    assert old.payload["erp_match_message"] == "重新核验后仍未找到退货单"

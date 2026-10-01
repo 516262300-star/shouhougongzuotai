@@ -32,6 +32,11 @@ from aftersales_workbench.services.refund_confirmation_view import (
     confirmation_state,
 )
 from aftersales_workbench.services.runtime_issue_focus import load_focus_cycle, select_focus
+from aftersales_workbench.services.runtime_issue_projection import (
+    ERP_POLL_SCOPES,
+    merge_duplicate_polls,
+    return_match_observation,
+)
 from aftersales_workbench.services.runtime_monitor import _latest_json_line
 from aftersales_workbench.workflows.desktop_sender import DesktopNoticeLedger
 
@@ -211,6 +216,13 @@ class RuntimeIssueCollector:
                 checked = utc_iso(payload.get("erp_refund_checked_at")) or checked
                 progress = poll.get(("module3_erp", task.after_sales_sn))
                 next_check = utc_iso(progress.next_check_at) if progress else None
+            if action == "ERP_MATCH_RETURN_ORDER":
+                progress = poll.get(("tmall_module1_return_v1", task.after_sales_sn))
+                current_match = return_match_observation(task, progress)
+                if current_match:
+                    reason, match_checked = current_match
+                    active = True
+                    checked = utc_iso(match_checked) or checked
             if category == "NOTICE":
                 entry, parcel = ledger.get(task.id), parcels.get(task.id)
                 uncertain = bool(
@@ -328,7 +340,7 @@ class RuntimeIssueCollector:
                 continue  # 由同一动作任务展示，避免同一故障计数两次。
             category = (
                 "ERP"
-                if "erp" in progress.scope
+                if "erp" in progress.scope or progress.scope in ERP_POLL_SCOPES
                 else "TODO"
                 if "todo" in progress.scope
                 else "OTHER"
@@ -590,6 +602,8 @@ class RuntimeIssueService:
                 checked_at = last[0]
             db.commit()
         all_items = list(saved.values())
+        if not stage_id:
+            all_items = merge_duplicate_polls(all_items)
         focus = None
         if stage_id:
             selected_cycle = getattr(self.collector, "latest_cycle", {})
@@ -682,6 +696,7 @@ class RuntimeIssueService:
             },
             "history_note": (
                 "记录从本机监控首次观察开始，数量按异常项统计，不是订单数。"
+                "同一核验的重复来源合并计数，原始观察历史保留。"
                 "恢复表示该项异常解除，不等于售后闭环；缺少来源或未复查的记录不会自动清除。"
             ),
         }

@@ -689,7 +689,6 @@ class ErpReturnMatchSyncService:
                 AfterSalesOrder,
                 AfterSalesOrder.after_sales_sn == AftersalesActionTask.after_sales_sn,
             )
-            .options(selectinload(AfterSalesOrder.items))
             .where(
                 AftersalesActionTask.action_type
                 == AutomationActionType.ERP_MATCH_RETURN_ORDER,
@@ -702,8 +701,9 @@ class ErpReturnMatchSyncService:
                 AfterSalesOrder.forward_tracking_number,
                 AftersalesActionTask.id,
             )
-            .limit(max(100, limit * 10))
         ).all()
+        # 核验到期与先后顺序必须覆盖整个待查队列。先按运单截取前100条，
+        # 会让后面的旧异常一直没有复查机会；商品明细在实际核验时才加载。
         rows.sort(key=self._row_priority)
         result = ErpReturnMatchSyncResult(
             dry_run=dry_run,
@@ -1013,12 +1013,19 @@ class ErpReturnMatchSyncService:
         return now - checked_at >= timedelta(seconds=retry_seconds)
 
     @staticmethod
-    def _row_priority(row: tuple[Any, Any]) -> tuple[int, str, int]:
+    def _row_priority(row: tuple[Any, Any]) -> tuple[datetime, int, str, int]:
         task, order = row
+        value = str((task.payload or {}).get("erp_match_checked_at") or "").strip()
+        try:
+            checked_at = datetime.fromisoformat(value)
+            checked_at = checked_at.replace(tzinfo=checked_at.tzinfo or UTC).astimezone(UTC)
+        except ValueError:
+            checked_at = datetime.min.replace(tzinfo=UTC)
         failed_first = 0 if str((task.payload or {}).get("erp_match_status") or "") == (
             ErpReturnMatchStatus.UNAVAILABLE.value
         ) else 1
         return (
+            checked_at,
             failed_first,
             str(order.forward_tracking_number or ""),
             int(task.id or 0),
