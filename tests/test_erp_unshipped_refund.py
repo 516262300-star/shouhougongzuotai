@@ -5,6 +5,7 @@ from decimal import Decimal
 from types import SimpleNamespace
 
 import httpx
+import pytest
 
 from aftersales_workbench.db.models import (
     AutomationActionType,
@@ -135,7 +136,8 @@ def _admin_page() -> str:
 
 
 def _client(
-    *, initially_completed: bool = False, shipped: bool = False
+    *, initially_completed: bool = False, shipped: bool = False,
+    customer_matches: list[dict] | None = None,
 ) -> tuple[ErpWebUnshippedRefundClient, dict[str, bool]]:
     state = {"completed": initially_completed, "write_called": False}
 
@@ -150,7 +152,7 @@ def _client(
         if path.endswith("/customer/GetCustomerName"):
             return httpx.Response(
                 200,
-                json=[
+                json=customer_matches if customer_matches is not None else [
                     {
                         "autocomplete": f"{ERP_CUSTOMER}@地址@商标@策略@张三",
                         "id": 900001,
@@ -196,6 +198,48 @@ def _client(
 
 def _expected() -> tuple[ErpUnshippedItem, ...]:
     return (ErpUnshippedItem(SKU_CODE, SKU_COLOR, Decimal("6")),)
+
+
+@pytest.mark.parametrize("shipped", [False, True])
+def test_customer_identity_difference_is_review_not_query_failure(shipped):
+    client, state = _client(initially_completed=True, customer_matches=[
+        {"autocomplete": ERP_CUSTOMER + "@地址", "id": 900001},
+        {"autocomplete": "另一客户@地址", "id": 900002},
+    ])
+    inspect = client.inspect_shipped_return if shipped else client.inspect
+    try:
+        result = inspect(platform_order_sn=ORDER_SN, after_sales_sn=AFTER_SALES_SN,
+                         expected_amount=Decimal("74.51"), expected_items=_expected())
+    finally:
+        client.close()
+    assert result.status is ErpUnshippedRefundStatus.BLOCKED
+    assert not state["write_called"]
+
+
+def test_absent_pending_explains_balance_and_reference_without_repeating_refund(monkeypatch):
+    client, state = _client(initially_completed=True)
+    profile = _profile(completed=True).replace("0.00", "0.03").replace("SK-TEST-1", "OTHER-1")
+    monkeypatch.setattr(client, "_load_customer_profile", lambda *args: (profile, "900001"))
+    try:
+        result = client.inspect(platform_order_sn=ORDER_SN, after_sales_sn=AFTER_SALES_SN,
+                                expected_amount=Decimal("74.51"), expected_items=_expected())
+    finally:
+        client.close()
+    assert result.status is ErpUnshippedRefundStatus.NOT_FOUND
+    assert "所有退货退款" in result.message and "0.03" in result.message
+    assert "未匹配到" in result.message
+    assert not state["write_called"]
+
+
+def test_malformed_customer_response_remains_query_failure():
+    client, state = _client(initially_completed=True, customer_matches=[{"unexpected": "schema"}])
+    try:
+        result = client.inspect(platform_order_sn=ORDER_SN, after_sales_sn=AFTER_SALES_SN,
+                                expected_amount=Decimal("74.51"), expected_items=_expected())
+    finally:
+        client.close()
+    assert result.status is ErpUnshippedRefundStatus.UNAVAILABLE
+    assert not state["write_called"]
 
 
 def test_inspect_requires_exact_pending_refund_and_erp_facts() -> None:

@@ -21,6 +21,10 @@ class ErpUnshippedRefundError(RuntimeError):
     """ERP 未发货退款执行结果无法安全确认。"""
 
 
+class ErpUnshippedRefundReviewRequired(ValueError):
+    """查询已完成，但订单与客户关联存在业务差异，仍须人工核实。"""
+
+
 class ErpUnshippedRefundStatus(StrEnum):
     READY = "ready"
     COMPLETED = "completed"
@@ -378,6 +382,8 @@ class ErpWebUnshippedRefundClient:
                 receivable=receivable,
                 outstanding=outstanding,
             )
+        except ErpUnshippedRefundReviewRequired as exc:
+            return self._lookup(ErpUnshippedRefundStatus.BLOCKED, str(exc), order_sn)
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             self._logged_in = False
             return self._lookup(
@@ -518,6 +524,8 @@ class ErpWebUnshippedRefundClient:
                 pending=pending,
                 receivable=receivable,
             )
+        except ErpUnshippedRefundReviewRequired as exc:
+            return self._lookup(ErpUnshippedRefundStatus.BLOCKED, str(exc), order_sn)
         except (httpx.HTTPError, ValueError, TypeError) as exc:
             self._logged_in = False
             return self._lookup(
@@ -638,9 +646,20 @@ class ErpWebUnshippedRefundClient:
                 outstanding_items=(),
                 reference_sn=reference_sn,
             )
+        remaining = []
+        if outstanding:
+            remaining.append("本单仍有欠货")
+        if abs(receivable) > self.amount_tolerance:
+            remaining.append(f"客户累计应收为 {receivable}，尚未归零")
+        if not reference_sn:
+            remaining.append("未匹配到本售后及金额对应的退款收款单")
         return ErpUnshippedRefundLookup(
             status=ErpUnshippedRefundStatus.NOT_FOUND,
-            message="ERP 已同步退款事实，但待处理页暂无可执行的补开退款单动作",
+            message=(
+                "ERP“所有退货退款”已查到退款记录，待处理列表已无本单；"
+                + "；".join(remaining)
+                + "。平台退款与 ERP 核账分开确认，不重复退款或补单。"
+            ),
             platform_order_sn=platform_order_sn,
             erp_order_sn=erp_order_sn,
             customer_name=customer_name,
@@ -773,14 +792,17 @@ class ErpWebUnshippedRefundClient:
         matches: list[tuple[str, str]] = []
         for item in payload:
             if not isinstance(item, dict):
-                continue
+                raise ValueError("ERP 客户自动补全条目格式错误")
             customer = str(item.get("autocomplete") or "").split("@", 1)[0].strip()
             customer_id = str(item.get("id") or "").strip()
-            if customer and customer_id:
-                matches.append((customer, customer_id))
+            if not customer or not customer_id:
+                raise ValueError("ERP 客户自动补全条目缺少客户名称或 ID")
+            matches.append((customer, customer_id))
         matches = list(dict.fromkeys(matches))
         if len(matches) != 1 or matches[0][0] != expected_customer:
-            raise ValueError("ERP 平台订单未唯一匹配待处理记录中的客户")
+            raise ErpUnshippedRefundReviewRequired(
+                "ERP 订单查询已完成，但平台订单与退款记录中的客户关联不唯一或不一致，须核实归属"
+            )
         profile = self._get(
             "/leedis2/public/customer/stdview",
             params={"autocustomer": expected_customer},
