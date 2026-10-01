@@ -23,7 +23,7 @@ def _candidate(
         sales_owner=owner,
         sales_owner_status=owner_status,
         exception_status="blocked",
-        exception_message="商家应收金额缺失",
+        exception_message="ERP 待处理退款金额与商家应收不一致",
         erp_order_sn=None,
     )
 
@@ -68,9 +68,9 @@ def test_module3_exception_todo_payload_targets_sales_owner() -> None:
     assert "blocked" not in payload["content"]
     assert "ERP订单号" not in payload["content"]
     assert payload["exception_status"] == "blocked"
-    assert payload["reason_text"] == "商家应收金额缺失"
-    assert "商家应收金额缺失" in payload["content"]
-    assert "请核对商家应收" in payload["content"]
+    assert payload["reason_text"] == "ERP 待处理退款金额与商家应收不一致"
+    assert "ERP 待处理退款金额与商家应收不一致" in payload["content"]
+    assert "请核对本次平台退款与 ERP 退款记录的金额差异" in payload["content"]
     assert "售后单号" not in payload["content"]
     assert "TEST-AFTERSALES-001" not in payload["content"]
 

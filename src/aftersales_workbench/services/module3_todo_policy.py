@@ -21,14 +21,41 @@ _BALANCE_PATTERN = (
     "^(【未发货退款核对：[^】]+】店铺：[^；]+；原因：)?" + _BALANCE_REASON
     + "(；请核对商家应收、订单欠货和退款单状态。完整原因见售后工作台。)?$"
 )
-_DETAILS_PATTERN = (
-    "^(【未发货退款核对：[^】]+】店铺：[^；]+；原因：)?"
-    "(ERP退款记录已有客户关联，不能确认无需补单|"
-    "ERP待处理和已处理退款列表均未找到该订单|"
-    "ERP订单查询已完成，但平台订单与退款记录中的客户关联不唯一或不一致，须核实归属|"
-    r"ERP未发货退款查询失败：\[(Errno|WinError)11001\]getaddrinfofailed)"
-    "(；请核对商家应收、订单欠货和退款单状态。完整原因见售后工作台。)?$"
+# 人工待办采用准入清单；未知原因默认留在异常明细，不能只凭异常状态发布。
+_MANUAL_ACTIONS = {
+    "ERP 状态表欠货的型号、颜色或数量与售后申请不一致": "请核对本单型号、颜色、数量与欠货记录的差异",
+    "ERP 发货销售单已出现该订单，不属于未发货自动退款": "请核实实际发货状态，按已发货售后处理",
+    "ERP 待处理退款单号与本地售后单号不一致": "请核实本单正确售后单号及对应的 ERP 退款记录",
+    "ERP 已处理列表的退款单号与本地售后单号不一致": "请核实本单正确售后单号及对应的 ERP 退款记录",
+    "ERP 待处理退款金额与商家应收不一致": "请核对本次平台退款与 ERP 退款记录的金额差异",
+    "ERP 已处理列表的退款金额与商家应收不一致": "请核对本次平台退款与 ERP 退款记录的金额差异",
+    "退款金额与商家应收不一致": "请核对本次平台退款与 ERP 退款记录的金额差异",
+    "ERP 待处理记录不是仅退款": "请核实售后类型，确定本单应采用的处理流程",
+    "ERP 待处理记录存在退货运单，不属于未发货退款": "请核实发货及退货事实，确定本单应采用的处理流程",
+    "本单仍有欠货": "请核实本单剩余欠货及对应的取消记录",
+    "未匹配到本售后及金额对应的退款收款单": "请核查本售后对应的退款收款单及金额，勿重复退款或补单",
+    "所有退货退款已核对，缺少对应退款收款单": "请核查本售后对应的退款收款单及金额，勿重复退款或补单",
+}
+
+
+def _normalized(message):
+    value = str(message or "")
+    for whitespace in _WHITESPACE:
+        value = value.replace(whitespace, "")
+    return value
+
+
+def _business_clause_pattern(reasons):
+    # 完整业务原因须处于句段边界，避免技术错误中偶然包含业务关键词。
+    return r"(^|[；：])(" + "|".join(re.escape(_normalized(x)) for x in reasons) + r")([；。]|$)"
+
+
+_MANUAL_PATTERN = _business_clause_pattern(_MANUAL_ACTIONS)
+_TECHNICAL_PATTERN = (
+    r"^(【未发货退款核对：[^】]+】店铺：[^；]+；原因：)?"
+    r"ERP未发货(退款查询失败：|核验失败[（(])"
 )
+_MANUAL_STATUSES = ("", "blocked", "not_found")  # 空状态仅兼容有明确业务原因的历史待办。
 
 
 def account_balance_only(message: str) -> bool:
@@ -75,19 +102,39 @@ def account_balance_todo(payload: dict) -> bool:
     return False
 
 
-def exception_details_only(message: str) -> bool:
-    # 只匹配指定的完整提示；附带已查实的欠货、金额差异等原因时仍保留人工待办。
-    normalized = str(message or "")
-    for value in _WHITESPACE:
-        normalized = normalized.replace(value, "")
-    return re.fullmatch(_DETAILS_PATTERN, normalized) is not None
+def manual_review_action(message: str, status: str | None = None) -> str | None:
+    normalized = _normalized(message)
+    if str(status or "").strip().lower() not in _MANUAL_STATUSES:
+        return None
+    if re.search(_TECHNICAL_PATTERN, normalized):
+        return None
+    actions = [action for reason, action in _MANUAL_ACTIONS.items()
+               if re.search(_business_clause_pattern((reason,)), normalized)]
+    return "；".join(dict.fromkeys(actions)) or None
 
 
-def exception_details_only_clause(message):
+def exception_details_only(message: str, status: str | None = None) -> bool:
+    return manual_review_action(message, status) is None
+
+
+def exception_details_only_clause(message, status=None):
     normalized = func.coalesce(message, "")
     for whitespace in _WHITESPACE:
         normalized = func.replace(normalized, whitespace, "")
-    return normalized.regexp_match(_DETAILS_PATTERN)
+    status = func.lower(func.trim(func.coalesce(status if status is not None else "", "")))
+    return ~and_(
+        status.in_(_MANUAL_STATUSES),
+        normalized.regexp_match(_MANUAL_PATTERN),
+        ~normalized.regexp_match(_TECHNICAL_PATTERN),
+    )
+
+
+def _todo_status_clause(payload):
+    return func.coalesce(
+        func.nullif(func.trim(payload["exception_status"].as_string()), ""),
+        func.nullif(func.trim(payload["erp_refund_status"].as_string()), ""),
+        func.replace(payload["reason_code"].as_string(), "ERP_REFUND_", ""), "",
+    )
 
 
 def exception_details_todo_clause(payload):
@@ -95,15 +142,17 @@ def exception_details_todo_clause(payload):
         func.coalesce(payload["origin"].as_string(), "") == "module3",
         exception_details_only_clause(current_reason_clause(
             payload, ("reason_text", "exception_message", "content"),
-        )),
+        ), _todo_status_clause(payload)),
     )
 
 
 def exception_details_todo(payload: dict) -> bool:
     if payload.get("origin") != "module3":
         return False
-    for key in ("reason_text", "exception_message", "content"):
-        reason = str(payload.get(key) or "").strip()
-        if reason:
-            return exception_details_only(reason)
-    return False
+    reason = next((str(payload.get(key)).strip()
+                   for key in ("reason_text", "exception_message", "content")
+                   if str(payload.get(key) or "").strip()), "")
+    status = (str(payload.get("exception_status") or "").strip()
+              or str(payload.get("erp_refund_status") or "").strip()
+              or str(payload.get("reason_code") or "").replace("ERP_REFUND_", ""))
+    return exception_details_only(reason, status)

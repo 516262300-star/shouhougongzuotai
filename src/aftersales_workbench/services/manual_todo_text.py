@@ -4,6 +4,8 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from aftersales_workbench.services.module3_todo_policy import manual_review_action
+
 
 def module1_todo_marker(platform_order_sn: str) -> str:
     return f"【售后工作台 订单:{platform_order_sn}】"
@@ -179,8 +181,12 @@ def prepare_manual_todo(
         marker = f"【未发货退款核对：{platform_order_sn}】"
         legacy = (f"【售后工作台 M3订单:{platform_order_sn}】",
                   f"【售后工作台 M3:{after_sales_sn}】")
+        action = manual_review_action(
+            payload.get("reason_text") or payload.get("exception_message") or old_content,
+            payload.get("exception_status"),
+        )
         content = (f"{marker} 店铺：{shop}；原因：{reason}；"
-                   "请核对商家应收、订单欠货和退款单状态。完整原因见售后工作台。")
+                   f"{action or '等待后台核验，详见异常明细'}。完整原因见售后工作台。")
     elif origin == "module2":
         refunded = (payload.get("reason_code") == "POST_REFUND_RETURN_MISMATCH_APPEAL"
                     or "事项：退款后退货异常申诉" in old_marker)

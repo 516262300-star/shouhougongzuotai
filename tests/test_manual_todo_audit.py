@@ -183,6 +183,7 @@ def test_verified_unsent_quick_refund_false_alarm_hidden_but_audit_retained(reco
     task.action_status = status
     task.attempts = attempts
     task.payload = {**task.payload, "origin": "module3", "external_todo_id": receipt,
+                    "reason_text": "本单仍有欠货",
                     "cancel_reason": "已核实快速退款未入 ERP，无需补单，取消未发送误报"}
     db.commit()
     before = list(db.execute(select(Task.__table__)).mappings())

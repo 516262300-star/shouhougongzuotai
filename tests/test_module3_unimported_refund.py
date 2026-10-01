@@ -317,16 +317,18 @@ def test_service_preserves_record_without_fake_accounting_and_rechecks(db):
         assert result.blocked == 1 and result.applied == 0
         assert task.payload["erp_no_order_evidence"] is None
         assert records.get_order(AFTER_SALES_SN)["decision"]["status"] != "无需 ERP 补单"
-        assert len(SqlAlchemyModule3ExceptionTodoRepository(db).list_candidates(limit=20)) == 1
+        # 新关联/待处理只说明需要后台继续核验，尚无明确人工处理事项。
+        assert SqlAlchemyModule3ExceptionTodoRepository(db).list_candidates(limit=20) == []
+        assert task.payload["erp_refund_status"] == "blocked"
     finally:
         client.close()
 
 
 @pytest.mark.parametrize("status,owner_status,count", [
     ("unavailable", "not_required", 0),
-    ("blocked", "not_required", 1),
-    ("not_found", "not_required", 1),
-    ("unavailable", "not_found", 1),
+    ("blocked", "not_required", 0),
+    ("not_found", "not_required", 0),
+    ("unavailable", "not_found", 0),
 ])
 def test_quick_refund_query_failure_does_not_recreate_manual_todo(db, status, owner_status, count):
     order, task, _ = seed(db)
