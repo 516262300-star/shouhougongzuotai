@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from aftersales_workbench.db.models import (
@@ -109,6 +109,20 @@ class SqlAlchemyModule3ExceptionTodoRepository:
         self.session = session
 
     def list_candidates(self, *, limit: int) -> list[Module3ExceptionTodoCandidate]:
+        # 与未入 ERP 候选条件一致：查询失败含旧缓存不等于可交给人工的核账差异。
+        # 在分页前过滤，避免这些记录一直占住待办生成的首批名额。
+        unimported_query_error = and_(
+            AftersalesActionTask.payload["erp_refund_status"].as_string() == "unavailable",
+            func.coalesce(AfterSalesOrder.erp_sales_owner_status, "") == "not_required",
+            AfterSalesOrder.after_sales_type == "ONLY_REFUND",
+            AfterSalesOrder.order_shipping_status == "UNSHIPPED",
+            func.coalesce(AfterSalesOrder.refund_financial_status, "") == "SUCCESS",
+            *(func.coalesce(column, "") == "" for column in (
+                AfterSalesOrder.forward_tracking_number, AfterSalesOrder.return_tracking_number,
+                AfterSalesOrder.erp_customer_name, AfterSalesOrder.erp_sales_owner,
+            )),
+            AfterSalesOrder.logistics_physical_seen_at.is_(None),
+        )
         statement = (
             select(AftersalesActionTask, AfterSalesOrder, Shop.shop_name)
             .join(
@@ -121,6 +135,7 @@ class SqlAlchemyModule3ExceptionTodoRepository:
                 == AutomationActionType.ERP_CHECK_FULFILLMENT,
                 AftersalesActionTask.action_status == AutomationTaskStatus.PENDING,
                 AfterSalesOrder.workflow_status == WorkflowStatus.PENDING_CHECK,
+                ~unimported_query_error,
             )
             .order_by(AftersalesActionTask.id)
             .limit(500)

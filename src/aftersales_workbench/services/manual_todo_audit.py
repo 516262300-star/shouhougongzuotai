@@ -41,6 +41,14 @@ def _index(session):
     amount_recheck_notice = current_reason.contains("平台商家应收已核实补齐") & (
         current_reason.contains("等待重新核对ERP订单欠货和退款单状态")
     )
+    verified_unimported_notice = (
+        (Task.action_status == "CANCELLED")
+        & (Task.attempts == 0)
+        & (func.coalesce(Task.payload["origin"].as_string(), "") == "module3")
+        & (func.coalesce(Task.payload["external_todo_id"].as_string(), "") == "")
+        & (func.coalesce(Task.payload["cancel_reason"].as_string(), "")
+           == "已核实快速退款未入 ERP，无需补单，取消未发送误报")
+    )
     aftersales = (
         select(
             literal("aftersales").label("source"),
@@ -62,7 +70,8 @@ def _index(session):
             Shop,
             Shop.shop_id == AfterSalesOrder.shop_id,
         )
-        .where(Task.action_type == "ERP_CREATE_MANUAL_TODO", ~amount_recheck_notice)
+        .where(Task.action_type == "ERP_CREATE_MANUAL_TODO", ~amount_recheck_notice,
+               ~verified_unimported_notice)
     )
     available = inspect(session.get_bind()).has_table(Notice.__tablename__)
     if not available:

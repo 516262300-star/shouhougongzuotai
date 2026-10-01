@@ -322,6 +322,24 @@ def test_service_preserves_record_without_fake_accounting_and_rechecks(db):
         client.close()
 
 
+@pytest.mark.parametrize("status,owner_status,count", [
+    ("unavailable", "not_required", 0),
+    ("blocked", "not_required", 1),
+    ("not_found", "not_required", 1),
+    ("unavailable", "not_found", 1),
+])
+def test_quick_refund_query_failure_does_not_recreate_manual_todo(db, status, owner_status, count):
+    order, task, _ = seed(db)
+    order.erp_sales_owner_status = owner_status
+    task.payload = {**task.payload, "erp_refund_status": status,
+                    "erp_refund_checked_at": "2026-01-01T00:00:00+00:00"}
+    db.commit()
+    assert len(SqlAlchemyModule3ExceptionTodoRepository(db).list_candidates(limit=20)) == count
+    # 不因不生成待办而把查询失败冒充为已核实无需补单。
+    assert task.payload["erp_refund_status"] == status
+    assert task.action_status == AutomationTaskStatus.PENDING
+
+
 def test_future_query_error_removes_old_exemption(db):
     _, task, _ = seed(db)
     client, state = client_for()
