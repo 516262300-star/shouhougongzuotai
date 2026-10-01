@@ -49,6 +49,10 @@ from aftersales_workbench.services.manual_todo_policy import (
 )
 from aftersales_workbench.services.manual_todo_retry import owner_retry_waiting
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
+from aftersales_workbench.services.module3_todo_policy import (
+    account_balance_todo,
+    account_balance_todo_clause,
+)
 from aftersales_workbench.workflows.module1_logistics import (
     Module1LogisticsGateService,
     build_kuaidi100_client,
@@ -1057,6 +1061,11 @@ class ExternalActionExecutor:
                 )
             )
         has_todos = AutomationActionType.ERP_CREATE_MANUAL_TODO in action_types
+        if has_todos:
+            statement = statement.where(or_(
+                AftersalesActionTask.action_type != AutomationActionType.ERP_CREATE_MANUAL_TODO,
+                ~account_balance_todo_clause(AftersalesActionTask.payload),
+            ))
         now = datetime.now(UTC)
         tasks = []
         page = statement
@@ -1494,6 +1503,8 @@ class ExternalActionExecutor:
     @staticmethod
     def _build_erp_todo_request(task: ExternalTaskSnapshot) -> ErpTodoRequest:
         payload = task.payload
+        if account_balance_todo(payload):
+            raise WorkflowTransitionError("客户累计应收差异由 ERP 原有通知处理，禁止重复发布待办")
         required = ("assignee", "started_at", "content", "marker")
         if any(not str(payload.get(key) or "").strip() for key in required):
             raise WorkflowTransitionError("ERP 人工待办任务缺少经办人、发起时间、事项或幂等标识")

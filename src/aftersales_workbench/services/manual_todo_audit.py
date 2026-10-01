@@ -8,6 +8,10 @@ from aftersales_workbench.db.models import AftersalesActionTask as Task
 from aftersales_workbench.db.models import AfterSalesOrder, Shop
 from aftersales_workbench.services.return_todo_policy import return_problem_state
 from aftersales_workbench.services.manual_todo_text import prepare_manual_todo
+from aftersales_workbench.services.module3_todo_policy import (
+    ACCOUNT_NOTICE_DELEGATED,
+    account_balance_todo_clause,
+)
 from aftersales_workbench.services.shipment_todo_text import visible_shipment_text
 from aftersales_workbench.workflows.shipment_watch_models import ShipmentNoTraceNotice as Notice
 
@@ -56,6 +60,12 @@ def _index(session):
         & (func.coalesce(Task.payload["resolution_code"].as_string(), "")
            == "ERP_RECEIVABLE_TAIL_ACCEPTED")
     )
+    delegated_account_notice = account_balance_todo_clause(Task.payload) | (
+        (Task.action_status == "CANCELLED")
+        & (func.coalesce(Task.payload["origin"].as_string(), "") == "module3")
+        & (func.coalesce(Task.payload["resolution_code"].as_string(), "")
+           == ACCOUNT_NOTICE_DELEGATED)
+    )
     aftersales = (
         select(
             literal("aftersales").label("source"),
@@ -78,7 +88,7 @@ def _index(session):
             Shop.shop_id == AfterSalesOrder.shop_id,
         )
         .where(Task.action_type == "ERP_CREATE_MANUAL_TODO", ~amount_recheck_notice,
-               ~verified_unimported_notice, ~verified_tail_notice)
+               ~verified_unimported_notice, ~verified_tail_notice, ~delegated_account_notice)
     )
     available = inspect(session.get_bind()).has_table(Notice.__tablename__)
     if not available:
