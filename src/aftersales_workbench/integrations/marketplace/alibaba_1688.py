@@ -226,6 +226,22 @@ def _zero_money_kind(detail: dict[str, Any]) -> AfterSalesType | None:
     return kind
 
 
+def _closed_zero_refund(detail: dict[str, Any]) -> bool:
+    """关闭后的零金额快照可归档；不能把未返回金额或实退矛盾当成零。"""
+    if str(detail.get("status") or "").strip().lower() not in {
+        "refundclose", "refundclosed", "closed", "cancelled",
+    }:
+        return False
+    for field in ("applyPayment", "applyCarriage", "refundPayment", "refundCarriage"):
+        try:
+            amount = Decimal(str(detail.get(field)))
+        except InvalidOperation:
+            return False
+        if not amount.is_finite() or amount != 0:
+            return False
+    return True
+
+
 def normalize_1688_refund(
     detail: dict[str, Any],
     order: dict[str, Any],
@@ -233,8 +249,9 @@ def normalize_1688_refund(
     refund_id = required_text(detail.get("refundId"), field="refundId")
     order_id = required_text(detail.get("orderId"), field="orderId")
     zero_money_kind = _zero_money_kind(detail)
+    closed_zero_refund = _closed_zero_refund(detail)
     entry_counts = detail.get("orderEntryCountMap")
-    if zero_money_kind is not None:
+    if zero_money_kind is not None or closed_zero_refund:
         base = order.get("baseInfo")
         if (
             not isinstance(base, dict)
@@ -287,7 +304,7 @@ def normalize_1688_refund(
     refund_amount = (apply_payment or Decimal("0")) + (
         apply_carriage or Decimal("0")
     )
-    if refund_amount <= 0 and zero_money_kind is None:
+    if refund_amount <= 0 and zero_money_kind is None and not closed_zero_refund:
         raise ValueError(f"1688 售后 {refund_id} 缺少有效退款金额")
     base = order.get("baseInfo") if isinstance(order.get("baseInfo"), dict) else {}
     goods_amount = sum(
@@ -332,4 +349,7 @@ def normalize_1688_refund(
             base.get("status") or base.get("tradeStatus")
         ),
         items=tuple(items),
+        refund_financial_status=(
+            "CLOSED" if closed_zero_refund and zero_money_kind is None else None
+        ),
     )

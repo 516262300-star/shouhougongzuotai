@@ -137,7 +137,9 @@ class SqlAlchemyMarketplaceSyncRepository:
         )
         order.platform_order_status_text = refund.platform_order_status_text
         order.is_speed_refund = 0
-        if config.platform == Platform.DOUYIN:
+        if config.platform == Platform.ALIBABA_1688 and refund.refund_financial_status is not None:
+            apply_verified_financial_state(order, refund, label="1688")
+        elif config.platform == Platform.DOUYIN:
             apply_douyin_financial_state(order, refund)
         else:
             apply_refund_financial_state(order, config.platform)
@@ -190,11 +192,15 @@ class SqlAlchemyMarketplaceSyncRepository:
 
 
 def apply_douyin_financial_state(order, refund: NormalizedMarketplaceRefund) -> None:
+    apply_verified_financial_state(order, refund, label="抖音")
+
+
+def apply_verified_financial_state(order, refund: NormalizedMarketplaceRefund, *, label: str) -> None:
     state = refund.refund_financial_status or "UNKNOWN"
     if state == "SUCCESS" and (
         refund.actual_refund_amount is None or refund.refund_completed_at is None
     ):
-        raise ValueError("抖音实退成功缺少金额或完成时间")
+        raise ValueError(f"{label}实退成功缺少金额或完成时间")
     if order.refund_financial_status == "SUCCESS" and state != "SUCCESS":
         return
     order.refund_financial_status = state
