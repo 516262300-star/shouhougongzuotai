@@ -23,6 +23,7 @@ from aftersales_workbench.services.record_status import confirmed_refund, refund
 from aftersales_workbench.workflows.module1 import SqlAlchemyModule1Repository
 from aftersales_workbench.workflows.module3 import SqlAlchemyModule3Repository
 from aftersales_workbench.workflows.money_operations import MoneyOperationBlocked, run_money_write
+from aftersales_workbench.workflows.polling import utcnow
 from tests import test_pdd_non_refund_sync as base
 
 
@@ -131,7 +132,9 @@ def test_non_financial_import_requires_real_order_and_item_identity(change):
 def test_existing_refunded_fact_cannot_be_replaced_by_zero_flow(db):
     repo, config, sid = repo_shop(db)
     normalized = normalize_1688_refund(detail(),order_detail())
-    repo.upsert_refund(config,sid,replace(normalized,refund_amount=Decimal('10')))
+    repo.upsert_refund(config,sid,replace(normalized,refund_amount=Decimal('10'),
+        refund_financial_status='SUCCESS',actual_refund_amount=Decimal('10'),
+        refund_completed_at=utcnow()))
     repo.commit()
     order = db.scalar(select(AfterSalesOrder))
     assert order.refund_financial_status == 'SUCCESS'
