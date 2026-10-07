@@ -271,6 +271,8 @@ alembic upgrade head
 - 京东通过同一第三方 `forward.ashx` 中转读取 `jingdong.pop.afs.soa.refundapply.queryPageList` 退款申请与 `jingdong.asc.serviceAndRefund.view` 退货售后服务单，并用 `jingdong.pop.order.get` 补齐订单和 SKU；
 - 抖音调用 `/afterSale/List` 与 `/afterSale/Detail`，使用第三方应用 `app_key` / `app_secret` 和 HMAC-SHA256 签名；配置 `access_token_mode=authorization_self` 时，以店铺 ID 调用 `/token/create` 自动取得 Token，并在过期前刷新。
 
+2026-10-07 新增[京东官方 SP-API 售后只读适配](docs/jd-official-readonly-adapter-20261007.md)：独立直连官方列表、详情接口，已完成离线测试，但尚未通过真实业务接口验收、未部署或注册到正式同步。它不读取旧 `JD_SHOPS_JSON`，不改变既有京东链路、20 小时提醒或退款/模块开关；不能把这次源码完成视为京东正式接通。
+
 所有店铺配置使用 JSON 数组，因此不限制店铺数量。每个对象都要填写稳定且不能与其他平台重复的 `shop_code`，建议同时填写 `shop_name` 与平台店铺 ID。淘宝需要中转服务的 `app_key`、`app_secret`、`session_key`；1688 需要 `app_key`、`app_secret`；京东需要中转服务的 `app_key`、`app_secret`、`access_token`；抖音使用第三方应用的 `app_key`、`app_secret`，可填写静态 `access_token`，也可填写真实店铺 ID 并使用 `authorization_self`。示例：
 
 ```dotenv
