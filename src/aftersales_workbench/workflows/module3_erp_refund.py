@@ -52,6 +52,7 @@ class Module3ErpRefundRunResult:
     blocked: int = 0
     unavailable: int = 0
     skipped_recent: int = 0
+    todo_rechecks: int = 0
     details: list[dict[str, Any]] | None = None
 
     def safe_dict(self) -> dict[str, Any]:
@@ -110,17 +111,24 @@ class Module3ErpRefundService:
         dry_run: bool = True,
         include_details: bool = False,
         refresh_seconds: int = 0,
+        reconcile_only: bool = False,
     ) -> Module3ErpRefundRunResult:
         if limit < 1 or limit > 500:
             raise ValueError("limit 必须在 1–500 之间")
         if refresh_seconds < 0 or refresh_seconds > 86400:
             raise ValueError("refresh_seconds 必须在 0–86400 之间")
+        todo_rechecks = 0
+        if not dry_run and not platform_order_sn and not reconcile_only:
+            from aftersales_workbench.workflows.module3_todo_recheck import recheck_pending_todos
+
+            todo_rechecks = recheck_pending_todos(self)
         rows = self._list_candidates(
             limit=limit,
             platform_order_sn=platform_order_sn,
         )
         result = Module3ErpRefundRunResult(
             dry_run=dry_run,
+            todo_rechecks=todo_rechecks,
             details=[] if include_details else None,
         )
         for task, order in rows:
@@ -179,6 +187,12 @@ class Module3ErpRefundService:
                 else None,
             )
             if lookup.status is ErpUnshippedRefundStatus.READY:
+                if reconcile_only:
+                    # 只刷新核验结果，已有资金执行批次和权限保持不变。
+                    if include_details and result.details is not None:
+                        result.details.append(self._safe_detail(task, order, lookup))
+                    self.session.commit()
+                    continue
                 require_sync_safe_order(self.session, order.after_sales_sn)
                 try:
                     lookup = run_money_write(
