@@ -148,7 +148,7 @@ def test_real_ledger_counts_and_independent_gates_without_secrets(setup):
     assert status["label"] == "有待核验记录"
     assert caps(payload, "TMALL")["shipment_reminder"]["state"] == "enabled"
     assert caps(payload, "TMALL")["refund_permission"]["state"] == "disabled"
-    assert caps(payload, "TAOBAO")["shipment_reminder"]["state"] == "unsupported"
+    assert caps(payload, "TAOBAO")["shipment_reminder"]["state"] == "disabled"
     for private in ("private-order", "private-tracking", "private-error", "secret-never-return"):
         assert private not in json.dumps(payload)
 
@@ -164,6 +164,27 @@ def test_database_publish_switch_overrides_environment_and_recovers(setup):
     switch.enabled = 1
     session.commit()
     assert caps(result(setup))["shipment_reminder"]["state"] == "enabled"
+
+
+def test_taobao_reminder_needs_own_allowlist_official_gateway_and_adapter(setup):
+    settings, snapshots, _, root = setup
+    snapshots.append(ShopSnapshot(Platform.TAOBAO, "taobao-test", "测试店", "1", True))
+    path = root / ".runtime/shipment-watch-release.json"
+    pointer = json.loads(path.read_text())
+    pointer.update(platforms=["PDD", "TMALL", "TAOBAO"], taobao_shop_codes=["taobao-test"])
+    path.write_text(json.dumps(pointer))
+    settings.taobao_api_url = "https://eco.taobao.com/router/rest"
+    settings.taobao_request_method = "POST"
+    assert caps(result(setup), "TAOBAO")["shipment_reminder"]["state"] == "disabled"
+    (root / pointer["source_path"] / "aftersales_workbench/workflows/taobao_shipment_source.py"
+     ).write_text("# compatible fixture")
+    payload = result(setup)
+    assert caps(payload, "TAOBAO")["shipment_reminder"]["state"] == "enabled"
+    assert caps(payload, "TAOBAO")["refund_permission"]["state"] == "unsupported"
+    assert payload["shipment_reminder"]["enabled_shop_count"] == 3
+    pointer["taobao_shop_codes"] = ["other"]
+    path.write_text(json.dumps(pointer))
+    assert caps(result(setup), "TAOBAO")["shipment_reminder"]["state"] == "disabled"
 
 
 @pytest.mark.parametrize(

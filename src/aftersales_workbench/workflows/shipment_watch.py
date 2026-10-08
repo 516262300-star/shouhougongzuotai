@@ -99,7 +99,7 @@ class ShipmentWatch:
     def _trace_absent(self, parcel, source):
         carrier = resolve_logistics_carrier(parcel.carrier, self.settings.kuaidi100_carrier_map)
         platform_proof = None
-        if source.platform == "TMALL":
+        if source.platform in {"TMALL", "TAOBAO"}:
             platform_proof = source.trace_evidence(parcel, self.settings.kuaidi100_carrier_map)
             if platform_proof["result"] == "HAS_TRACE":
                 return None
@@ -321,7 +321,7 @@ class ShipmentWatch:
         return sent
 
     def _resolve_sent_traces(self, order, source):
-        if source.platform not in {"TMALL", "JD"}:
+        if source.platform not in {"TMALL", "TAOBAO", "JD"}:
             return
         for notice in self.session.scalars(select(Notice).where(
             Notice.shop_code == order.shop_code, Notice.order_sn == order.order_sn,

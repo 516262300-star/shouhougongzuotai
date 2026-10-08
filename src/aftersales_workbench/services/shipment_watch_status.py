@@ -134,7 +134,7 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
     enabled_count = registered_count = sync_errors = 0
     latest = completed
     for platform in payload["platforms"]:
-        if platform["platform"] not in {"PDD", "TMALL", "JD"}:
+        if platform["platform"] not in {"PDD", "TMALL", "JD", "TAOBAO"}:
             continue
         platform_ready = platform["platform"] != "JD" or (
             "JD" in pointer.get("platforms", [])
@@ -144,6 +144,20 @@ def decorate_shipment_capabilities(payload, settings, session, snapshots, *, roo
         )
         for item in platform["shops"]:
             code = item["shop_code"]
+            if platform["platform"] == "TAOBAO":
+                taobao_ready = (
+                    "TAOBAO" in pointer.get("platforms", [])
+                    and code in pointer.get("taobao_shop_codes", [])
+                    and source_valid
+                    and (source / "aftersales_workbench/workflows/taobao_shipment_source.py").is_file()
+                    and settings.taobao_api_url == "https://eco.taobao.com/router/rest"
+                    and settings.taobao_request_method == "POST"
+                )
+                if not taobao_ready:
+                    item["capabilities"]["shipment_reminder"] = _state(
+                        "disabled", "未开启", "淘宝官方提醒适配、店铺白名单或官方POST配置未就绪",
+                    )
+                    continue
             row = database.get(code)
             active = bool(
                 row

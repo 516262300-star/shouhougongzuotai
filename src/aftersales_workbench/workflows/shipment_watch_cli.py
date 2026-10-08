@@ -30,13 +30,23 @@ from aftersales_workbench.workflows.shipment_watch_models import (
     ShipmentWatchOrder,
 )
 from aftersales_workbench.workflows.shipment_watch_sources import ShipmentSource
+from aftersales_workbench.workflows.taobao_shipment_source import (
+    TaobaoShipmentReadClient,
+    TaobaoShipmentSource,
+)
 
 
 def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
-        platforms=("PDD", "TMALL"), jd_carrier_map=None, jd_seller_ids=None):
+        platforms=("PDD", "TMALL"), jd_carrier_map=None, jd_seller_ids=None,
+        taobao_shop_codes=()):
     platforms = tuple(dict.fromkeys(platforms))
-    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD"}:
+    if not platforms or not set(platforms) <= {"PDD", "TMALL", "JD", "TAOBAO"}:
         raise ValueError("普通订单提醒平台配置无效")
+    if "TAOBAO" in platforms and (
+        not isinstance(taobao_shop_codes, (list, tuple)) or not taobao_shop_codes
+        or any(not isinstance(code, str) or not code.strip() for code in taobao_shop_codes)
+    ):
+        raise ValueError("淘宝提醒必须配置独立店铺白名单")
     engine = create_engine(settings.database_url, pool_pre_ping=True)
     result = {"publish": publish, "sync_errors": {}, "synced": 0}
     try:
@@ -90,12 +100,18 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                 ("PDD", load_configured_pdd_shops, PddClient),
                 ("TMALL", load_configured_tmall_shops, TmallClient),
                 ("JD", None, JdReadClient),
+                ("TAOBAO", None, TaobaoShipmentReadClient),
             ):
                 if platform not in platforms:
                     continue
                 try:
-                    configured = (load_marketplace_shops(cfg, Platform.JD) if platform == "JD"
+                    configured = (load_marketplace_shops(cfg, Platform(platform))
+                                  if platform in {"JD", "TAOBAO"}
                                   else loader(cfg, require_all=False))
+                    if platform == "TAOBAO":
+                        configured = [c for c in configured if c.shop_code in taobao_shop_codes]
+                        if {c.shop_code for c in configured} != set(taobao_shop_codes):
+                            raise ValueError("淘宝提醒白名单包含未配置店铺")
                 except Exception as exc:
                     result["sync_errors"][platform] = type(exc).__name__
                     continue
@@ -107,12 +123,12 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                         ))
                         if shop is None:
                             raise ValueError("店铺不在有效工作台店铺列表")
-                        client = (JdReadClient(config, cfg) if platform == "JD"
+                        client = (client_type(config, cfg) if platform in {"JD", "TAOBAO"}
                                   else client_type(config.credentials(), read_max_attempts=2))
                         stack.callback(client.close)
                         if platform == "PDD":
                             identity = client.get_mall_info()["mall_info_get_response"]["mall_id"]
-                        elif platform == "TMALL":
+                        elif platform in {"TMALL", "TAOBAO"}:
                             identity = client.get_seller()["user_seller_get_response"]["user"][
                                 "user_id"
                             ]
@@ -126,6 +142,8 @@ def run(settings, *, publish=False, max_windows=8, limit=200, status_only=False,
                         source = (JdShipmentSource(client, seller_id=seller_id,
                                                    carrier_map=jd_carrier_map or {})
                                   if platform == "JD" else ShipmentSource(platform, client))
+                        if platform == "TAOBAO":
+                            source = TaobaoShipmentSource(client)
                         sources[config.shop_code] = source, shop.shop_name
                         result["synced"] += watch.sync(
                             config.shop_code, source, max_windows=max_windows,

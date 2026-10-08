@@ -446,9 +446,10 @@ def test_trace_appearing_in_final_package_check_blocks_entire_group(setup):
     assert all(n.status == "TRACE_SEEN" for n in session.scalars(select(Notice)))
 
 @pytest.mark.parametrize("carrier", ["shunfeng", "zhongtong"])
-def test_tmall_platform_history_prevents_false_no_trace_todo(setup, carrier):
+@pytest.mark.parametrize("platform", ["TMALL", "TAOBAO"])
+def test_tmall_platform_history_prevents_false_no_trace_todo(setup, carrier, platform):
     watch, session, order, source, state, parcel = setup
-    source.platform = "TMALL"
+    source.platform = platform
     source.refresh = lambda sn: [replace(parcel, carrier=carrier)]
     source.trace_evidence = lambda *args: {"result": "HAS_TRACE"}
     def vendor_must_not_override(**kwargs):
@@ -466,9 +467,10 @@ def test_sf_vendor_absence_with_global_default_phone_is_not_uncollected_proof(se
     assert state.posts == 0
 
 
-def test_tmall_final_submission_rechecks_native_trace(setup):
+@pytest.mark.parametrize("platform", ["TMALL", "TAOBAO"])
+def test_tmall_final_submission_rechecks_native_trace(setup, platform):
     watch, session, order, source, state, parcel = setup
-    source.platform = "TMALL"
+    source.platform = platform
     calls = 0
     def proof(*args):
         nonlocal calls
@@ -480,12 +482,13 @@ def test_tmall_final_submission_rechecks_native_trace(setup):
     assert session.scalar(select(Notice)).status == "TRACE_SEEN"
 
 
-def test_sent_tmall_reminder_is_resolved_even_after_trade_closed_without_erasing_receipt(setup):
+@pytest.mark.parametrize("platform", ["TMALL", "TAOBAO"])
+def test_sent_tmall_reminder_is_resolved_even_after_trade_closed_without_erasing_receipt(setup, platform):
     watch, session, order, source, state, parcel = setup
     watch.check_order(order, source, "店铺", publish=True)
     notice = session.scalar(select(Notice))
     before = (notice.status, notice.todo_id, notice.updated_at, notice.payload["content"])
-    source.platform = "TMALL"
+    source.platform = platform
     source.refresh = lambda sn: []
     source.trace_evidence = lambda *args: {
         "result": "HAS_TRACE", "tracking_number": parcel.tracking_number,
