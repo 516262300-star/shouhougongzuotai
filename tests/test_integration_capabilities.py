@@ -142,6 +142,25 @@ def test_capability_matrix_distinguishes_full_partial_and_read_only_shops() -> N
         assert secret not in serialized
 
 
+def test_taobao_official_connection_label_does_not_enable_refunds() -> None:
+    settings = _settings()
+    settings.taobao_api_url = "https://eco.taobao.com/router/rest"
+    settings.taobao_request_method = "POST"
+    payload = build_integration_capabilities(settings, [])
+    taobao = next(item for item in payload["platforms"] if item["platform"] == "TAOBAO")
+    assert taobao["connection_mode"] == "淘宝开放平台·官方接口"
+    assert taobao["refund_enabled_shop_count"] == 0
+    assert taobao["shops"][0]["capabilities"]["refund_permission"]["state"] != "enabled"
+
+
+def test_taobao_custom_gateway_is_not_labelled_official() -> None:
+    settings = _settings()
+    settings.taobao_api_url = "https://eco.taobao.com.example.invalid/router/rest"
+    payload = build_integration_capabilities(settings, [])
+    taobao = next(item for item in payload["platforms"] if item["platform"] == "TAOBAO")
+    assert taobao["connection_mode"] == "第三方中转"
+
+
 def test_tmall_limited_rollout_keeps_other_gates_and_module3_closed() -> None:
     settings = _settings()
     settings.tmall_single_parcel_refund_enabled = True

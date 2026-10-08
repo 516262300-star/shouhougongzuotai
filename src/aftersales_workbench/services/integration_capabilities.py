@@ -394,6 +394,11 @@ def build_integration_capabilities(
 
     for platform in _PLATFORM_ORDER:
         label, connection_mode = PLATFORM_META[platform]
+        if (
+            platform is Platform.TAOBAO
+            and settings.taobao_api_url == "https://eco.taobao.com/router/rest"
+        ):
+            connection_mode = "淘宝开放平台·官方接口"
         platform_sync_enabled = _sync_enabled(settings, platform)
         shops: list[dict[str, Any]] = []
         for configured in configured_by_platform[platform]:
