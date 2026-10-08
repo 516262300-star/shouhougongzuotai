@@ -67,3 +67,50 @@ def test_restore_rejects_existing_directory(tmp_path):
     from office_backup_restore_check import restore_check
     with pytest.raises(ValueError, match='must be new'):
         restore_check(tmp_path, tmp_path, tmp_path, 33317)
+
+
+def test_taobao_optional_runtime_snapshot(tmp_path):
+    from office_state_snapshot import copy_taobao_runtime
+    output = tmp_path / 'snapshot'
+    output.mkdir()
+    copy_taobao_runtime(tmp_path, output)
+    assert list(output.iterdir()) == []
+    runtime = tmp_path / '.runtime/taobao-automation'
+    runtime.mkdir(parents=True)
+    for name in ('enabled', 'status'):
+        (runtime / f'{name}.json').write_text('{"mode":"enabled"}', encoding='utf-8')
+    copy_taobao_runtime(tmp_path, output)
+    for name in ('enabled', 'status'):
+        saved = output / f'taobao-automation-{name}.json'
+        assert saved.read_bytes() == (runtime / f'{name}.json').read_bytes()
+
+
+def test_release_members_include_versioned_frontend(tmp_path):
+    output = tmp_path / 'snapshot'
+    output.mkdir()
+    expected = set()
+    for role in ('module1-worker', 'workbench-web', 'shipment-watch'):
+        base = tmp_path / '.runtime/releases' / role
+        for rel in (
+            'src/package/main.py', 'frontend/dist/client/index.html', 'src/__pycache__/cache.pyc'
+        ):
+            file = base / rel
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text('fixture', encoding='utf-8')
+            if '__pycache__' not in rel:
+                expected.add(file)
+        (output / f'{role}-release.json').write_text(
+            json.dumps({'source_path': str((base / 'src').relative_to(tmp_path))}),
+            encoding='utf-8',
+        )
+    assert backup.release_members(tmp_path, output) == expected
+
+
+def test_release_members_reject_escape(tmp_path):
+    output = tmp_path / 'snapshot'
+    output.mkdir()
+    (output / 'module1-worker-release.json').write_text(
+        json.dumps({'source_path': 'snapshot'}), encoding='utf-8'
+    )
+    with pytest.raises(ValueError, match='Invalid release path'):
+        backup.release_members(tmp_path, output)

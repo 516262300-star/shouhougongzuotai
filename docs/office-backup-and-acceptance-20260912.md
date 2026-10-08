@@ -1,5 +1,7 @@
 # 正式机验收与日常备份
 
+2026-10-08 淘宝自动模块备份补充：可选收集 `.runtime/taobao-automation/enabled.json`、`status.json`，在快照中命名为 `taobao-automation-enabled.json`、`taobao-automation-status.json` 并校验SHA-256；`release-code.zip`补齐各活动发布版本旁的 `frontend/dist`，包括独立提醒版本（如有）。原数据库资金/实收防重账本、正式机已有日志归档增强、备份时间与异机拉取均保留。9项备份针对性测试通过；本次未额外停业务做全量数据库恢复演练。恢复两个文件时映射回原目录，先设 `preview`，核对资金账本及未知结果后才恢复授权开关；旧备份缺文件默认关闭。详见[淘宝限定自动执行说明](taobao-modules-enabled-20261008.md)。
+
 2026-10-01 更新：正式运行机 DHCP 地址变化后，开发机备份任务改按电脑名称连接，并继续严格校验原主机密钥。08:32 实际拉取当日备份成功，24 张表、13 项文件、schema `20260930_0030` 校验通过，任务结果 0；原时间安排不变。详见[入口及备份连接恢复](office-entry-address-recovery-20261001.md)。
 
 ## 2026-09-23 新运行机切换

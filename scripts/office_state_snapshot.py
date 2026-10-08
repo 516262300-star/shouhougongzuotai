@@ -14,6 +14,18 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
 
+def copy_taobao_runtime(root: Path, output: Path) -> None:
+    """Keep optional shop-scoped automation state with the database snapshot."""
+    for name in ('enabled', 'status'):
+        source = root / '.runtime/taobao-automation' / f'{name}.json'
+        if source.is_file():
+            if source.is_symlink() or not source.resolve().is_relative_to(
+                root.resolve() / '.runtime'
+            ):
+                raise ValueError('Taobao runtime state escapes runtime')
+            shutil.copy2(source, output / f'taobao-automation-{name}.json')
+
+
 def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
     root, output = root.resolve(), output.resolve()
     if output.exists():
@@ -45,6 +57,7 @@ def snapshot(root: Path, output: Path, mysqldump: Path) -> None:
     reminder_pointer = root / '.runtime/shipment-watch-release.json'
     if reminder_pointer.is_file():
         shutil.copy2(reminder_pointer, output / reminder_pointer.name)
+    copy_taobao_runtime(root, output)
     ledger = Path(settings.get('MODULE1_DESKTOP_LEDGER_PATH') or '.runtime/desktop-notice-ledger.jsonl')
     ledger = ledger if ledger.is_absolute() else root / ledger
     if not ledger.is_file():

@@ -47,6 +47,27 @@ def verify(directory: Path) -> dict:
     return {'ok': True, 'tables': len(manifest['counts']), 'files': len(manifest['sha256']), 'schema': manifest['schema']}
 
 
+def release_members(root: Path, output: Path) -> set[Path]:
+    """Include each active release's own frontend, not just root frontend/dist."""
+    root = root.resolve()
+    members: set[Path] = set()
+    pointers = ['module1-worker-release.json', 'workbench-web-release.json']
+    if (output / 'shipment-watch-release.json').is_file():
+        pointers.append('shipment-watch-release.json')
+    for pointer_name in pointers:
+        release = json.loads((output / pointer_name).read_text(encoding='utf-8-sig'))
+        source = (root / release['source_path']).resolve()
+        if not source.is_relative_to(root / '.runtime/releases') or not source.is_dir():
+            raise ValueError('Invalid release path')
+        for folder in (source, source.parent / 'frontend/dist'):
+            if folder.exists() and not folder.resolve().is_relative_to(root / '.runtime/releases'):
+                raise ValueError('Release frontend escapes runtime')
+            members.update(
+                p for p in folder.rglob('*') if p.is_file() and '__pycache__' not in p.parts
+            )
+    return members
+
+
 def backup(root: Path, output: Path, dump: Path, admin_file: Path) -> None:
     root = root.resolve()
     # Use the production release's lock implementation, never the editable source.
@@ -74,16 +95,7 @@ def backup(root: Path, output: Path, dump: Path, admin_file: Path) -> None:
         finally:
             conn.close()  # Always release the global read lock, including failure.
     # Code files are immutable release directories; package both current versions.
-    members = set()
-    pointers = ['module1-worker-release.json', 'workbench-web-release.json']
-    if (output / 'shipment-watch-release.json').is_file():
-        pointers.append('shipment-watch-release.json')
-    for pointer_name in pointers:
-        release = json.loads((output / pointer_name).read_text(encoding='utf-8-sig'))
-        release_root = (root / release['source_path']).resolve()
-        if not release_root.is_relative_to(root / '.runtime/releases'):
-            raise ValueError('Invalid release path')
-        members.update(p for p in release_root.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
+    members = release_members(root, output)
     for folder in ('scripts', 'frontend/dist', 'alembic'):
         members.update(p for p in (root / folder).rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     for name in ('pyproject.toml', 'alembic.ini', 'office-release-manifest.json'):

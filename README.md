@@ -155,7 +155,7 @@ alembic downgrade -1
 | `TMALL_SYNC_OVERLAP_SECONDS` | 天猫增量续传时向前重叠秒数 | `300` |
 | `TMALL_SYNC_WINDOW_HOURS` | 天猫单个修改时间窗口小时数 | `24` |
 | `TAOBAO_API_URL` / `TAOBAO_REQUEST_METHOD` | 历史付费中转地址及请求方式 | `https://odiych.goldbrantech.com/forward.ashx` / `GET` |
-| `TAOBAO_SHOPS_JSON` | 淘宝第三方中转配置；每店含中转应用凭据与 `session_key` | `[]` |
+| `TAOBAO_SHOPS_JSON` | 淘宝官方直连店铺配置；每店含开放平台应用凭据、卖家ID与 `session_key` | `[]` |
 | `ALIBABA_1688_SHOPS_JSON` | 1688 任意多店配置；每店含 `app_key` / `app_secret` | `[]` |
 | `JD_API_URL` / `JD_REQUEST_METHOD` | 历史付费中转地址及请求方式 | `https://odiych.goldbrantech.com/forward.ashx` / `GET` |
 | `JD_SHOPS_JSON` | 京东第三方中转配置；每店含应用凭据与 `access_token` | `[]` |
@@ -264,16 +264,16 @@ alembic upgrade head
 
 ## 淘宝、1688、京东、抖音售后只读同步
 
-四个平台沿用各自真实接入方式，不依赖旧管理系统进程在线运行。淘宝和京东继续使用历史购买的第三方转发服务；旧定时任务中的京东范围为默认 `p1` 与 `set_key('p2-')` 两店，迁移工具会把两组凭据分别写入 `jd-relay-01`、`jd-relay-02`。1688使用开放平台；抖音使用第三方应用授权，但 SDK 请求仍发往抖店官方 HTTPS 地址。新同步器独立完成签名、分页、详情补查、字段归一化和 MySQL 幂等入库：
+四个平台沿用各自真实接入方式，不依赖旧管理系统进程在线运行。淘宝于2026-10-08切换官方HTTPS POST直连，不再经过中转；京东既有同步链路仍使用历史转发服务，官方候选状态见下文。旧定时任务中的京东范围为默认 `p1` 与 `set_key('p2-')` 两店，迁移工具把两组凭据分别写入 `jd-relay-01`、`jd-relay-02`。1688使用开放平台；抖音使用第三方应用授权，但SDK请求仍发往抖店官方HTTPS地址。同步器独立完成签名、分页、详情补查、字段归一化和MySQL幂等入库：
 
-- 淘宝把签名后的 `taobao.user.seller.get`、`taobao.refunds.receive.get`、`taobao.refund.get` 和 `taobao.trade.fullinfo.get` 以 GET 方式交给第三方 `forward.ashx` 中转；
+- 淘宝把签名后的卖家、退款、订单和物流查询以POST方式直接提交 `https://eco.taobao.com/router/rest`；主查询与退款子账号分离，不使用或消费刷新令牌；
 - 1688 调用 `alibaba.trade.refund.queryOrderRefundList`、`alibaba.trade.refund.OpQueryOrderRefund` 和 `alibaba.trade.ec.getOrder.sellerView`；
 - 京东通过同一第三方 `forward.ashx` 中转读取 `jingdong.pop.afs.soa.refundapply.queryPageList` 退款申请与 `jingdong.asc.serviceAndRefund.view` 退货售后服务单，并用 `jingdong.pop.order.get` 补齐订单和 SKU；
 - 抖音调用 `/afterSale/List` 与 `/afterSale/Detail`，使用第三方应用 `app_key` / `app_secret` 和 HMAC-SHA256 签名；配置 `access_token_mode=authorization_self` 时，以店铺 ID 调用 `/token/create` 自动取得 Token，并在过期前刷新。
 
 2026-10-07 新增[京东官方 SP-API 售后只读适配](docs/jd-official-readonly-adapter-20261007.md)：独立直连官方列表、详情接口；2026-10-08 本地 95 项测试、云鼎独立环境 94 项模拟客户端测试通过，云鼎未包含的 1 项正式工厂断言已在本地验证。尚未通过真实业务接口验收、未部署正式查询服务或注册到正式同步。云鼎测试包不含真实凭据，未发送京东业务请求；此前带授权查询的执行策略拒绝尚未解决。它不读取旧 `JD_SHOPS_JSON`，不改变既有京东链路、20 小时提醒或退款/模块开关；不能把离线验证视为京东正式接通。
 
-所有店铺配置使用 JSON 数组，因此不限制店铺数量。每个对象都要填写稳定且不能与其他平台重复的 `shop_code`，建议同时填写 `shop_name` 与平台店铺 ID。淘宝需要中转服务的 `app_key`、`app_secret`、`session_key`；1688 需要 `app_key`、`app_secret`；京东需要中转服务的 `app_key`、`app_secret`、`access_token`；抖音使用第三方应用的 `app_key`、`app_secret`，可填写静态 `access_token`，也可填写真实店铺 ID 并使用 `authorization_self`。示例：
+所有店铺配置使用JSON数组。每个对象填写稳定且不能与其他平台重复的 `shop_code`、店铺名和平台店铺ID。淘宝使用官方开放平台的 `app_key`、`app_secret`、`session_key`，执行资金动作还须独立退款子账号和逐店授权；1688需要 `app_key`、`app_secret`；京东既有链路使用中转服务凭据；抖音可填写静态 `access_token`，或真实店铺ID与 `authorization_self`。示例：
 
 ```dotenv
 TAOBAO_SHOPS_JSON=[{"shop_code":"taobao-shop-01","shop_name":"淘宝一店","platform_shop_id":"平台店铺ID","app_key":"填写值","app_secret":"填写值","session_key":"填写值"}]
@@ -303,11 +303,11 @@ DOUYIN_SHOPS_JSON=[{"shop_code":"douyin-shop-01","shop_name":"抖音一店","pla
 .\.venv\Scripts\marketplace-sync-refunds.exe --platforms DOUYIN --lookback-hours 1 --max-windows 1
 ```
 
-真实记录核对无误后，再把对应的 `*_SYNC_ENABLED` 改为 `true` 并安全重启后台运行器。每个平台、每个店铺、每个已提交时间窗口的进度保存在 `platform_sync_cursors`；平台失败彼此隔离，也不会阻断拼多多后续动作链。原始平台售后状态与订单状态保存为文字字段，订单、退款金额、原因、留言、SKU、件数、平台时间和可取得的正向/退货运单统一进入 `shops`、`aftersales_orders`、`aftersales_items`。淘宝、京东已使用 HTTPS 中转；中转余额不足、旧授权失效、抖音运行 IP 未加入第三方应用白名单或自授权失败时，该店当前窗口回滚并保留游标，修复配置后可安全重跑。
+真实记录核对无误后，再把对应的 `*_SYNC_ENABLED` 改为 `true` 并安全重启后台运行器。每个平台、店铺和已提交窗口的进度保存在 `platform_sync_cursors`；平台失败彼此隔离。平台原始状态及订单、金额、SKU、数量、时间、运单进入本地售后台账。淘宝现为官方HTTPS POST直连，京东既有链路仍为HTTPS中转。授权或查询失败时保留原游标；修复后只读同步可续跑，资金请求不得套用同步重试。正式淘宝已开启独立自动标记时，手动同步成功也会触发其限定执行器，纯只读维护须先按运行说明停用该标记。
 
 售后订单页采用“平台 → 店铺”两级联动筛选：可先选拼多多、天猫、淘宝、1688、京东或抖音，再从该平台已经接入的店铺中选择具体店铺；未选平台时店铺框保持禁用，避免跨平台同名店铺造成误选。平台条件和店铺条件都会由后端执行，不只是前端隐藏。
 
-淘宝、1688、京东、抖音当前严格限于“售后事实同步”：页面会显示对应平台订单，但不会生成企业微信拦截、平台退款、模块 2、模块 3 或 ERP 写入动作。拼多多运行完整自动化；天猫在独立开关、水位、店铺白名单和当轮同步成功保护下进入模块 1/2/3，前五店可执行模块 1/2 平台退款，适家只同步并处理平台已退款后的模块 3；其余平台需逐个平台完成写接口权限、金额口径和物流安全闸门验收后才能另行开启自动处理。
+本节同步功能本身不授予资金操作权限，各平台自动模块采用独立授权和执行器。淘宝1店于2026-10-08上线[20小时无物流提醒](docs/taobao-shipment-enabled-20261008.md)及[退款/模块1/2/3限定自动执行](docs/taobao-modules-enabled-20261008.md)，包含现有待处理单：模块1实际退款须真实退回，模块2另须独立验货PASS，模块3只补平台已退款的明确未发货独立整单。复杂订单、暂存待认领、部分退款和不明资金结果继续隔离，不把未收货先退个案扩成规则。没有默认给新增店铺或其他平台扩权；实际状态以各平台专用说明及正式“接入能力”为准。
 
 ## 模块 1：在途拦截与退款
 

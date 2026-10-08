@@ -98,4 +98,10 @@ def sync_marketplaces(
         from aftersales_workbench.workflows.taobao_checks import run_checks
 
         run_checks(settings)
+        # 淘宝使用独立逐店执行器；只有本轮目标店同步均成功才检查执行授权。
+        taobao_results = [r for r in results if r.platform == Platform.TAOBAO.value]
+        if taobao_results and all(r.ok for r in taobao_results):
+            from aftersales_workbench.workflows.taobao_automation_runner import run_automation
+
+            run_automation(settings)
     return results

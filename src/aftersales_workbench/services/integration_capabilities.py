@@ -572,6 +572,11 @@ class IntegrationCapabilityService:
         payload = decorate_capabilities(
             build_integration_capabilities(self.settings, snapshots), self.settings,
         )
+        from aftersales_workbench.workflows.taobao_automation_runner import (
+            decorate_automation_capabilities,
+        )
+
+        payload = decorate_automation_capabilities(payload, self.settings)
         return decorate_shipment_capabilities(
             payload, self.settings, self.session, snapshots,
         )
